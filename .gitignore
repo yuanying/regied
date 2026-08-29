@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+/dist/
+/regied
+
+# Test artifacts
+*.test
+coverage.out
+
+# 秘密情報（リポジトリには絶対に置かない）
+/secrets/
+*.secret
+
+# Editor / OS
+.DS_Store
+*.swp
