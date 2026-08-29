@@ -1,30 +1,32 @@
 #!/usr/bin/env bash
 #
-# 被試験体の参照実装。手書きの ip / nft で、テストベッドが検証する 7 項目を
-# 満たすルーターを router netns の中に組み立てる。
+# The reference implementation of the device under test. Out of hand-written ip / nft
+# it assembles, inside the router netns, a router that satisfies the seven checks the
+# testbed makes.
 #
-# ここはテストベッドの一部ではなく「差し替えられる側」である。同じ約束
-# （ADR 0010 の受け渡し）を満たすスクリプトを REGIED_NETNS_ROUTER_SETUP で
-# 指せば、既存の実装でも自作の実装でも同じテストを掛けられる。
+# This is not part of the testbed; it is the replaceable side. Point
+# REGIED_NETNS_ROUTER_SETUP at any script that honours the same contract (the handover
+# described in ADR 0010) and the same tests can be run against an existing
+# implementation or against one of our own.
 #
-# 使い方: reference.sh up | down
+# Usage: reference.sh up | down
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib.sh
 source "${here}/../lib.sh"
 
-# PPPoE の口。名前を固定しておかないと、提供側の pppd と番号を取り合って
-# ppp0 になったり ppp1 になったりする。
+# The PPPoE link. Unless its name is pinned, it competes for numbers with the pppd on
+# the provider side and ends up as ppp0 one time and ppp1 the next.
 PPP_IF="ppp-wan"
 PPP_LINKNAME="regied-netns"
 PPP_OPTIONS="${RUNTIME_DIR}/router-pppd-options"
 PPP_PID_FILE="/var/run/ppp-${PPP_LINKNAME}.pid"
 
-# DS-Lite のトンネル。
+# The DS-Lite tunnel.
 DSLITE_IF="dslite0"
 
-# 経路表。PBR で送信元レンジごとに使い分ける。
+# The routing tables. Policy routing picks between them per source range.
 TABLE_PPPOE=1
 TABLE_DSLITE=2
 MARK_PPPOE=1
@@ -47,15 +49,15 @@ setup_lan() {
   r ip link set "${ROUTER_LAN_IF}" up
 }
 
-# WAN 側の IPv6。実回線では RA と DHCPv6-PD で得るものを、テストベッドでは
-# 固定で置いている。DS-Lite はこの IPv6 到達性の上に乗る。
+# The WAN-side IPv6. On a real line this comes from RA and DHCPv6-PD; in the testbed it
+# is placed statically. DS-Lite rides on top of this IPv6 reachability.
 setup_wan_v6() {
   r ip -6 addr add "${WAN_V6_ROUTER}/${WAN_V6_PREFIXLEN}" dev "${ROUTER_WAN_IF}"
   r ip link set "${ROUTER_WAN_IF}" up
   r ip -6 route replace default via "${WAN_V6_AFTR}" dev "${ROUTER_WAN_IF}"
 }
 
-# PPPoE。認証情報は設定に書かずファイルから読む。
+# PPPoE. Credentials are read from files rather than written into the configuration.
 start_pppoe() {
   local user password
   user="$(cat "${PPPOE_USER_FILE}")"
@@ -81,11 +83,11 @@ lcp-echo-failure 5
 updetach
 OPTS
 
-  # updetach なので、この呼び出しは IP が上がってから返る。
+  # Because of updetach, this call returns only once the IP layer is up.
   r pppd file "${PPP_OPTIONS}"
 }
 
-# DS-Lite の B4 側。ここでは NAT しない。NAT44 は AFTR の仕事である。
+# The B4 side of DS-Lite. Nothing is translated here; NAT44 is the AFTR's job.
 setup_dslite() {
   r ip link add "${DSLITE_IF}" type ip6tnl \
     mode ipip6 local "${WAN_V6_ROUTER}" remote "${WAN_V6_AFTR}" dev "${ROUTER_WAN_IF}" \
@@ -94,11 +96,11 @@ setup_dslite() {
   r ip link set "${DSLITE_IF}" mtu "${DSLITE_MTU}" up
 }
 
-# 経路。既定は DS-Lite で、PPPoE 側はレンジで指定された端末だけが使う。
+# Routing. The default is DS-Lite; only the hosts named by the range use PPPoE.
 #
-# 各テーブルに LAN の経路も入れてある。入れておかないと、印を付けた後に
-# 宛先が LAN に書き換わる通信（hairpin）が、既定経路に引きずられて外へ
-# 出て行ってしまう。
+# Each table also carries the LAN route. Without it, traffic whose destination is
+# rewritten back to the LAN after it was marked (the hairpin case) would follow the
+# default route and leave for the outside.
 setup_routing() {
   r ip route replace "${LAN_CIDR}" dev "${ROUTER_LAN_IF}" table "${TABLE_PPPOE}"
   r ip route replace default dev "${PPP_IF}" table "${TABLE_PPPOE}"
@@ -112,16 +114,16 @@ setup_routing() {
   r ip rule add fwmark "${MARK_DSLITE}" lookup "${TABLE_DSLITE}" pref 20
 }
 
-# PBR / NAT / ファイアウォール / MSS clamp。
+# Policy routing / NAT / firewall / MSS clamping.
 #
-# PPPoE で払い出されたアドレスは接続のたびに変わりうるので、ここで読み取って
-# 規則に埋める。適用は table 単位の置き換えにしてあり、二度流しても同じ
-# 状態になる。
+# The address handed out over PPPoE can differ on every connection, so it is read here
+# and baked into the rules. Application replaces whole tables, so running this twice
+# leaves the same state.
 setup_nftables() {
   local global_ip
   global_ip="$(r ip -4 -oneline addr show dev "${PPP_IF}" | awk '{print $4}' | cut -d/ -f1)"
-  [[ -n "${global_ip}" ]] || die "PPPoE のアドレスを読めなかった"
-  log "PPPoE のグローバルは ${global_ip}"
+  [[ -n "${global_ip}" ]] || die "could not read the PPPoE address"
+  log "the PPPoE global address is ${global_ip}"
 
   r nft -f - <<NFT
 table ip pbr
@@ -160,7 +162,7 @@ table inet filter {
 		iifname { "lo", "${ROUTER_LAN_IF}" } accept
 		icmpv6 type { echo-request, echo-reply, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
 		ip protocol icmp accept
-		# AFTR から来る ipip6（プロトコル 4）。DS-Lite の戻りはこれで入る。
+		# ipip6 (protocol 4) arriving from the AFTR. DS-Lite return traffic comes in this way.
 		iifname "${ROUTER_WAN_IF}" ip6 nexthdr 4 accept
 	}
 
@@ -196,7 +198,7 @@ up() {
   start_pppoe
   setup_routing
   setup_nftables
-  log "被試験体（参照実装）を組み立てた"
+  log "assembled the device under test (the reference implementation)"
 }
 
 down() {
@@ -204,11 +206,11 @@ down() {
     kill "$(cat "${PPP_PID_FILE}")" 2>/dev/null || true
     rm -f "${PPP_PID_FILE}"
   fi
-  # netns ごと消えるので、それ以外の後始末は要らない。
+  # The whole netns goes away, so there is nothing else to clean up.
 }
 
 case "${1:-}" in
 up) up ;;
 down) down ;;
-*) die "使い方: $(basename "$0") up|down" ;;
+*) die "usage: $(basename "$0") up|down" ;;
 esac

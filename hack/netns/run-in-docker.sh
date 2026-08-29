@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 #
-# netns 擬似 WAN テストベッドを特権コンテナの中で走らせる。
+# Run the netns pseudo-WAN testbed inside a privileged container.
 #
-# 開発機は Docker コンテナの中にあり、ホストの docker daemon に届く。
-# ここで起動するのは兄弟コンテナである。リポジトリはホストと同じパスで
-# 見えるので、同名パスでそのまま渡せる。
+# The development machine is itself inside a Docker container and can reach the host's
+# docker daemon. What this starts is therefore a sibling container. The repository is
+# visible at the same path as on the host, so it can be passed through under the very
+# same path.
 #
-# 使い方: hack/netns/run-in-docker.sh <コンテナの中で実行するコマンド...>
+# Usage: hack/netns/run-in-docker.sh <command to run inside the container...>
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${here}/../.." && pwd)"
 image="${NETNS_IMAGE:-regied-netns:latest}"
 
-# ビルドキャッシュを持ち回らないと毎回標準ライブラリから作り直しになる。
+# Without a build cache carried across runs, every run rebuilds from the standard library.
 cache_dir="${HOME}/.cache/regied-netns/go-build"
 mkdir -p "${cache_dir}"
 
 args=(
   run --rm --privileged
-  # PPPoE はモジュールなので、コンテナの中から読み込めるようにする。
+  # PPPoE is a kernel module, so make it loadable from inside the container.
   --volume /lib/modules:/lib/modules:ro
   --volume "${repo_root}:${repo_root}"
   --volume "${cache_dir}:/root/.cache/go-build"

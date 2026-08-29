@@ -1,10 +1,10 @@
-# netns 擬似 WAN テストベッドの実行環境。
+# The runtime environment for the netns pseudo-WAN testbed.
 #
-# 開発機には nft / pppd / pppoe-server / dnsmasq が入っておらず、ホストにも
-# 開発コンテナにも入れない方針なので、道具はこのイメージの中だけに置く。
-# --privileged の兄弟コンテナとして起動し、その中で network namespace を組む
-# （ADR 0010）。カーネルモジュールはホストで読み込むため、実行時に
-# /lib/modules を読み取り専用で渡す。
+# The development machine has no nft / pppd / pppoe-server / dnsmasq, and the policy
+# is to install them on neither the host nor the development container, so the tools
+# live only inside this image. It is started as a sibling container with --privileged
+# and the network namespaces are built inside it (ADR 0010). Kernel modules are loaded
+# on the host, so /lib/modules is passed in read-only at run time.
 FROM golang:1.27-bookworm
 
 RUN apt-get update \
@@ -22,12 +22,12 @@ RUN apt-get update \
         tcpdump \
     && rm -rf /var/lib/apt/lists/*
 
-# dnsmasq はパッケージのインストール時に常駐を始めてしまう。テストベッドが
-# 必要になったときに netns の中で起こすので、既定では止めておく。
+# Installing the package starts a resident dnsmasq. The testbed starts its own inside
+# a network namespace when it needs one, so shut the packaged instance off by default.
 RUN if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq stop || true; fi \
     && rm -f /etc/systemd/system/multi-user.target.wants/dnsmasq.service
 
-# 前提が欠けていたら黙って飛ばさずに落とす。
+# If a prerequisite is missing, fail instead of silently skipping.
 ENV REGIED_NETNS_REQUIRE=1
 
 WORKDIR /workspace
