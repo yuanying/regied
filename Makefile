@@ -53,3 +53,27 @@ vet: fmt-check ## go vet を全パッケージに掛ける（tag 付きテスト
 test: ## ユニットテスト。特権も外部コマンドも要らない。
 	$(GO) test ./...
 
+##@ Netns
+
+# netns 統合テストは擬似 WAN（PPPoE サーバー / DS-Lite の AFTR / 到達確認用の
+# サーバー）を network namespace で組んで走らせる。root と nft / pppd /
+# pppoe-server / socat が要る。手元の開発環境にはこれらが無いので、通常は
+# test-netns-docker から特権コンテナ越しに呼ぶ（ADR 0010）。
+
+NETNS_IMAGE ?= regied-netns:latest
+
+.PHONY: test-netns
+test-netns: ## netns 統合テスト。root / CAP_NET_ADMIN と外部コマンドが要る。
+	$(GO) test -tags netns -count=1 -timeout 20m ./test/netns/...
+
+.PHONY: netns-image
+netns-image: ## netns 統合テスト用のコンテナイメージを作る。
+	docker build -t $(NETNS_IMAGE) hack/netns
+
+.PHONY: test-netns-docker
+test-netns-docker: netns-image ## 特権コンテナを用意して netns 統合テストを走らせる。
+	hack/netns/run-in-docker.sh make test-netns
+
+.PHONY: netns-shell
+netns-shell: netns-image ## 同じコンテナのシェルに入る。トポロジは hack/netns/topo.sh up で組む。
+	hack/netns/run-in-docker.sh bash
