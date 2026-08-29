@@ -6,8 +6,10 @@
 # is settled in the design phase. Do not build on it yet; it will be replaced.
 # ============================================================================
 #
-# 【暫定】スキーマは未確定である。この例は「こういう形になる」を示すためのもので、
-# フィールド名・kind・入れ子はいずれも設計フェーズで引き直す。まだ依存しないこと。
+# PROVISIONAL. The schema is not settled yet. This example exists to show the
+# shape it is heading towards; the field names, the resource kinds and the
+# nesting are all still open and will be reworked in the design phase. Do not
+# depend on it yet.
 #
 # Every address here is reserved for documentation:
 #   IPv4  192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24  (RFC 5737)

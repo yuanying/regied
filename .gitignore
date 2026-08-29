@@ -7,7 +7,7 @@
 *.test
 coverage.out
 
-# 秘密情報（リポジトリには絶対に置かない）
+# Secrets. Never commit these.
 /secrets/
 *.secret
 
