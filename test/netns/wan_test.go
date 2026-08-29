@@ -4,62 +4,62 @@ package netns
 
 import "testing"
 
-// 検証項目 1。PPPoE レンジの端末から外に出られること。外から見えた
-// 送信元が PPPoE で払い出されたグローバルであることまで確かめる。
-// 単に「繋がる」ではなく「PPPoE を通った」ことを見ている。
+// Check 1. A host in the PPPoE range can reach the outside. This goes as far as
+// confirming that the source seen from outside is the global address handed out over
+// PPPoE. What is being observed is not merely "it connects" but "it went over PPPoE".
 func TestOutboundViaPPPoE(t *testing.T) {
-	got := eventuallyPeer(t, "PPPoE 経由の外向き疎通", func() (peerAddr, error) {
+	got := eventuallyPeer(t, "outbound connectivity over PPPoE", func() (peerAddr, error) {
 		return tcpWhoami(t, clientPPPoESrc, internetA)
 	})
 
 	if got.IP != pppoeGlobalIP {
-		t.Fatalf("%s からの通信が PPPoE を通っていない: 外から見えた送信元は %s、期待は %s",
+		t.Fatalf("traffic from %s did not go over PPPoE: the source seen from outside was %s, expected %s",
 			clientPPPoESrc, got.IP, pppoeGlobalIP)
 	}
 }
 
-// 検証項目 2。DS-Lite（ipip6 トンネル）側の端末から外に出られること。
-// AFTR が NAT44 に使うアドレスで出ていれば、トンネルを通っている。
+// Check 2. A host on the DS-Lite (ipip6 tunnel) side can reach the outside. If it comes
+// out under the address the AFTR uses for NAT44, it went through the tunnel.
 func TestOutboundViaDSLite(t *testing.T) {
-	got := eventuallyPeer(t, "DS-Lite 経由の外向き疎通", func() (peerAddr, error) {
+	got := eventuallyPeer(t, "outbound connectivity over DS-Lite", func() (peerAddr, error) {
 		return tcpWhoami(t, clientDSLiteSrc, internetA)
 	})
 
 	if got.IP != dsliteGlobalIP {
-		t.Fatalf("%s からの通信が DS-Lite を通っていない: 外から見えた送信元は %s、期待は %s",
+		t.Fatalf("traffic from %s did not go over DS-Lite: the source seen from outside was %s, expected %s",
 			clientDSLiteSrc, got.IP, dsliteGlobalIP)
 	}
 }
 
-// 検証項目 3。同じ LAN の端末でも、送信元レンジによって出口が変わること。
-// 192.168.1.10-99 は PPPoE、それ以外は DS-Lite（既定）。
+// Check 3. Hosts on the same LAN leave through different exits depending on the source
+// range. 192.168.1.10-99 goes over PPPoE, anything else over DS-Lite (the default).
 func TestPolicyRoutingSplitsBySourceRange(t *testing.T) {
 	cases := []struct {
 		name   string
 		srcIP  string
 		wantIP string
 	}{
-		{"PPPoE レンジの下端寄り", clientPPPoESrc, pppoeGlobalIP},
-		{"PPPoE レンジのポートフォワード先", lanServerIP, pppoeGlobalIP},
-		{"レンジ外は既定の DS-Lite", clientDSLiteSrc, dsliteGlobalIP},
+		{"toward the low end of the PPPoE range", clientPPPoESrc, pppoeGlobalIP},
+		{"the port forward's destination, inside the PPPoE range", lanServerIP, pppoeGlobalIP},
+		{"outside the range, so the default DS-Lite", clientDSLiteSrc, dsliteGlobalIP},
 	}
 
 	seen := make(map[string]string, len(cases))
 	for _, tc := range cases {
-		got := eventuallyPeer(t, tc.name+"の外向き疎通", func() (peerAddr, error) {
+		got := eventuallyPeer(t, "outbound connectivity for "+tc.name, func() (peerAddr, error) {
 			return tcpWhoami(t, tc.srcIP, internetA)
 		})
 		seen[tc.srcIP] = got.IP
 
 		if got.IP != tc.wantIP {
-			t.Errorf("%s（%s）の出口が違う: 外から見えた送信元は %s、期待は %s",
+			t.Errorf("%s (%s) left through the wrong exit: the source seen from outside was %s, expected %s",
 				tc.name, tc.srcIP, got.IP, tc.wantIP)
 		}
 	}
 
-	// 全部同じ出口に出ているなら、そもそも振り分けが効いていない。
+	// If everything leaves through the same exit, the split is not working at all.
 	if seen[clientPPPoESrc] == seen[clientDSLiteSrc] {
-		t.Fatalf("送信元レンジで経路が分かれていない: %s も %s も %s から出ている",
+		t.Fatalf("the source range did not split the paths: both %s and %s leave from %s",
 			clientPPPoESrc, clientDSLiteSrc, seen[clientPPPoESrc])
 	}
 }

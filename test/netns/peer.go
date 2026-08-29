@@ -1,6 +1,6 @@
-// peerAddr は build tag の外に置いてある。応答の読み取りは netns も特権も
-// 要らない純粋な処理であり、環境差で壊れたのもここだったので、ユニット
-// テストで押さえられる場所に置く。
+// peerAddr lives outside the build tag. Reading a response is pure logic that needs
+// neither a network namespace nor privileges, and this is exactly where an environment
+// difference once broke things, so it belongs somewhere a unit test can pin it down.
 
 package netns
 
@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// peerAddr は whoami サービスが見た接続元。NAT を抜けた後の姿である。
+// peerAddr is the peer the whoami service saw: the shape traffic has after NAT.
 type peerAddr struct {
 	IP   string
 	Port int
@@ -19,16 +19,17 @@ type peerAddr struct {
 
 func (p peerAddr) String() string { return net.JoinHostPort(p.IP, strconv.Itoa(p.Port)) }
 
-// parsePeer は whoami サービスの応答を読む。
+// parsePeer reads the response of the whoami service.
 //
-// 応答が何回に分かれて届くかは環境によって変わる。socat 1.8 は送信側が
-// EOF を伝えるために空のデータグラムを足すので、受け側がそれにも応答し、
-// 同じ観測が 2 つ並んで届く。1 度に 1 行しか来ない前提で書くと、ルーターの
-// 振る舞いとは無関係な理由でテストが落ちる。
+// How many pieces the response arrives in varies by environment. socat 1.8 appends an
+// empty datagram to signal EOF, the receiving side answers that one too, and two
+// identical observations arrive side by side. Code written on the assumption that
+// exactly one line arrives at a time fails for reasons that have nothing to do with the
+// router's behaviour.
 //
-// 同じ観測が並んでいるだけなら 1 つとして扱う。食い違っていればどれを
-// 信じてよいか分からないので失敗させる。黙って片方を採ると、NAT の
-// マッピングを読み違えたまま合格しうる。
+// Identical observations standing side by side are treated as one. If they disagree,
+// there is no way to tell which to believe, so this fails. Silently picking one of them
+// could pass while the NAT mapping was misread.
 func parsePeer(out string) (peerAddr, error) {
 	var (
 		first peerAddr
@@ -44,11 +45,11 @@ func parsePeer(out string) (peerAddr, error) {
 			continue
 		}
 		if p != first {
-			return peerAddr{}, fmt.Errorf("whoami の応答が食い違っている (%q)", strings.TrimSpace(out))
+			return peerAddr{}, fmt.Errorf("the whoami responses disagree (%q)", strings.TrimSpace(out))
 		}
 	}
 	if !found {
-		return peerAddr{}, fmt.Errorf("whoami サービスから応答がない")
+		return peerAddr{}, fmt.Errorf("no response from the whoami service")
 	}
 	return first, nil
 }
@@ -56,11 +57,11 @@ func parsePeer(out string) (peerAddr, error) {
 func parseOnePeer(text string) (peerAddr, error) {
 	host, port, err := net.SplitHostPort(text)
 	if err != nil {
-		return peerAddr{}, fmt.Errorf("whoami の応答を読めない (%q): %w", text, err)
+		return peerAddr{}, fmt.Errorf("cannot read the whoami response (%q): %w", text, err)
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil {
-		return peerAddr{}, fmt.Errorf("whoami の応答のポートを読めない (%q): %w", text, err)
+		return peerAddr{}, fmt.Errorf("cannot read the port in the whoami response (%q): %w", text, err)
 	}
 	return peerAddr{IP: host, Port: n}, nil
 }

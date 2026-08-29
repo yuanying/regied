@@ -2,10 +2,11 @@ package netns
 
 import "testing"
 
-// whoami の応答は 1 回の読み取りで何行返ってくるか分からない。socat の
-// バージョンによっては、送信側が EOF で空のデータグラムを足し、それにも
-// 応答が返るため、同じ観測が 2 つ並ぶ（Ubuntu 26.04 の socat 1.8 で実際に
-// 起きた）。何回に分かれて届いても同じ判定になること。
+// There is no telling how many lines a single read of the whoami response returns. With
+// some socat versions the sending side appends an empty datagram on EOF, that one is
+// answered too, and two identical observations end up side by side (this actually
+// happened with socat 1.8 on Ubuntu 26.04). The verdict must be the same however many
+// pieces the response arrives in.
 func TestParsePeer(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -14,49 +15,49 @@ func TestParsePeer(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "1 行だけ返る",
+			name: "a single line comes back",
 			out:  "198.51.100.2:40001\n",
 			want: peerAddr{IP: "198.51.100.2", Port: 40001},
 		},
 		{
-			name: "同じ観測が 2 行返る",
+			name: "the same observation comes back twice",
 			out:  "198.51.100.2:40001\n198.51.100.2:40001",
 			want: peerAddr{IP: "198.51.100.2", Port: 40001},
 		},
 		{
-			name: "同じ観測が 3 行、末尾に改行がある",
+			name: "the same observation three times, with a trailing newline",
 			out:  "192.0.2.1:1234\n192.0.2.1:1234\n192.0.2.1:1234\n",
 			want: peerAddr{IP: "192.0.2.1", Port: 1234},
 		},
 		{
-			name: "前後に空白が付く",
+			name: "surrounded by whitespace",
 			out:  "  198.51.100.2:40001  \n",
 			want: peerAddr{IP: "198.51.100.2", Port: 40001},
 		},
 		{
-			name:    "応答がない",
+			name:    "no response at all",
 			out:     "",
 			wantErr: true,
 		},
 		{
-			name:    "空白だけ",
+			name:    "whitespace only",
 			out:     " \n\n",
 			wantErr: true,
 		},
 		{
-			name:    "ポートが無い",
+			name:    "no port",
 			out:     "198.51.100.2\n",
 			wantErr: true,
 		},
 		{
-			name:    "ポートが数字でない",
+			name:    "the port is not a number",
 			out:     "198.51.100.2:ssh\n",
 			wantErr: true,
 		},
 		{
-			// 観測が食い違うなら、どちらを信じてよいか分からない。
-			// 黙って片方を採ると、NAT のマッピングを読み違える。
-			name:    "観測が食い違う",
+			// If the observations disagree there is no telling which to believe.
+			// Silently picking one of them misreads the NAT mapping.
+			name:    "the observations disagree",
 			out:     "198.51.100.2:40001\n198.51.100.2:40002",
 			wantErr: true,
 		},
@@ -67,15 +68,15 @@ func TestParsePeer(t *testing.T) {
 			got, err := parsePeer(tt.out)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("失敗するはずが %v を返した", got)
+					t.Fatalf("expected a failure, got %v", got)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("読めるはずが失敗した: %v", err)
+				t.Fatalf("expected this to be readable, but it failed: %v", err)
 			}
 			if got != tt.want {
-				t.Errorf("読み取りが違う: got %v, want %v", got, tt.want)
+				t.Errorf("read the wrong value: got %v, want %v", got, tt.want)
 			}
 		})
 	}

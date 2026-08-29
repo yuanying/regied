@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-// dialStub は指定した netns から TCP で接続し、接続先が返す一行を読む。
+// dialStub connects over TCP from the named netns and reads the one line the far side
+// returns.
 func dialStub(tb testing.TB, ns, srcIP, dstIP string, dstPort int) (string, error) {
 	tb.Helper()
 
@@ -23,11 +24,11 @@ func dialStub(tb testing.TB, ns, srcIP, dstIP string, dstPort int) (string, erro
 	return strings.TrimSpace(out), nil
 }
 
-// 検証項目 4。外から router のグローバル宛に来た通信が、LAN の中の
-// 端末まで届くこと。
+// Check 4. Traffic arriving from outside, addressed to the router's global address,
+// reaches a host inside the LAN.
 func TestPortForwardFromInternet(t *testing.T) {
 	var banner string
-	eventuallyPeer(t, "外からのポートフォワード", func() (peerAddr, error) {
+	eventuallyPeer(t, "the port forward from outside", func() (peerAddr, error) {
 		got, err := dialStub(t, nsInternet, internetA, pppoeGlobalIP, forwardWANPort)
 		if err != nil {
 			return peerAddr{}, err
@@ -37,19 +38,20 @@ func TestPortForwardFromInternet(t *testing.T) {
 	})
 
 	if !strings.HasPrefix(banner, sshStubBanner) {
-		t.Fatalf("%s:%d に繋いだ先が LAN の %s:%d ではない: 応答は %q",
+		t.Fatalf("connecting to %s:%d did not land on %s:%d inside the LAN: the response was %q",
 			pppoeGlobalIP, forwardWANPort, lanServerIP, forwardLANPort, banner)
 	}
-	// 転送では送信元を書き換えない。LAN 側の端末には外の相手がそのまま見える。
+	// Forwarding does not rewrite the source. The host on the LAN side sees the outside
+	// peer as it is.
 	if !strings.Contains(banner, internetA) {
-		t.Errorf("LAN 側から見た接続元が外のアドレスになっていない: 応答は %q、期待は %s を含むこと",
+		t.Errorf("the peer seen from the LAN side is not the outside address: the response was %q, expected it to contain %s",
 			banner, internetA)
 	}
 }
 
-// 検証項目 5。LAN の中から自分のグローバル宛に繋いだときも、同じ
-// ポートフォワードが効くこと（hairpin）。戻りが router を経由するように
-// 送信元が router の LAN アドレスに書き換わっている必要がある。
+// Check 5. The same port forward also works when a host inside the LAN connects to its
+// own global address (the hairpin case). For the return path to go back through the
+// router, the source has to be rewritten to the router's LAN address.
 func TestHairpinNAT(t *testing.T) {
 	var banner string
 	eventuallyPeer(t, "hairpin NAT", func() (peerAddr, error) {
@@ -62,43 +64,44 @@ func TestHairpinNAT(t *testing.T) {
 	})
 
 	if !strings.HasPrefix(banner, sshStubBanner) {
-		t.Fatalf("LAN から %s:%d に繋いだ先が LAN の %s:%d ではない: 応答は %q",
+		t.Fatalf("connecting from the LAN to %s:%d did not land on %s:%d inside the LAN: the response was %q",
 			pppoeGlobalIP, forwardWANPort, lanServerIP, forwardLANPort, banner)
 	}
 	if !strings.Contains(banner, routerLANIP) {
-		t.Errorf("hairpin の送信元が router の LAN アドレスに書き換わっていない: "+
-			"応答は %q、期待は %s を含むこと。書き換わっていないと戻りが router を通らず、"+
-			"接続が成立しないか非対称になる", banner, routerLANIP)
+		t.Errorf("the hairpin source was not rewritten to the router's LAN address: "+
+			"the response was %q, expected it to contain %s. Without that rewrite the return "+
+			"path does not go through the router, and the connection either never "+
+			"establishes or becomes asymmetric", banner, routerLANIP)
 	}
 }
 
-// 検証項目 7。宛先を変えても外部ポートが変わらないこと
-// （endpoint-independent mapping）。Switch のオンライン対戦などが
-// これに依存する。
+// Check 7. The external port does not change when the destination does, which is
+// endpoint-independent mapping. Things such as online play on game consoles depend on
+// it.
 func TestNATMappingIsEndpointIndependent(t *testing.T) {
 	const srcPort = 40001
 
-	first := eventuallyPeer(t, "1 つ目の宛先への UDP", func() (peerAddr, error) {
+	first := eventuallyPeer(t, "UDP to the first destination", func() (peerAddr, error) {
 		return udpWhoami(t, clientPPPoESrc, srcPort, internetA)
 	})
-	second := eventuallyPeer(t, "2 つ目の宛先への UDP", func() (peerAddr, error) {
+	second := eventuallyPeer(t, "UDP to the second destination", func() (peerAddr, error) {
 		return udpWhoami(t, clientPPPoESrc, srcPort, internetB)
 	})
 
-	// 測っている NAT が router のものであることを先に固定する。経路が
-	// DS-Lite 側に落ちていると AFTR の NAT を測ってしまい、router の
-	// マッピングを見ないまま通ってしまう。
+	// Pin down first that the NAT being measured is the router's. If the path has fallen
+	// through to the DS-Lite side, what gets measured is the AFTR's NAT, and this would
+	// pass without ever looking at the router's mapping.
 	if first.IP != pppoeGlobalIP {
-		t.Fatalf("%s からの UDP が router の NAT を通っていない: 外から見えた送信元は %s、期待は %s",
+		t.Fatalf("UDP from %s did not go through the router's NAT: the source seen from outside was %s, expected %s",
 			clientPPPoESrc, first.IP, pppoeGlobalIP)
 	}
 	if first.IP != second.IP {
-		t.Fatalf("宛先ごとに外部アドレスが変わっている: %s へは %s、%s へは %s",
-			internetA, first.IP, internetB, second.IP)
+		t.Fatalf("the external address differs per destination: %s toward %s, %s toward %s",
+			first.IP, internetA, second.IP, internetB)
 	}
 	if first.Port != second.Port {
-		t.Fatalf("宛先ごとに外部ポートが変わっている（endpoint-dependent mapping）: "+
-			"%s へは %d、%s へは %d。どちらも送信元ポートは %d である",
-			internetA, first.Port, internetB, second.Port, srcPort)
+		t.Fatalf("the external port differs per destination, which is endpoint-dependent "+
+			"mapping: %d toward %s, %d toward %s. The source port was %d in both cases",
+			first.Port, internetA, second.Port, internetB, srcPort)
 	}
 }

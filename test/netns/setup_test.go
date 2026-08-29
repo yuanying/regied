@@ -14,40 +14,42 @@ import (
 	"time"
 )
 
-// トポロジの固定値。hack/netns/lib.sh と対になっている。片方だけ変えないこと。
+// The fixed values of the topology. These are paired with hack/netns/lib.sh. Do not
+// change one side without the other.
 const (
 	nsClient   = "rg-client"
 	nsInternet = "rg-internet"
 
-	// client netns が持つ 3 つの送信元。PBR の振り分けを外から見分けるために
-	// レンジをまたいで置いてある。
-	clientPPPoESrc  = "192.168.1.20"  // 192.168.1.10-99 → PPPoE
-	clientDSLiteSrc = "192.168.1.200" // それ以外 → DS-Lite（既定）
-	lanServerIP     = "192.168.1.30"  // ポートフォワードの宛先。PPPoE レンジ内
+	// The three source addresses the client netns owns. They straddle the range so that
+	// the policy-routing split can be told apart from outside.
+	clientPPPoESrc  = "192.168.1.20"  // 192.168.1.10-99 goes over PPPoE
+	clientDSLiteSrc = "192.168.1.200" // anything else goes over DS-Lite (the default)
+	lanServerIP     = "192.168.1.30"  // the port forward's destination, inside the PPPoE range
 
 	routerLANIP = "192.168.0.1"
 
-	// 外から見えるグローバル。どちらの経路を通ったかはこの 2 つで見分ける。
-	pppoeGlobalIP  = "198.51.100.2" // PPPoE で払い出される router のアドレス
-	dsliteGlobalIP = "192.0.2.1"    // AFTR が NAT44 に使う外側アドレス
+	// The global addresses seen from outside. Which of these appears is what tells the
+	// two paths apart.
+	pppoeGlobalIP  = "198.51.100.2" // the router's address, handed out over PPPoE
+	dsliteGlobalIP = "192.0.2.1"    // the outside address the AFTR uses for NAT44
 
-	// internet netns の 2 アドレス。NAT のマッピングが宛先に依らないことを
-	// 確かめるために宛先を 2 つ用意している。
+	// The two addresses of the internet netns. Two destinations are provided so that the
+	// NAT mapping can be shown not to depend on the destination.
 	internetA = "203.0.113.10"
 	internetB = "203.0.113.20"
 
 	whoamiTCPPort = 8080
 	whoamiUDPPort = 9999
 
-	forwardWANPort = 8022 // 外 → 192.168.1.30:22 に転送される
+	forwardWANPort = 8022 // from outside, forwarded to 192.168.1.30:22
 	forwardLANPort = 22
-	blockedWANPort = 9999 // 転送も許可もされていない
+	blockedWANPort = 9999 // neither forwarded nor allowed
 
 	sshStubBanner = "sshd-stub"
 )
 
-// 待ち時間。PPPoE の再接続やトンネルの立ち上がりを見込んで、疎通は
-// 一定時間リトライする。
+// Timeouts. Connectivity is retried for a while, to allow for a PPPoE reconnection or
+// for a tunnel coming up.
 const (
 	readyTimeout = 45 * time.Second
 	cmdTimeout   = 20 * time.Second
@@ -55,22 +57,22 @@ const (
 
 func TestMain(m *testing.M) {
 	if reason := unmetPrerequisite(); reason != "" {
-		// 道具が揃った環境で走らせたつもりのときに黙って飛ばすと、
-		// 通っていないものが通ったように見える。コンテナ経由の実行では
-		// REGIED_NETNS_REQUIRE が立っているので、そこでは失敗させる。
+		// Skipping silently when the run was meant to happen in an environment that has
+		// the tools makes something that never ran look like it passed. Runs that go
+		// through the container have REGIED_NETNS_REQUIRE set, so those fail instead.
 		if os.Getenv("REGIED_NETNS_REQUIRE") != "" {
-			fmt.Fprintf(os.Stderr, "netns テストの前提が満たされていない: %s\n", reason)
+			fmt.Fprintf(os.Stderr, "a prerequisite of the netns tests is not met: %s\n", reason)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "netns テストを飛ばす: %s\n", reason)
-		fmt.Fprintf(os.Stderr, "道具の揃った環境で走らせるには `make test-netns-docker` を使う。\n")
+		fmt.Fprintf(os.Stderr, "skipping the netns tests: %s\n", reason)
+		fmt.Fprintf(os.Stderr, "to run them in an environment that has the tools, use `make test-netns-docker`.\n")
 		os.Exit(0)
 	}
 
 	if out, err := topo("up"); err != nil {
-		fmt.Fprintf(os.Stderr, "トポロジを組めなかった: %v\n%s\n", err, out)
+		fmt.Fprintf(os.Stderr, "could not build the topology: %v\n%s\n", err, out)
 		if _, derr := topo("down"); derr != nil {
-			fmt.Fprintf(os.Stderr, "後始末にも失敗した: %v\n", derr)
+			fmt.Fprintf(os.Stderr, "the teardown failed as well: %v\n", derr)
 		}
 		os.Exit(1)
 	}
@@ -78,30 +80,31 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	if os.Getenv("REGIED_NETNS_KEEP") != "" {
-		fmt.Fprintf(os.Stderr, "REGIED_NETNS_KEEP が立っているのでトポロジを残す。"+
-			"消すには hack/netns/topo.sh down を実行すること。\n")
+		fmt.Fprintf(os.Stderr, "REGIED_NETNS_KEEP is set, so the topology is left up. "+
+			"Run hack/netns/topo.sh down to remove it.\n")
 	} else if out, err := topo("down"); err != nil {
-		fmt.Fprintf(os.Stderr, "後始末に失敗した: %v\n%s\n", err, out)
+		fmt.Fprintf(os.Stderr, "the teardown failed: %v\n%s\n", err, out)
 	}
 
 	os.Exit(code)
 }
 
-// unmetPrerequisite は前提が欠けていればその理由を返す。揃っていれば空文字。
+// unmetPrerequisite returns why a prerequisite is missing, or the empty string if all
+// of them are met.
 func unmetPrerequisite() string {
 	if os.Geteuid() != 0 {
-		return "root で走っていない（netns の作成に CAP_NET_ADMIN が要る）"
+		return "not running as root (creating a netns needs CAP_NET_ADMIN)"
 	}
 	for _, bin := range []string{"ip", "nft", "pppd", "pppoe-server", "socat"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			return fmt.Sprintf("%s が見つからない", bin)
+			return fmt.Sprintf("%s not found", bin)
 		}
 	}
 	return ""
 }
 
-// topo は擬似 WAN の構築・破棄スクリプトを呼ぶ。被試験体の差し替えは
-// このスクリプトの中で環境変数越しに行われる。
+// topo calls the script that builds and tears down the pseudo WAN. Replacing the device
+// under test happens inside that script, through an environment variable.
 func topo(action string) (string, error) {
 	root, err := repoRoot()
 	if err != nil {
@@ -117,13 +120,13 @@ func topo(action string) (string, error) {
 }
 
 func repoRoot() (string, error) {
-	// go test の作業ディレクトリはパッケージのディレクトリ（test/netns）。
+	// go test runs with the package directory (test/netns) as its working directory.
 	return filepath.Abs(filepath.Join("..", ".."))
 }
 
-// nsExec は指定した netns の中でコマンドを実行し、標準出力・所要時間・
-// 実行結果を返す。所要時間は「落とされた（タイムアウト）」と
-// 「拒否された（RST が返った）」を見分けるのに使う。
+// nsExec runs a command inside the named network namespace and returns its standard
+// output, how long it took, and the result. The elapsed time is what tells "dropped"
+// (a timeout) apart from "refused" (an RST came back).
 func nsExec(tb testing.TB, ns string, timeout time.Duration, stdin string, args ...string) (string, time.Duration, error) {
 	tb.Helper()
 
@@ -148,8 +151,8 @@ func nsExec(tb testing.TB, ns string, timeout time.Duration, stdin string, args 
 	return stdout.String(), elapsed, err
 }
 
-// tcpWhoami は client netns から送信元アドレスを選んで internet netns の
-// whoami サービスに TCP で接続し、外から見えた送信元を返す。
+// tcpWhoami picks a source address in the client netns, connects over TCP to the whoami
+// service in the internet netns, and returns the source that was seen from outside.
 func tcpWhoami(tb testing.TB, srcIP, dstIP string) (peerAddr, error) {
 	tb.Helper()
 	out, _, err := nsExec(tb, nsClient, cmdTimeout, "",
@@ -161,17 +164,17 @@ func tcpWhoami(tb testing.TB, srcIP, dstIP string) (peerAddr, error) {
 	return parsePeer(out)
 }
 
-// udpWhoami は送信元ポートまで固定して UDP の whoami サービスを叩く。
-// 宛先を変えても外部ポートが変わらないこと（endpoint-independent mapping）を
-// 確かめるのに使う。
+// udpWhoami calls the UDP whoami service with the source port pinned as well. It is
+// used to show that the external port does not change when the destination does, which
+// is endpoint-independent mapping.
 func udpWhoami(tb testing.TB, srcIP string, srcPort int, dstIP string) (peerAddr, error) {
 	tb.Helper()
 	out, _, err := nsExec(tb, nsClient, cmdTimeout, "probe\n",
 		"socat", "-t", "3", "-T", "10", "STDIO",
-		// shut-none を付けないと、socat 1.8 は EOF を伝えるために空の
-		// データグラムを足す。受け側はそれも 1 つの問い合わせとして扱うので
-		// 応答が 2 つ返る。読み取り側でも吸収しているが、線の上の振る舞いを
-		// 環境によらず同じにしておく。
+		// Without shut-none, socat 1.8 appends an empty datagram to signal EOF. The
+		// receiving side treats that as one more query, so two responses come back. The
+		// reading side absorbs this too, but keeping the behaviour on the wire the same
+		// regardless of environment is worth doing.
 		fmt.Sprintf("UDP4:%s:%d,bind=%s:%d,shut-none", dstIP, whoamiUDPPort, srcIP, srcPort))
 	if err != nil {
 		return peerAddr{}, err
@@ -179,8 +182,8 @@ func udpWhoami(tb testing.TB, srcIP string, srcPort int, dstIP string) (peerAddr
 	return parsePeer(out)
 }
 
-// eventuallyPeer は疎通が立ち上がるまでリトライする。PPPoE の接続や
-// トンネルの経路が入るまでに数秒かかることがあるため。
+// eventuallyPeer retries until connectivity comes up, because the PPPoE session or the
+// tunnel's route can take a few seconds to appear.
 func eventuallyPeer(tb testing.TB, what string, probe func() (peerAddr, error)) peerAddr {
 	tb.Helper()
 
@@ -193,7 +196,7 @@ func eventuallyPeer(tb testing.TB, what string, probe func() (peerAddr, error)) 
 		}
 		last = err
 		if time.Now().After(deadline) {
-			tb.Fatalf("%s が %s 以内に成立しなかった: %v", what, readyTimeout, last)
+			tb.Fatalf("%s was not established within %s: %v", what, readyTimeout, last)
 		}
 		time.Sleep(time.Second)
 	}
