@@ -1,24 +1,20 @@
-# regied example configuration — PROVISIONAL
+# regied example configuration
 #
-# ============================================================================
-# THE SCHEMA IS NOT FINAL. This file shows the intended shape, not a contract.
-# Field names, resource kinds, and the nesting will all change when the schema
-# is settled in the design phase. Do not build on it yet; it will be replaced.
-# ============================================================================
+# A two-uplink host: a PPPoE session for traffic that has to be reachable from
+# outside, and a DS-Lite tunnel for everything else. Policy routing picks
+# between them by source address.
 #
-# PROVISIONAL. The schema is not settled yet. This example exists to show the
-# shape it is heading towards; the field names, the resource kinds and the
-# nesting are all still open and will be reworked in the design phase. Do not
-# depend on it yet.
+# The schema is described in docs/spec/. This file is the worked example that
+# document refers to; every field used here appears in docs/spec/kinds.md.
 #
-# Every address here is reserved for documentation:
+# Every address below is reserved for documentation:
 #   IPv4  192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24  (RFC 5737)
 #   IPv6  2001:db8::/32                                   (RFC 3849)
 #   MAC   00:00:5e:00:53:xx                               (RFC 7042)
-# Private ranges are used for the LAN side, as a LAN would.
+# Private ranges are used on the LAN side, as a LAN would.
 #
-# Secrets are never written here. Credentials are referenced as a path to a
-# file outside the repository.
+# No credential appears here, and no field in the schema could hold one.
+# Credentials are named by the path of a file that holds them (ADR 0003).
 
 apiVersion: net.unstable.cloud/v1alpha1
 kind: Router
@@ -26,179 +22,204 @@ metadata:
   name: example
 
 spec:
-  # Host-wide switches. These land as sysctl settings and as global firewall
-  # options.
+  # Kernel switches, applied at apply time and rolled back with everything
+  # else. sourceValidation must stay off: policy routing makes return paths
+  # asymmetric, and reverse path filtering drops exactly that traffic.
   global:
     ipForwarding: true
     synCookies: true
     logMartians: true
     sendRedirects: false
     receiveRedirects: false
-    sourceValidation: false   # policy routing makes return paths asymmetric
-    allPing: true
-    mssClamp: auto            # derive from the MTU of each reduced-MTU path
+    sourceValidation: false
+    mssClamp: auto
 
   resources:
     # ------------------------------------------------------------------
-    # Interfaces
+    # Links
     # ------------------------------------------------------------------
+
+    # The provider-facing link. It carries no address of its own: PPPoE runs
+    # over it, and the DHCPv6 client asks for a prefix through it.
     - kind: Interface
       metadata: {name: wan}
       spec:
         ifname: eth0
-        # No address: this carries PPPoE and the DHCPv6-PD client.
+        dhcpv6:
+          useDNS: false
+          prefixDelegation:
+            prefixLength: 56
+            rapidCommit: true
+            duidFile: /etc/regied/secrets/dhcpv6-duid
 
+    # The downstream segment. Its IPv6 address is derived from the delegated
+    # prefix rather than written down, so the tunnel's local address, the
+    # router advertisement and the DNS listening address all follow a prefix
+    # change without an edit.
     - kind: Interface
       metadata: {name: lan}
       spec:
         ifname: br-lan
+        mtu: 1500
         bridge:
           members: [eth1, eth2, eth3]
-        mtu: 1500
         addresses:
           - 192.168.10.1/24
+          - fromDelegatedPrefix:
+              interfaceRef: wan
+              subnetID: 1
+              token: "::1"
+        routes:
+          - destination: 172.16.0.0/16
+            via: 192.168.10.10
+          - destination: 2001:db8:0:2::/64
+            via: 2001:db8:0:1::10
+        ipv6:
+          advertise:
+            mode: slaac
+            otherInformation: true
+            validLifetime: 24h
 
     # ------------------------------------------------------------------
-    # Uplink 1: PPPoE
+    # Uplinks
     # ------------------------------------------------------------------
+
+    # Reachable from outside, so this is the uplink port forwards use.
+    # defaultRoute.metric keeps it as a standby for the host's own traffic:
+    # the tunnel below wins on metric.
     - kind: PPPoESession
       metadata: {name: pppoe0}
       spec:
-        interface: wan
+        interfaceRef: wan
         userIDFile: /etc/regied/secrets/pppoe-user-id
         passwordFile: /etc/regied/secrets/pppoe-password
         mtu: 1454
-        persist: true         # a dropped session must come back on its own
+        persist: true
+        useDNS: false
+        defaultRoute:
+          install: true
+          metric: 100
 
-    # ------------------------------------------------------------------
-    # IPv6 prefix delegation, and the LAN address derived from it
-    # ------------------------------------------------------------------
-    - kind: DHCPv6PrefixDelegation
-      metadata: {name: wan-pd}
-      spec:
-        interface: wan
-        duidFile: /etc/regied/secrets/dhcpv6-duid
-        prefixLength: 56
-        rapidCommit: true
-        delegateTo:
-          - interface: lan
-            subnetID: 1       # /56 + subnet 01 -> 2001:db8:0:1::/64
-            hostAddress: "::1"
-
-    - kind: IPv6RouterAdvertisement
-      metadata: {name: lan}
-      spec:
-        interface: lan
-        prefixFrom: {resource: DHCPv6PrefixDelegation/wan-pd, interface: lan}
-        mode: slaac           # advertise the prefix, plus stateless DHCPv6
-        otherConfig: true
-        validLifetime: 24h
-        rdnssFrom: {resource: Interface/lan, family: ipv6}
-
-    # ------------------------------------------------------------------
-    # Uplink 2: DS-Lite (IPv4 over IPv6)
-    # ------------------------------------------------------------------
+    # IPv4 over IPv6. The provider's AFTR translates addresses, so there is no
+    # SourceNAT here and nothing can be published through it.
     - kind: DSLiteTunnel
-      metadata: {name: v6tun0}
+      metadata: {name: dslite}
       spec:
-        underlay: wan
-        localAddressFrom: {resource: DHCPv6PrefixDelegation/wan-pd, interface: lan}
+        underlayRef: wan
+        localAddressFrom:
+          interfaceRef: lan
         aftrAddress: 2001:db8:ffff::11
         mtu: 1454
         ttl: 64
+        defaultRoute:
+          install: true
+          metric: 0
 
     # ------------------------------------------------------------------
-    # Static routes
-    # ------------------------------------------------------------------
-    - kind: StaticRoute
-      metadata: {name: cluster}
-      spec:
-        family: ipv4
-        destination: 172.16.0.0/16
-        via: 192.168.10.10
-
-    - kind: StaticRoute
-      metadata: {name: downstream-v6}
-      spec:
-        family: ipv6
-        destination: 2001:db8:0:2::/64
-        via: 2001:db8:0:1::10
-
-    # ------------------------------------------------------------------
-    # Policy routing: pick an uplink by source range
+    # Which uplink a class of traffic leaves by
     #
-    # Order matters. The first match wins, and each rule may exclude
-    # destinations that must not leave through an uplink at all.
+    # Routing table numbers and firewall marks are not written here. regied
+    # allocates them, installs the default route into the table, and emits the
+    # routing policy rule that maps mark to table.
+    #
+    # excludeDestinations is what keeps traffic that must not leave from
+    # leaving. It is also what makes hairpin work: the mark is set after
+    # destination translation, so a LAN host reaching the published service
+    # through the global address is already addressed to 192.168.10.20 by
+    # then, matches the LAN exclusion, and stays local.
     # ------------------------------------------------------------------
+
     - kind: EgressRoutePolicy
-      metadata: {name: lan-via-pppoe}
+      metadata: {name: upper-half-via-pppoe}
       spec:
         family: ipv4
         priority: 10
+        egressRef: pppoe0
         sourceRanges:
-          - 192.168.10.128-192.168.10.191
+          - 192.168.10.128-192.168.10.255
         excludeDestinations:
-          - 192.168.10.0/24    # LAN-internal traffic is not policy routed
-          - 172.16.0.0/16      # reachable through a static route instead
-          - selfAddresses     # hairpin: our own global address stays local
-        egress: PPPoESession/pppoe0
+          - 192.168.10.0/24
+          - 172.16.0.0/16
 
     - kind: EgressRoutePolicy
-      metadata: {name: lan-via-dslite}
+      metadata: {name: rest-via-dslite}
       spec:
         family: ipv4
         priority: 20
+        egressRef: dslite
         sourceRanges:
           - 192.168.10.0/24
         excludeDestinations:
           - 192.168.10.0/24
           - 172.16.0.0/16
-          - selfAddresses
-        egress: DSLiteTunnel/v6tun0
 
     # ------------------------------------------------------------------
     # NAT
-    #
-    # Only the PPPoE side is masqueraded. On DS-Lite the AFTR performs NAT44,
-    # so the inner source address is left alone.
     # ------------------------------------------------------------------
-    - kind: NATRule
+
+    # masquerade takes the address from the link as the packet leaves, so a
+    # dynamically addressed uplink needs nothing written down.
+    - kind: SourceNAT
       metadata: {name: masquerade-pppoe}
       spec:
         type: masquerade
-        egress: PPPoESession/pppoe0
-        sourceRanges: [192.168.10.0/24]
+        egressRef: pppoe0
+        sourceRanges:
+          - 192.168.10.0/24
 
+    # No listening address: it is the uplink's, and it follows the uplink.
+    # openFirewall defaults to true, so each of these also gets the accept
+    # that lets the translated traffic through the wan-to-lan policy below.
     - kind: PortForward
-      metadata: {name: web}
+      metadata: {name: https}
       spec:
-        listen:
-          egress: PPPoESession/pppoe0   # follows the dynamic address
-          protocol: tcp
-          port: 443
+        egressRef: pppoe0
+        protocol: tcp
+        port: 443
         target:
           address: 192.168.10.20
           port: 443
-        hairpin: true
 
+    - kind: PortForward
+      metadata: {name: ssh}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 10022
+        target:
+          address: 192.168.10.20
+          port: 22
+
+    # A range is one rule, not eleven.
     - kind: PortForward
       metadata: {name: mosh}
       spec:
-        listen:
-          egress: PPPoESession/pppoe0
-          protocol: udp
-          portRange: 60000-60010        # ranges are expressible as one rule
+        egressRef: pppoe0
+        protocol: udp
+        portRange: 60000-60010
         target:
           address: 192.168.10.30
-          portRange: 60000-60010
-        hairpin: true
 
     # ------------------------------------------------------------------
     # Firewall
     #
-    # Zone names are just names of interface sets; "wan" and "lan" are not
-    # special to the model (ADR 0009).
+    # "wan" and "lan" are names of zones, not concepts the schema knows.
+    # Traffic between a pair of zones with no policy is dropped.
     # ------------------------------------------------------------------
+
+    - kind: FirewallZone
+      metadata: {name: wan}
+      spec:
+        linkRefs: [wan, pppoe0, dslite]
+
+    - kind: FirewallZone
+      metadata: {name: lan}
+      spec:
+        linkRefs: [lan]
+
+    # IPv6 has no NAT, so the wan-to-lan policy is the only thing standing
+    # between the segment and the world. Hosts that should be reachable are
+    # named here once and referred to from the rules.
     - kind: IPAddressSet
       metadata: {name: published-v6}
       spec:
@@ -210,56 +231,87 @@ spec:
           - 2001:db8:0:2::/64
 
     - kind: FirewallPolicy
-      metadata: {name: default}
+      metadata: {name: wan-to-self}
       spec:
-        zones:
-          wan: [wan, pppoe0, v6tun0]
-          lan: [lan]
-        defaults:
-          lanToWan: accept
-          lanToSelf: accept
-          wanToLan: drop
-          wanToSelf: drop
-          logDropped: true
+        from: wan
+        to: self
+        defaultAction: drop
+        logDefault: true
         rules:
-          # Required for the DHCPv6-PD client to receive replies.
+          - name: icmp
+            action: accept
+            family: ipv4
+            protocol: icmp
+          - name: icmpv6
+            action: accept
+            family: ipv6
+            protocol: icmpv6
+          # Without this the DHCPv6 client never receives the delegation.
           - name: dhcpv6-client
-            from: wan
-            to: self
+            action: accept
+            family: ipv6
             protocol: udp
             destinationPorts: [546]
-            action: accept
-
-          # Required, or the DS-Lite tunnel never comes up: the encapsulated
+          # Without this the DS-Lite tunnel never comes up: the encapsulated
           # packets arrive addressed to this host.
           - name: dslite-inbound
-            from: wan
-            to: self
+            action: accept
+            family: ipv6
             protocol: ipip
-            action: accept
 
-          - name: published-https
-            from: wan
-            to: lan
+    - kind: FirewallPolicy
+      metadata: {name: wan-to-lan}
+      spec:
+        from: wan
+        to: lan
+        defaultAction: drop
+        logDefault: true
+        rules:
+          - name: published-web
+            action: accept
+            family: ipv6
             protocol: tcp
-            destinationSets: [published-v6]
+            destinationAddressSetRefs: [published-v6]
             destinationPorts: [80, 443]
+          - name: published-mosh
             action: accept
+            family: ipv6
+            protocol: udp
+            destinationAddressSetRefs: [published-v6]
+            destinationPorts: [60000-60010]
+
+    - kind: FirewallPolicy
+      metadata: {name: lan-to-wan}
+      spec:
+        from: lan
+        to: wan
+        defaultAction: accept
+
+    - kind: FirewallPolicy
+      metadata: {name: lan-to-self}
+      spec:
+        from: lan
+        to: self
+        defaultAction: accept
 
     # ------------------------------------------------------------------
-    # DHCP and DNS
+    # Address handout and name resolution
+    #
+    # Both kinds render into one dnsmasq process. Router advertisement is not
+    # here: it belongs to the interface, so there can only ever be one sender.
     # ------------------------------------------------------------------
+
     - kind: DHCPServer
       metadata: {name: lan}
       spec:
-        interface: lan
+        interfaceRef: lan
         subnet: 192.168.10.0/24
         pool:
-          start: 192.168.10.100
-          end: 192.168.10.240
+          start: 192.168.10.64
+          end: 192.168.10.127
         leaseTime: 24h
-        gateway: 192.168.10.1
-        dnsServers: [192.168.10.1]
+        # Which side of 192.168.10.128 a mapping falls on decides which uplink
+        # that host leaves by. See the policies above.
         staticMappings:
           - name: host-a
             macAddress: 00:00:5e:00:53:01
@@ -267,11 +319,17 @@ spec:
           - name: host-b
             macAddress: 00:00:5e:00:53:02
             address: 192.168.10.30
+          - name: host-c
+            macAddress: 00:00:5e:00:53:03
+            address: 192.168.10.200
+        ipv6:
+          mode: stateless
+          informationRefreshTime: 6h
 
     - kind: DNSForwarder
       metadata: {name: lan}
       spec:
-        listenOn: [lan, lo]
+        listenOn: [lan, loopback]
         cacheSize: 150
         upstreams:
           - 192.0.2.53
@@ -280,17 +338,7 @@ spec:
           - domain: cluster.example
             servers: [172.16.0.53]
         staticHosts:
-          - name: pinned.example.com
-            address: 192.168.10.40
-
-    # ------------------------------------------------------------------
-    # System
-    # ------------------------------------------------------------------
-    - kind: SystemSettings
-      metadata: {name: system}
-      spec:
-        hostname: example-router
-        timezone: UTC
-        ntpServers:
-          - 0.pool.ntp.org
-          - 1.pool.ntp.org
+          # A public name answered with an internal address, so that clients
+          # inside reach the service directly instead of going out and back.
+          - name: service.example.com
+            address: 192.168.10.20
