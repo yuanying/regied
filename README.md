@@ -11,7 +11,7 @@ declaration.
 A router is one kind of host regied applies to, not the only one.
 
 > **Status: under development.** Nothing here is ready to run yet. The configuration
-> schema is not final.
+> schema is settled in shape but not in detail.
 
 ## Language
 
@@ -70,13 +70,28 @@ What regied deliberately does not do is in [docs/scope.md](docs/scope.md).
 ## Configuration
 
 Configuration is a single YAML file listing resources, in the style of Kubernetes custom
-resources. See [`config/example.yaml`](config/example.yaml).
+resources: `kind: Router`, host-wide switches in `spec.global`, and eleven resource kinds
+in `spec.resources[]`.
 
-**The schema is provisional.** The example exists to show the shape, not to be copied
-into production. It will be replaced once the schema is settled.
+- [`docs/spec/configuration.md`](docs/spec/configuration.md) — the document, references
+  between resources, and what lands in which backend
+- [`docs/spec/kinds.md`](docs/spec/kinds.md) — the kinds, field by field
+- [`config/example.yaml`](config/example.yaml) — a worked example of a two-uplink host
 
-Secrets are never written into the configuration. Credentials such as a PPPoE password
-are referenced as a path to a file outside the repository.
+The kinds and the division of responsibility are settled
+([ADR 0002](docs/adr/0002-configuration-schema.md)); individual field names may still move
+before the first release, which is what `v1alpha1` says.
+
+Two properties of the schema are worth knowing before reading it.
+
+**No field can hold a secret.** Credentials are named by the path of a file that holds
+them, so a configuration file can be published or pasted into a bug report without review
+([ADR 0003](docs/adr/0003-secrets-out-of-configuration.md)).
+
+**No field accepts an uplink's own global address.** NAT and port forwarding refer to the
+uplink resource instead, and the chain that marks traffic for policy routing runs after
+destination translation. Together those mean hairpin works without anybody writing down
+an address that changes.
 
 ## Build
 
@@ -138,6 +153,7 @@ into a shell in the same container, where `hack/netns/topo.sh up` builds it and
 
 ## Documentation
 
+- [`docs/spec/`](docs/spec/) — the configuration format and the resource kinds
 - [`docs/scope.md`](docs/scope.md) — what regied does not do, and why
 - [`docs/adr/`](docs/adr/) — architecture decision records. Read these before making
   changes; they record decisions that implementations should not quietly reverse.
