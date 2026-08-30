@@ -17,13 +17,18 @@ regied の設定ファイルのスキーマ。この形にした理由は
 | フィールド | 必須 | 値 |
 |---|---|---|
 | `apiVersion` | はい | `net.unstable.cloud/v1alpha1` |
-| `kind` | はい | `Router` |
+| `kind` | はい | `NetworkConfig` |
 | `metadata.name` | はい | このホストの設定に付ける名前。ホスト名ではない |
 | `spec.global` | いいえ | ホスト全体のスイッチ。後述 |
 | `spec.resources` | はい | リソースの一覧 |
 
 apiGroup にプロジェクト名を入れないのは意図的である。バイナリを改名しても
 設定ファイルが無効になってはならない。
+
+**文書の kind にも役割名は入れない。** ファイアウォールだけのホストも、回線を 2 本
+終端するホストと同じ `NetworkConfig` を書く。そのホストが何をするかは、どのリソースを
+並べたかが表すのであって、文書の名前が表すのではない。必須のリソース kind は 1 つも無く、
+`router` や `firewall` は型の側に現れない（[ADR 0009](../adr/0009-ownership-boundary.md)）。
 
 `spec.resources` の各要素は次を持つ。
 

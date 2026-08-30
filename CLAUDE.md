@@ -34,7 +34,9 @@ kind を足す・フィールドを増やすときは、先に `docs/spec/` を�
 ## 前提となる決定
 
 - 設定の apiGroup は `net.unstable.cloud`。リポジトリ名・バイナリ名が変わってもスキーマを揺らさない
-- 設定は `kind: Router` の `spec.resources[]` にリソースを列挙する形（Kubernetes CRD 風）
+- 設定は `kind: NetworkConfig` の `spec.resources[]` にリソースを列挙する形（Kubernetes CRD 風）。
+  **文書型に役割名（router / firewall）を入れない。** ホストが何をするかは、
+  どのリソースを並べたかが表す（ADR 0002 / ADR 0009）
 - kind はホスト 1 台に必要な最小限に絞る。将来のために先回りして増やさない。
   **誰にも名前で参照されず、独自のライフサイクルも持たないものは kind にせず、
   それを持つリソースのフィールドに畳む**（ADR 0002）

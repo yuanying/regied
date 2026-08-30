@@ -17,7 +17,7 @@
 # Credentials are named by the path of a file that holds them (ADR 0003).
 
 apiVersion: net.unstable.cloud/v1alpha1
-kind: Router
+kind: NetworkConfig
 metadata:
   name: example
 

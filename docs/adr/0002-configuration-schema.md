@@ -28,10 +28,22 @@ nftables, dnsmasq and pppd without the operator seeing the seam.
 
 ### The document
 
-One YAML document. `apiVersion: net.unstable.cloud/v1alpha1`, `kind: Router`,
+One YAML document. `apiVersion: net.unstable.cloud/v1alpha1`, `kind: NetworkConfig`,
 `spec.global` for host-wide switches, and `spec.resources[]` listing resources that each
 carry `kind`, `metadata.name` and `spec`. The apiGroup is deliberately not derived from
 the project name, so renaming the binary never invalidates a configuration file.
+
+`NetworkConfig` names what the document holds, not what the host is. `Router` was the
+provisional name and it was wrong in two directions. It contradicts ADR 0009, which keeps
+role names such as `wan` and `lan` out of the type system — the outermost type is the last
+place to break that rule. And it does not describe a host that carries only a firewall,
+which the schema already accepts: no resource kind is mandatory, so a document holding
+zones and policies and nothing else is valid.
+
+`NodeConfig` was considered and rejected for claiming more than regied owns. Hostname,
+timezone, accounts and packages are all a node's configuration and all deliberately out of
+scope ([`docs/scope.md`](../scope.md)). What this document holds is network configuration
+and nothing else, down to the seven kernel switches in `spec.global`.
 
 Resources refer to each other by `<kind in lower camel case>Ref` holding another
 resource's `metadata.name`. A reference is resolved against the kind the field expects,
@@ -89,7 +101,7 @@ is nowhere else in the schema to ask for one.
 [`docs/scope.md`](../scope.md) already said so. A kind that exists to restate what
 another tool owns is worse than no kind.
 
-**`Router.spec.global.allPing` — dropped.** Accepting an echo request is a firewall rule,
+**`spec.global.allPing` — dropped.** Accepting an echo request is a firewall rule,
 and the firewall is regied's own model. A global switch that secretly writes a rule gives
 the firewall two entry points.
 

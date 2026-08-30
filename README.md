@@ -70,8 +70,8 @@ What regied deliberately does not do is in [docs/scope.md](docs/scope.md).
 ## Configuration
 
 Configuration is a single YAML file listing resources, in the style of Kubernetes custom
-resources: `kind: Router`, host-wide switches in `spec.global`, and eleven resource kinds
-in `spec.resources[]`.
+resources: `kind: NetworkConfig`, host-wide switches in `spec.global`, and eleven
+resource kinds in `spec.resources[]`.
 
 - [`docs/spec/configuration.md`](docs/spec/configuration.md) — the document, references
   between resources, and what lands in which backend

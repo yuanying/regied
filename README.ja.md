@@ -69,7 +69,7 @@ regied は、次の 7 領域を持つ実際に動いている構成を相手に�
 ## 設定
 
 設定はリソースを並べた 1 つの YAML ファイルで、Kubernetes のカスタムリソース風の書式を取る。
-`kind: Router`、ホスト全体のスイッチを `spec.global`、11 個のリソース kind を
+`kind: NetworkConfig`、ホスト全体のスイッチを `spec.global`、11 個のリソース kind を
 `spec.resources[]` に並べる。
 
 - [`docs/ja/spec/configuration.md`](docs/ja/spec/configuration.md) — 文書の形、
