@@ -162,7 +162,8 @@ Beyond references resolving and required fields being present, regied rejects:
 - `sourceValidation: true` together with any `EgressRoutePolicy`
 - two `EgressRoutePolicy` resources with the same `priority` and the same family
 - two `FirewallPolicy` resources with the same `from` and `to`
-- an `Interface` that is a bridge member and also carries an address
+- an `Interface` whose `ifname` appears in another interface's `bridge.members` and
+  that also carries an address
 - an address derived from a delegated prefix whose upstream interface has no
   prefix-delegation client
 - a `PortForward` or `SourceNAT` whose `egressRef` names a `DSLiteTunnel`, which

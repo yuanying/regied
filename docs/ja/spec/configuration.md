@@ -158,7 +158,7 @@ nftables は自分のテーブルだけを作り替える。ルールセット�
 - `sourceValidation: true` と `EgressRoutePolicy` の同居
 - 同じファミリで `priority` が重複する `EgressRoutePolicy`
 - `from` と `to` が同じ `FirewallPolicy` が 2 つ
-- ブリッジのメンバーでありながらアドレスも持つ `Interface`
+- `ifname` が他のインターフェースの `bridge.members` に現れ、かつアドレスも持つ `Interface`
 - 上流インターフェースに PD クライアントが無いのに、委譲プレフィックスから導く指定
 - `egressRef` が `DSLiteTunnel` を指す `PortForward` / `SourceNAT`
   （AFTR 側で変換されるので、内向きに公開できない）
