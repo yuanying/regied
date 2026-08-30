@@ -98,6 +98,28 @@ Set on the upstream interface, the one facing the provider.
 | `prefixDelegation.rapidCommit` | no | Default `true` |
 | `useDNS` | no | Default `false`. Whether to take resolvers from the provider |
 
+The DUID file holds the DUID as colon-separated hex, type prefix included, exactly as it
+appears in the configuration it was copied from. A DUID-LL is `00:03:00:01:` followed by
+six octets — twenty-nine characters, for instance `00:03:00:01:00:00:5e:00:53:01`. regied
+takes the leading two bytes as the DUID type and hands the two halves to networkd, which
+wants them apart.
+
+There is deliberately no `duidType` field. The value is normally copied whole out of the
+configuration of the router being replaced, and a format that asks for it to be split by
+hand creates a path where dropping one byte is accepted without complaint. What is lost
+then is the delegated prefix, and the loss shows only after every IPv6 address on the
+segment below has already changed.
+
+Omitting `duidFile` is allowed and is not an error. networkd then sends a DUID of its own,
+derived from the machine ID. For a line being brought up for the first time that is
+right; for a host replacing one that already holds a delegation, it is the thing that
+changes the delegated prefix, and nothing about it fails loudly.
+
+The DUID is not a credential, and unlike one it is shown in `--dry-run` output, in a diff
+and in the state API — the single exception in
+[ADR 0003](../adr/0003-secrets-out-of-configuration.md), because the DUID in effect is
+what answers the question of why a delegated prefix changed.
+
 ### `ipv6.advertise`
 
 Set on a downstream interface. Router advertisement is systemd-networkd's, not dnsmasq's:
