@@ -102,13 +102,19 @@ spec:
 
     # IPv4 over IPv6. The provider's AFTR translates addresses, so there is no
     # SourceNAT here and nothing can be published through it.
+    #
+    # The AFTR is named rather than addressed: the name is what the provider
+    # publishes, the addresses behind it are theirs to change. It is resolved
+    # once, at apply time, and it has to resolve over IPv6 -- this tunnel is
+    # what carries IPv4, so a resolver reachable only over IPv4 could not be
+    # asked. The DNSForwarder below has an IPv6 upstream for that reason.
     - kind: DSLiteTunnel
       metadata: {name: dslite}
       spec:
         underlayRef: wan
         localAddressFrom:
           interfaceRef: lan
-        aftrAddress: 2001:db8:ffff::11
+        aftrHost: aftr.example.net
         mtu: 1454
         ttl: 64
         defaultRoute:

@@ -185,7 +185,8 @@ Backend: a `.netdev` of kind `ip6tnl`, mode `ipip6`, and its `.network`.
 | `underlayRef` | yes | The `Interface` carrying the IPv6 that the tunnel runs over |
 | `localAddressFrom.interfaceRef` | one of | Take the tunnel's local address from this interface's IPv6 address |
 | `localAddress` | one of | A literal IPv6 address, for a statically addressed deployment |
-| `aftrAddress` | yes | The provider's AFTR, as an IPv6 address |
+| `aftrHost` | one of | The provider's AFTR by name. Resolved at apply time |
+| `aftrAddress` | one of | The provider's AFTR as a literal IPv6 address |
 | `mtu` | no | Default `1454` |
 | `ttl` | no | Default `64` |
 | `defaultRoute.install` | no | Default `true` |
@@ -195,6 +196,43 @@ Backend: a `.netdev` of kind `ip6tnl`, mode `ipip6`, and its `.network`.
 Exactly one of `localAddressFrom` and `localAddress` is required. `localAddressFrom` is
 the one to use where the prefix comes from delegation: the tunnel then follows a prefix
 change instead of going dark until somebody edits the file.
+
+Exactly one of `aftrHost` and `aftrAddress` is required, in the same way as the pair
+above, and `aftrHost` is the one to reach for. Providers publish a stable, well-known name
+for their AFTR and treat the addresses behind it as theirs to change, so the name is the
+official identifier and the address is an implementation detail. Writing the detail down
+is the failure `PortForward` avoids by never accepting a listening address: it works until
+the far side changes something it never promised to hold still, and then it stops without
+saying so.
+
+`aftrHost` is resolved once, at apply time, and the tunnel is created with the address
+that comes back. regied does not watch the name and does not re-resolve it. An `ip6tnl`
+link takes its remote at creation and networkd will not rebuild a tunnel on a DHCP event,
+so following the name would mean regied watching the state it has already rendered and
+rebuilding from what it sees — the structure [ADR 0009](../adr/0009-ownership-boundary.md)
+avoids deliberately. When the address changes, the answer is another apply: chosen rather
+than triggered, visible in `--dry-run` before it happens, and able to roll back.
+
+`--dry-run` reports the address the name resolved to. It is not a secret, and what the
+host is about to build a tunnel to is exactly what a diagnosis needs — the treatment the
+DUID gets in [ADR 0003](../adr/0003-secrets-out-of-configuration.md).
+
+**`aftrHost` has to resolve over IPv6.** The tunnel is what carries IPv4, so a resolver
+reachable only over IPv4 cannot be asked anything until the tunnel is up, and a host with
+no other resolver would need the tunnel in order to look up the name the tunnel is built
+from. Whether a resolver is reachable over IPv6 is a property of the deployment and not
+something the configuration states, so regied does not try to reject that loop statically.
+It resolves at apply time, and the failure it reports names an IPv6-reachable resolver as
+the thing to check.
+
+There is no field for learning the AFTR from DHCPv6, and that is a decision rather than an
+oversight. RFC 6334's option 64 carries an AFTR name, so what arrives is the same FQDN
+`aftrHost` already takes and not an address: the resolution step, and everything above
+about it, stays exactly where it is. Following the option as it changes runs into the
+`ip6tnl` constraint again — the remote is fixed when the link is created, so regied would
+have to watch and rebuild. And nothing here spends the option: a deployment that meets a
+provider sending it gains one more source for `aftrHost`, which is an addition rather than
+a change to what these fields mean.
 
 **No `SourceNAT` belongs on this uplink.** The AFTR translates, so the inner source
 address is left as it is. A masquerade here would translate twice. It also follows that
