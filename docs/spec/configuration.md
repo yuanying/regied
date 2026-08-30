@@ -170,3 +170,10 @@ Beyond references resolving and required fields being present, regied rejects:
   translates at the far end and cannot publish anything inbound
 - a `FirewallZone` named `self`
 - a secret file that is missing, unreadable, or empty
+
+It warns, and continues, about:
+
+- an `Interface` carrying `dhcpv6.prefixDelegation` with no `duidFile`. A line being
+  brought up for the first time has no DUID to carry over, which is a legitimate
+  configuration. A host replacing one that already holds a delegation and omitting it
+  will quietly be delegated a different prefix.

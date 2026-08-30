@@ -37,6 +37,27 @@ configuration file and repeatedly having to remember which lines could not be qu
 - A missing or unreadable secret file is a validation error, not a warning. Bringing an
   uplink up without authentication is not a degraded success.
 
+## The DUID is the one exception, and only for diagnosis
+
+`Interface.dhcpv6.prefixDelegation.duidFile` has the same shape as the credential fields,
+and it is worth saying why, because **the DUID is not a credential**. It authenticates
+nothing. Anybody on the segment sees it go past in the DHCPv6 exchange.
+
+It is referenced by file for the other half of the reason above. A DUID contains a MAC
+address and identifies the host that sends it, and the purpose of this decision is not
+concealment but that **a configuration file can be published without review**. That
+purpose applies to the DUID unchanged, so it lives beside the credentials rather than in
+the document.
+
+**Diagnosis is where it differs, and this is the only exception in this ADR.** The DUID
+appears in `--dry-run` output, in a diff, and in the state API. The reason is operational.
+The question that gets asked about prefix delegation is why the delegated prefix changed,
+and the DUID currently in effect is exactly the information that answers it. Hiding it the
+way a password is hidden would leave that question unanswerable from regied's own output.
+
+A referenced DUID file that is missing, unreadable, or empty is a validation error, the
+same as for a credential.
+
 ## Consequences
 
 - A configuration file can be published without review. That is what makes the example
