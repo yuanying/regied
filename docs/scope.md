@@ -65,6 +65,17 @@ of "reload" or "apply with dry-run". No resource CRUD.
 A GUI that can change configuration would give the declarative model a second source of
 truth, and the two would drift.
 
+### Egress filtering and IPv6 NAT
+
+The firewall model covers traffic arriving at the host and traffic forwarded through it.
+There is no way to write a policy for what the host itself sends. A rule set that filters
+a router's own outbound traffic is a different tool with a different threat model, and
+half-implementing it would suggest a protection that is not there.
+
+There is no NAT for IPv6 either. IPv6 addresses are globally routable and the firewall is
+what controls reachability; translating them would remove the one property that makes the
+protocol simpler to reason about.
+
 ### Traffic classification and analytics
 
 No deep packet inspection, no flow export, no telemetry to a vendor service.
@@ -92,10 +103,13 @@ Linux system, already owned by something else. regied does not take them over.
 | Login accounts and SSH | The operating system |
 | Package repositories | The distribution's package manager |
 | Base network on a non-router host | netplan or whatever already owns it |
+| Hostname, timezone, NTP servers | The operating system |
 
-Hostname, timezone, and NTP servers are close to the boundary. They may be modeled later
-if the declaration is more useful than the OS's own mechanism, but they are not part of
-the seven areas being built first.
+Hostname, timezone and NTP servers sat close to the boundary for a while, and there was a
+resource kind for them in the first draft of the schema. It was dropped
+([ADR 0002](adr/0002-configuration-schema.md)): a kind whose only content restates what
+another tool already owns is worse than no kind, because it gives the setting two places
+to live.
 
 ## Hardware-dependent, and therefore deferred
 
