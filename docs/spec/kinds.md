@@ -39,15 +39,25 @@ Backend: a `.network` file, and for a bridge a `.netdev` file, under regied's pr
 | Field | Required | Value |
 |---|---|---|
 | `ifname` | yes | The kernel interface name. For a bridge, the name to create |
-| `bridge.members` | no | Interface names to enslave. Present means this is a bridge |
+| `bridge.members` | no | Kernel interface names to enslave. Present means this is a bridge |
 | `mtu` | no | Bytes. Defaults to the kernel's |
 | `addresses` | no | List of addresses. See below |
 | `routes` | no | List of static routes. See below |
 | `dhcpv6` | no | DHCPv6 client settings. See below |
 | `ipv6.advertise` | no | Router advertisement settings. See below |
 
-An interface that appears in another interface's `bridge.members` must not carry
-addresses of its own.
+`bridge.members` holds kernel interface names, not resource names. A member does not
+need an `Interface` resource of its own — regied writes the file that enslaves it.
+Declare a member as an `Interface` only to give it a property that is its own, such as an
+MTU, and then it must not carry addresses. The addresses belong to the bridge, and so
+does the name a `FirewallZone` names.
+
+The bridge is created with spanning tree disabled, VLAN filtering disabled, and the
+kernel's defaults for the remaining timers. There is no field for any of them, and the
+omission is deliberate: joining several ports into one segment is all the schema claims
+here. A bridge that has to run a spanning tree or carry tagged VLANs is a different
+requirement, and it gets fields when there is a configuration that needs them rather than
+in anticipation.
 
 ### `addresses[]`
 
