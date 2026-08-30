@@ -27,10 +27,22 @@ networkd / nftables / dnsmasq / pppd へ落ちなければならない。
 
 ### 文書
 
-ホスト 1 台につき YAML 1 文書。`apiVersion: net.unstable.cloud/v1alpha1`、`kind: Router`、
+ホスト 1 台につき YAML 1 文書。`apiVersion: net.unstable.cloud/v1alpha1`、`kind: NetworkConfig`、
 ホスト全体のスイッチを `spec.global`、リソースを `spec.resources[]` に並べる。
 各リソースは `kind` / `metadata.name` / `spec` を持つ。**apiGroup にプロジェクト名を
 入れないのは意図的である。** バイナリを改名しても設定ファイルが無効にならないようにする。
+
+**`NetworkConfig` は文書が何を収めるかを名乗るのであって、ホストが何であるかを名乗らない。**
+`Router` は暫定の名前で、2 つの向きに間違っていた。1 つは ADR 0009 との衝突である。
+あの決定は `wan` / `lan` のような役割名を型に入れないことを求めており、いちばん外側の型は
+その規則を破ってよい最後の場所である。もう 1 つは事実との食い違いで、ファイアウォールしか
+持たないホストを言い表せない。**このスキーマは既にそれを受け付ける。** 必須のリソース kind は
+1 つも無いので、ゾーンと政策だけを収めた文書は正当である。
+
+`NodeConfig` も検討して落とした。regied の持ち分より多くを主張するからである。ホスト名、
+タイムゾーン、アカウント、パッケージはいずれもノードの設定であり、いずれも意図的に範囲外に
+置いてある（[`docs/ja/scope.md`](../scope.md)）。この文書が収めるのはネットワークの設定だけで、
+`spec.global` の 7 つのカーネルスイッチまで含めてそうである。
 
 リソース間の参照は `<kind の lower camel case>Ref` というフィールドで、値は相手の
 `metadata.name`。kind はフィールド側で決まるので値には書かない。
@@ -86,7 +98,7 @@ networkd / nftables / dnsmasq / pppd へ落ちなければならない。
 [`docs/ja/scope.md`](../scope.md) に既にそう書いてある。別の道具が持っているものを
 言い直すだけの kind は、無いより悪い。
 
-**`Router.spec.global.allPing` — 落とした。** echo request を通すかどうかは
+**`spec.global.allPing` — 落とした。** echo request を通すかどうかは
 ファイアウォールのルールであり、ファイアウォールは regied 自身のモデルである。
 裏でルールを書く大域スイッチは、ファイアウォールに入口を 2 つ作ってしまう。
 

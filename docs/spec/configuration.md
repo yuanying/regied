@@ -17,13 +17,19 @@ One YAML document per host.
 | Field | Required | Value |
 |---|---|---|
 | `apiVersion` | yes | `net.unstable.cloud/v1alpha1` |
-| `kind` | yes | `Router` |
+| `kind` | yes | `NetworkConfig` |
 | `metadata.name` | yes | A name for this host's configuration. Not the hostname |
 | `spec.global` | no | Host-wide switches. See below |
 | `spec.resources` | yes | The list of resources |
 
 The apiGroup does not contain the project's name on purpose. Renaming the binary must not
 invalidate a configuration file.
+
+The document kind carries no role either. A host that only has a firewall writes the same
+`NetworkConfig` as a host terminating two uplinks; what a host does is expressed by which
+resources it lists, not by the name of the document. No resource kind is mandatory, and
+`router` and `firewall` are not part of the type system
+([ADR 0009](../adr/0009-ownership-boundary.md)).
 
 Each entry of `spec.resources` has:
 
