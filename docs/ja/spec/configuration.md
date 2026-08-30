@@ -162,6 +162,8 @@ nftables は自分のテーブルだけを作り替える。ルールセット�
 - 上流インターフェースに PD クライアントが無いのに、委譲プレフィックスから導く指定
 - `egressRef` が `DSLiteTunnel` を指す `PortForward` / `SourceNAT`
   （AFTR 側で変換されるので、内向きに公開できない）
+- `aftrHost` と `aftrAddress` の両方を持つ `DSLiteTunnel`
+- そのどちらも持たない `DSLiteTunnel`
 - `self` という名前の `FirewallZone`
 - 参照先の秘密情報ファイルが無い・読めない・空
 

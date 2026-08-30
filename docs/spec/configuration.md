@@ -168,6 +168,8 @@ Beyond references resolving and required fields being present, regied rejects:
   prefix-delegation client
 - a `PortForward` or `SourceNAT` whose `egressRef` names a `DSLiteTunnel`, which
   translates at the far end and cannot publish anything inbound
+- a `DSLiteTunnel` carrying both `aftrHost` and `aftrAddress`
+- a `DSLiteTunnel` carrying neither
 - a `FirewallZone` named `self`
 - a secret file that is missing, unreadable, or empty
 
