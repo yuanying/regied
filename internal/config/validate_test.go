@@ -609,6 +609,18 @@ func TestValidateRejectsWhatTheSpecSaysItRejects(t *testing.T) {
 			want: []string{`spec.egressRef: nothing can be published through the DSLiteTunnel "dslite"`},
 		},
 		{
+			name: "a port forward whose protocol is written as a number",
+			resources: ifaceWAN + pppoe + `    - kind: PortForward
+      metadata: {name: mosh}
+      spec:
+        egressRef: pppoe0
+        protocol: 17
+        portRange: 60000-60010
+        target: {address: 192.168.10.30}
+`,
+			want: []string{"spec.protocol: a port forward is tcp or udp, not 17"},
+		},
+		{
 			name: "source NAT on a DS-Lite tunnel",
 			resources: ifaceWAN + ifaceLAN + dslite + `    - kind: SourceNAT
       metadata: {name: masq}
@@ -749,6 +761,80 @@ func TestValidateAddressSetFamilies(t *testing.T) {
 `, secrets())
 		assertProblems(t, problems, []string{`spec.rules[0].destinationAddressSetRefs[0]: the IPAddressSet "published-v6" is ipv6, but the rule is ipv4`})
 	})
+}
+
+// A forward that translates a range has to translate it onto a range of the same width.
+// Where it does not, which outside port lands on which inside one is decided by the
+// kernel rather than by the file, and reading the configuration no longer tells you what
+// the host does.
+func TestValidatePortForwardRangeWidths(t *testing.T) {
+	forward := func(listen, target string) string {
+		return ifaceWAN + pppoe + `    - kind: PortForward
+      metadata: {name: published}
+      spec:
+        egressRef: pppoe0
+        protocol: udp
+        ` + listen + `
+        target:
+          address: 192.168.10.30
+` + target
+	}
+
+	cases := []struct {
+		name   string
+		listen string
+		target string
+		want   []string
+	}{
+		{
+			name:   "a target range narrower than what is listened on",
+			listen: "portRange: 60000-60010",
+			target: "          portRange: 8080-8081\n",
+			want:   []string{"spec.target.portRange: 8080-8081 covers 2 ports, but the forward listens on 60000-60010, which covers 11"},
+		},
+		{
+			name:   "a single target port under a listened-on range",
+			listen: "portRange: 60000-60010",
+			target: "          port: 8080\n",
+			want:   []string{"spec.target.port: 8080 covers 1 port, but the forward listens on 60000-60010, which covers 11"},
+		},
+		{
+			name:   "a target range under a single listened-on port",
+			listen: "port: 443",
+			target: "          portRange: 8080-8090\n",
+			want:   []string{"spec.target.portRange: 8080-8090 covers 11 ports, but the forward listens on 443, which covers 1"},
+		},
+		{
+			name:   "a target range of the same width",
+			listen: "portRange: 60000-60010",
+			target: "          portRange: 8080-8090\n",
+		},
+		{
+			name:   "no target port at all, which keeps the range it listens on",
+			listen: "portRange: 60000-60010",
+			target: "",
+		},
+		{
+			name:   "a single port onto a different single port",
+			listen: "port: 443",
+			target: "          port: 8443\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, problems := check(t, forward(tc.listen, tc.target), secrets())
+			if len(tc.want) == 0 {
+				if cfg == nil {
+					t.Fatalf("rejected a forward whose widths agree:\n%s", problems)
+				}
+				return
+			}
+			if cfg != nil {
+				t.Fatal("accepted a forward whose widths disagree")
+			}
+			assertProblems(t, problems, tc.want)
+		})
+	}
 }
 
 func TestValidateDHCPPools(t *testing.T) {

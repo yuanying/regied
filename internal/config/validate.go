@@ -328,13 +328,38 @@ func (v *validator) checkPortForward(resource *v1alpha1.Resource, spec *v1alpha1
 		spec.Protocol.Name != "tcp" && spec.Protocol.Name != "udp" {
 		v.errorf(resource, "spec.protocol", "a port forward is tcp or udp, not %s", spec.Protocol)
 	}
-	v.exactlyOne(resource, "port", "portRange", spec.Port != nil, spec.PortRange != nil)
+	listens := v.exactlyOne(resource, "port", "portRange", spec.Port != nil, spec.PortRange != nil)
 
 	if spec.Target == nil || !spec.Target.Address.IsValid() {
 		v.errorf(resource, "spec.target.address", "required")
 		return
 	}
 	v.exclusive(resource, "spec.target", "port", "portRange", spec.Target.Port != nil, spec.Target.PortRange != nil)
+
+	// A range has to be translated onto a range of the same width. Where the widths
+	// differ, which outside port lands on which inside one is decided by the kernel and
+	// written down nowhere, so reading the configuration stops telling you what the host
+	// does. Leaving the target ports out keeps the width by construction.
+	if !listens {
+		return
+	}
+	listen, target := spec.Ports(), spec.TargetPorts()
+	if listen.Width() == target.Width() {
+		return
+	}
+	field := "spec.target.port"
+	if spec.Target.PortRange != nil {
+		field = "spec.target.portRange"
+	}
+	v.errorf(resource, field, "%s covers %s, but the forward listens on %s, which covers %d",
+		target, ports(target.Width()), listen, listen.Width())
+}
+
+func ports(n int) string {
+	if n == 1 {
+		return "1 port"
+	}
+	return fmt.Sprintf("%d ports", n)
 }
 
 func (v *validator) checkDHCPServer(resource *v1alpha1.Resource, spec *v1alpha1.DHCPServerSpec) {

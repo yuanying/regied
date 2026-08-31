@@ -262,6 +262,10 @@ route in a dedicated table, both in systemd-networkd.
 
 At least one of `sourceRanges` and `sourceAddressSetRefs` must be present.
 
+`sourceRanges` takes the two forms in the table above and no third one. A bare address is
+a validation error: `192.0.2.1/32` says the same thing in one of the two forms already
+there, and two spellings for one meaning is one more thing to be inconsistent about.
+
 `excludeDestinations` is what keeps local traffic local. A policy that says "these hosts
 go out by the PPPoE uplink" has to exclude the LAN itself, or traffic between two LAN
 hosts would be sent to the uplink. It is also what makes hairpin work, though indirectly:
@@ -332,7 +336,9 @@ interface set.
 | `rules` | no | Evaluated in order. First match wins |
 
 The netfilter hook follows from the pair: `to: self` is input, zone to zone is forward.
-There is no policy for output — nothing here filters what the host itself sends.
+There is no policy for output — nothing here filters what the host itself sends. `self` is
+therefore a `to` and never a `from`, and a policy naming it as its `from` is a validation
+error rather than a policy that quietly matches nothing.
 
 **Traffic between a pair of zones with no policy is dropped.** A pair is not implicitly
 open because nobody wrote it down.
@@ -423,6 +429,18 @@ the translation, and the client discards it.
 traffic takes. It is on by default because a port forward with default-drop firewalling
 and no opening is a configuration that is wrong in every case. Turn it off only to write
 a narrower rule by hand.
+
+**`protocol` takes those two names and nothing else.** A firewall rule accepts a protocol
+number and this field does not, which is not an oversight: a forward translates a
+transport port, so a protocol with no ports has nothing to forward. Writing `6` where
+`tcp` was meant is refused rather than quietly accepted as the same thing.
+
+**The target has to cover as many ports as the forward listens on.** Eleven ports onto
+eleven is a forward; eleven ports onto two is a validation error. Which outside port would
+land on which inside one is written nowhere in the second form — the kernel decides — so
+the file would stop describing what the host does, which is the failure the rest of this
+schema is arranged to avoid. Leaving `target.port` and `target.portRange` out keeps the
+width by construction, and is the usual way to write it.
 
 A `PortForward` whose `egressRef` names a `DSLiteTunnel` is a validation error: nothing
 can be published through it.

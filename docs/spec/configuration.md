@@ -137,6 +137,16 @@ Some things the operator would otherwise have to keep consistent by hand are der
 Derived numbers are visible in `regied render`. Nothing outside regied should depend on
 them; they are an implementation detail of how a match becomes a route.
 
+Table numbers are allocated from 100 upward and marks from 0x100 upward. Allocation runs
+in the order the policies are evaluated in — by family, then by priority — and not in the
+order the document happens to list them, so moving a resource within the file changes no
+number and an apply that changed nothing changes nothing. A pinned value is left where it
+was put and the allocation works around it. The tables the kernel keeps for itself, `main`,
+`local` and `default`, are refused as pins.
+
+Those two starting points are where the allocation begins, not a promise about what any
+particular policy gets. The sentence above still holds.
+
 ## How the pieces fit for a two-uplink host
 
 The configuration expresses a decision about traffic, and the decision reaches the kernel
@@ -168,9 +178,15 @@ Beyond references resolving and required fields being present, regied rejects:
   prefix-delegation client
 - a `PortForward` or `SourceNAT` whose `egressRef` names a `DSLiteTunnel`, which
   translates at the far end and cannot publish anything inbound
+- a `PortForward` whose target covers a different number of ports from the range it
+  listens on
+- a `PortForward` whose `protocol` is anything other than `tcp` or `udp` written by name
+- an `EgressRoutePolicy` whose `sourceRanges` holds a bare address rather than a CIDR or
+  an inclusive range
 - a `DSLiteTunnel` carrying both `aftrHost` and `aftrAddress`
 - a `DSLiteTunnel` carrying neither
 - a `FirewallZone` named `self`
+- a `FirewallPolicy` whose `from` is `self`
 - a secret file that is missing, unreadable, or empty
 
 It warns, and continues, about:

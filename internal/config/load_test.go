@@ -237,6 +237,16 @@ func TestParseRejectsMalformedValuesInOtherKinds(t *testing.T) {
 			"ends before it starts",
 		},
 		{
+			"source range written as a bare address",
+			`    - kind: EgressRoutePolicy
+      metadata: {name: p}
+      spec:
+        priority: 10
+        egressRef: pppoe0
+        sourceRanges: [192.0.2.1]`,
+			"neither a CIDR nor an address range",
+		},
+		{
 			"source range mixing families",
 			`    - kind: EgressRoutePolicy
       metadata: {name: p}
