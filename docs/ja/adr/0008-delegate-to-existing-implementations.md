@@ -20,6 +20,11 @@ netplan、NetworkManager、nmstate、そして systemd-networkd。実際に Ubun
 | dnsmasq（DHCP サーバー・条件付き DNS） | なし |
 | PPPoE | **なし** |
 
+**2026-08-31 追記。** 上の表は Ubuntu 26.04 で実測したものである。プラットフォームは
+Debian 13 になり、その systemd は 257 である。1 行を除いてそのまま成り立つ。
+`Local=dhcp_pd` が入ったのは systemd 258 で、DS-Lite のトンネルは代わりに下位リンク側から
+端点アドレスを取る（[ADR 0011](0011-target-platform.md)）。
+
 同じ判断は他の層にも当てはまる。BGP を自前実装する必要はない（将来 MetalLB を BGP 化する際は
 FRR / BIRD / GoBGP に委譲する。imksoo/routerd も GoBGP を包んでいる）。
 

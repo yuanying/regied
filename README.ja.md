@@ -66,6 +66,14 @@ regied は、次の 7 領域を持つ実際に動いている構成を相手に�
 
 意図的にやらないことは [docs/ja/scope.md](docs/ja/scope.md) にまとめてある。
 
+## プラットフォーム
+
+regied は **Debian 13（trixie）** の上で作り、動かす。何も導入しない。
+systemd-networkd、dnsmasq、pppd、nftables はディストリビューションのものを使い、
+networkd は有効にしておく必要があり、ルーターのリンクを他の何かに持たせてはならない。
+前提にするバージョンと、trixie の networkd にまだ無い指定 1 つは
+[ADR 0011](docs/ja/adr/0011-target-platform.md) にある。
+
 ## 設定
 
 設定はリソースを並べた 1 つの YAML ファイルで、Kubernetes のカスタムリソース風の書式を取る。
