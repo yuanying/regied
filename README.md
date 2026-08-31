@@ -67,6 +67,14 @@ apply rolls back, and `--dry-run` shows what would change before anything is tou
 
 What regied deliberately does not do is in [docs/scope.md](docs/scope.md).
 
+## Platform
+
+regied is built and run on **Debian 13 (trixie)**. It installs nothing: systemd-networkd,
+dnsmasq, pppd and nftables come from the distribution, networkd has to be enabled, and
+nothing else may own the router's links. [ADR 0011](docs/adr/0011-target-platform.md)
+records the versions that assumes, and the one networkd directive that is not in trixie
+yet.
+
 ## Configuration
 
 Configuration is a single YAML file listing resources, in the style of Kubernetes custom

@@ -85,6 +85,11 @@ No deep packet inspection, no flow export, no telemetry to a vendor service.
 regied does not install packages, manage repositories, or provision hosts. It expects the
 tools it delegates to — systemd-networkd, dnsmasq, pppd, nftables — to be present.
 
+The platform they are expected to come from is Debian 13, where all four are distribution
+packages. Which versions that assumes, and what the operator has to have arranged before
+regied runs — networkd enabled, nothing else owning the router's links — is in
+[ADR 0011](adr/0011-target-platform.md).
+
 ### Login accounts and remote access
 
 User accounts, password hashes, SSH keys, and the SSH daemon's configuration stay with
@@ -102,7 +107,7 @@ Linux system, already owned by something else. regied does not take them over.
 | Time synchronization client | The system's NTP client |
 | Login accounts and SSH | The operating system |
 | Package repositories | The distribution's package manager |
-| Base network on a non-router host | netplan or whatever already owns it |
+| Base network on a non-router host | ifupdown, NetworkManager, netplan — whatever already owns it |
 | Hostname, timezone, NTP servers | The operating system |
 
 Hostname, timezone and NTP servers sat close to the boundary for a while, and there was a

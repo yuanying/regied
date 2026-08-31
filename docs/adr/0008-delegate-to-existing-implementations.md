@@ -21,6 +21,11 @@ declaratively.
 | dnsmasq (DHCP server, conditional DNS) | No |
 | PPPoE | **No** |
 
+**Amended 2026-08-31.** The table above was measured on Ubuntu 26.04. The platform is now
+Debian 13, whose systemd is 257, and every row holds there except one: `Local=dhcp_pd`
+arrived in systemd 258, so a DS-Lite tunnel takes its local address from the underlay
+instead ([ADR 0011](0011-target-platform.md)).
+
 The same reasoning applies at other layers. There is no need to implement BGP ourselves:
 if the cluster's load balancer later speaks BGP, that belongs to FRR, BIRD, or GoBGP.
 
