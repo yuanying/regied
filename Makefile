@@ -63,9 +63,15 @@ test: ## Unit tests. Needs neither privileges nor external commands.
 
 NETNS_IMAGE ?= regied-netns:latest
 
+# Asking for this target is a statement that the tools are expected to be there, so a
+# missing prerequisite fails rather than skipping. go test buffers the skip reason away
+# and prints ok, which reads as a pass on a run that never happened (ADR 0010). Pass an
+# empty value to get the skip back: make test-netns REGIED_NETNS_REQUIRE=
+REGIED_NETNS_REQUIRE ?= 1
+
 .PHONY: test-netns
 test-netns: ## The netns integration tests. Needs root / CAP_NET_ADMIN and external commands.
-	$(GO) test -tags netns -count=1 -timeout 20m ./test/netns/...
+	REGIED_NETNS_REQUIRE=$(REGIED_NETNS_REQUIRE) $(GO) test -tags netns -count=1 -timeout 20m ./test/netns/...
 
 .PHONY: netns-image
 netns-image: ## Build the container image for the netns integration tests.
