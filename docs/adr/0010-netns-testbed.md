@@ -103,9 +103,15 @@ module is loaded from within the container.
 
 The tests sit behind the `netns` build tag so `go test ./...` does not pick them up.
 `make test-netns` runs them directly where the tooling exists; `make test-netns-docker`
-prepares the container and calls the same target. When a prerequisite is missing the
-run is skipped with a reason — except under the container, where it fails instead.
-A skipped check must never read as a passing one.
+prepares the container and calls the same target. A skipped check must never read as a
+passing one.
+
+**Amended 2026-08-31.** That last sentence did not hold as written. A skipped run said
+why on stderr, but `go test` buffers a passing package's output away and prints `ok`, so
+a run that never happened read as green — which is how a Debian host with `nft` outside
+root's PATH reported success. Asking for the suite is now taken as a statement that the
+tools are expected: the make target sets the same variable the container image sets, and
+a missing prerequisite fails with the reason. A bare `go test -tags netns` still skips.
 
 ## Consequences
 

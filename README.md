@@ -138,9 +138,10 @@ sit behind the `netns` build tag; `go test ./...` does not pick them up. Use
 `make test-netns-docker` in the usual case: it prepares a container with the tooling
 and calls `make test-netns` inside it.
 
-Where the tooling is already present, `make test-netns` runs directly. If a
-prerequisite is missing it says so and skips — except under the container, where it
-fails instead.
+Where the tooling is already present, `make test-netns` runs directly. A missing
+prerequisite fails the run and names what is missing, because a skip that prints `ok` is
+indistinguishable from a pass. A bare `go test -tags netns` skips instead, and
+`make test-netns REGIED_NETNS_REQUIRE=` asks the target for the same.
 
 ### Swapping the device under test
 

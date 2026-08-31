@@ -58,10 +58,13 @@ const (
 func TestMain(m *testing.M) {
 	if reason := unmetPrerequisite(); reason != "" {
 		// Skipping silently when the run was meant to happen in an environment that has
-		// the tools makes something that never ran look like it passed. Runs that go
-		// through the container have REGIED_NETNS_REQUIRE set, so those fail instead.
+		// the tools makes something that never ran look like it passed, and go test
+		// buffers this away and prints ok on a skip. So anything that asks for the suite
+		// deliberately sets REGIED_NETNS_REQUIRE and fails here instead: the container
+		// image sets it, and so does the make target.
 		if os.Getenv("REGIED_NETNS_REQUIRE") != "" {
 			fmt.Fprintf(os.Stderr, "a prerequisite of the netns tests is not met: %s\n", reason)
+			fmt.Fprintf(os.Stderr, "to run them in an environment that has the tools, use `make test-netns-docker`.\n")
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "skipping the netns tests: %s\n", reason)
