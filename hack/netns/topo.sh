@@ -154,11 +154,15 @@ nodefaultroute
 noipdefault
 OPTS
 
+  # The server stays in user space. In kernel mode (-k) on Debian 13 the session comes up
+  # and then LCP goes nowhere: the client sends Config-Requests until it times out. That
+  # is ppp 2.5.2 with pppoe 4.0; the same invocation worked with 2.4.9 and 3.15. User
+  # space costs nothing here, where the whole testbed carries a few hundred packets.
   nse "${NS_WAN}" pppoe-server \
     -I "${PPPOE_SERVER_IF}" \
     -L "${PPPOE_LOCAL_IP}" \
     -R "${PPPOE_REMOTE_IP}" \
-    -N 4 -k -F </dev/null >>"${RUNTIME_DIR}/pppoe-server.log" 2>&1 &
+    -N 4 -F </dev/null >>"${RUNTIME_DIR}/pppoe-server.log" 2>&1 &
   record_pid "$!"
   log "started the PPPoE server on ${PPPOE_SERVER_IF} (handing out ${PPPOE_REMOTE_IP})"
 }
