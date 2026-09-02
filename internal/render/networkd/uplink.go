@@ -102,27 +102,31 @@ func (r *renderer) tunnelRemote(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec])
 	return address.String(), true
 }
 
-// renderPPPoESession writes what the routing needs from a link networkd does not own.
+// renderPPPoESession writes the routes that leave by a link networkd does not own.
 //
-// pppd creates the link, names it and addresses it; networkd is here only because a
-// policy's table needs a default route through it, and a route has to live on the link
-// it leaves by. A session no policy names gets no file at all, and its link stays
-// unmanaged.
+// pppd creates the link, names it and addresses it; networkd is here because a route has
+// to live on the link it leaves by, and pppd's option file cannot carry one. Both kinds
+// of route go the same way, so that how a route is installed does not depend on which
+// kind of uplink it leaves by: the static routes the session declares, which are the
+// same thing an Interface's are, and the default route a policy's table needs. A session
+// that declares neither gets no file at all, and its link stays unmanaged.
 func (r *renderer) renderPPPoESession(session config.Named[*v1alpha1.PPPoESessionSpec]) {
-	if len(r.policies[session.Name]) == 0 {
+	if len(session.Spec.Routes) == 0 && len(r.policies[session.Name]) == 0 {
 		return
 	}
 	u := newUnit(v1alpha1.KindPPPoESession, session.Name)
 	u.header += `#
-# pppd creates this link, names it and addresses it. regied writes this file only so
-# that the routing an EgressRoutePolicy needs follows the link up and down, and
-# KeepConfiguration keeps networkd from dropping what pppd installed.
+# pppd creates this link, names it and addresses it. regied writes this file only for
+# the routes that leave by it: the static ones declared on the session, and the table an
+# EgressRoutePolicy needs. KeepConfiguration keeps networkd from dropping what pppd
+# installed.
 `
 	u.section("Match").set("Name", session.Name)
 	// Everything on this link — the address, the peer, the default route in the main
 	// table — was put there by pppd. networkd is told to leave all of it alone.
 	u.section("Network").setBool("KeepConfiguration", true)
 
+	renderRoutes(u, session.Spec.Routes)
 	r.renderPolicyRouting(u, session.Name)
 
 	r.add(fileName(session.Name, ".network"), u)
