@@ -1,0 +1,344 @@
+package pppd_test
+
+import (
+	"flag"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/yuanying/regied/internal/config"
+	"github.com/yuanying/regied/internal/render/pppd"
+)
+
+var update = flag.Bool("update", false, "rewrite the golden files under testdata")
+
+// The values a real deployment keeps in the files userIDFile and passwordFile name. The
+// renderer never reads those files; apply hands it what it read.
+var exampleCredentials = pppd.Credentials{
+	UserID:   "subscriber@example.net",
+	Password: "not-a-real-password",
+}
+
+// config/example.yaml is the worked example docs/spec/ refers to. Its rendering is the
+// baseline the apply engine and the netns tests measure against, so it is pinned.
+func TestExample(t *testing.T) {
+	out := pppd.Render(loadExample(t))
+
+	if len(out.Sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(out.Sessions))
+	}
+	session := out.Sessions[0]
+	if session.Name != "pppoe0" || session.Ifname != "pppoe0" || session.NIC != "eth0" {
+		t.Errorf("session: %+v", session)
+	}
+
+	if want := "/etc/regied/ppp/peers/pppoe0.conf"; session.Peer.Path != want {
+		t.Errorf("peer file at %s, want %s", session.Peer.Path, want)
+	}
+	if session.Peer.Mode != 0o644 {
+		t.Errorf("peer file mode %v, want 0644", session.Peer.Mode)
+	}
+	if session.Peer.Secret {
+		t.Error("the peer file holds no credential and must not be marked secret")
+	}
+	assertGolden(t, "pppoe0.conf", session.Peer.Content)
+
+	credentials := session.Credentials
+	if want := "/etc/regied/ppp/credentials/pppoe0.conf"; credentials.Path != want {
+		t.Errorf("credentials file at %s, want %s", credentials.Path, want)
+	}
+	if credentials.UserIDFile != "/etc/regied/secrets/pppoe-user-id" ||
+		credentials.PasswordFile != "/etc/regied/secrets/pppoe-password" {
+		t.Errorf("credentials name the wrong files: %+v", credentials)
+	}
+
+	file, err := credentials.Render(exampleCredentials)
+	if err != nil {
+		t.Fatalf("rendering the credentials: %v", err)
+	}
+	if file.Mode != 0o600 || file.DirMode != 0o700 {
+		t.Errorf("credentials file mode %v in a %v directory, want 0600 in 0700", file.Mode, file.DirMode)
+	}
+	if !file.Secret {
+		t.Error("the credentials file holds credentials and must be marked secret")
+	}
+	assertGolden(t, "pppoe0-credentials.conf", file.Content)
+}
+
+// The link keeps the resource's name across redials, so that what other resources and
+// the firewall point at does not move between ppp0 and ppp1.
+func TestLinkIsNamedAfterTheResource(t *testing.T) {
+	out := pppd.Render(load(t, `
+    - kind: Interface
+      metadata: {name: uplink}
+      spec: {ifname: eth3}
+    - kind: PPPoESession
+      metadata: {name: line-a}
+      spec:
+        interfaceRef: uplink
+        userIDFile: /secrets/id
+        passwordFile: /secrets/pw
+`))
+	session := onlySession(t, out)
+	if session.Ifname != "line-a" {
+		t.Errorf("link named %q, want line-a", session.Ifname)
+	}
+	assertHasLines(t, session.Peer.Content, "ifname line-a", "linkname line-a", "nic-eth3")
+}
+
+func TestMTUDefaultsToWhatPPPoEAllows(t *testing.T) {
+	session := onlySession(t, pppd.Render(load(t, minimalSession(""))))
+	assertHasLines(t, session.Peer.Content, "mtu 1492", "mru 1492")
+
+	session = onlySession(t, pppd.Render(load(t, minimalSession("        mtu: 1454\n"))))
+	assertHasLines(t, session.Peer.Content, "mtu 1454", "mru 1454")
+}
+
+func TestPersist(t *testing.T) {
+	// The default, and the holdoff that goes with it.
+	session := onlySession(t, pppd.Render(load(t, minimalSession(""))))
+	assertHasLines(t, session.Peer.Content, "persist", "holdoff 5", "maxfail 0",
+		"lcp-echo-interval 10", "lcp-echo-failure 5")
+
+	session = onlySession(t, pppd.Render(load(t, minimalSession("        holdoff: 30s\n"))))
+	assertHasLines(t, session.Peer.Content, "holdoff 30")
+
+	// Turned off, pppd's own default applies and nothing about redialling is written.
+	session = onlySession(t, pppd.Render(load(t, minimalSession("        persist: false\n"))))
+	assertLacksLines(t, session.Peer.Content, "persist", "holdoff 5", "maxfail 0")
+}
+
+func TestDefaultRoute(t *testing.T) {
+	// Left out: install it, with no metric of its own.
+	session := onlySession(t, pppd.Render(load(t, minimalSession(""))))
+	assertHasLines(t, session.Peer.Content, "defaultroute")
+	assertLacksLines(t, session.Peer.Content, "nodefaultroute")
+	if strings.Contains(session.Peer.Content, "defaultroute-metric") {
+		t.Errorf("a metric of 0 is pppd's own default and should not be written:\n%s", session.Peer.Content)
+	}
+
+	// A metric is how a host with two uplinks makes this one the standby.
+	session = onlySession(t, pppd.Render(load(t, minimalSession("        defaultRoute: {metric: 100}\n"))))
+	assertHasLines(t, session.Peer.Content, "defaultroute", "defaultroute-metric 100")
+
+	session = onlySession(t, pppd.Render(load(t, minimalSession("        defaultRoute: {install: false}\n"))))
+	assertHasLines(t, session.Peer.Content, "nodefaultroute")
+}
+
+func TestUseDNS(t *testing.T) {
+	session := onlySession(t, pppd.Render(load(t, minimalSession(""))))
+	assertLacksLines(t, session.Peer.Content, "usepeerdns")
+
+	session = onlySession(t, pppd.Render(load(t, minimalSession("        useDNS: true\n"))))
+	assertHasLines(t, session.Peer.Content, "usepeerdns")
+}
+
+// ADR 0003: nothing regied emits for diagnosis may carry a credential. The peer file is
+// the half that is printed, diffed and reported, so neither the values nor a pppd
+// directive that would hold one may appear in it.
+func TestThePeerFileCarriesNoCredential(t *testing.T) {
+	out := pppd.Render(loadExample(t))
+	session := onlySession(t, out)
+
+	for _, secret := range []string{exampleCredentials.UserID, exampleCredentials.Password} {
+		if strings.Contains(session.Peer.Content, secret) {
+			t.Errorf("the peer file contains %q", secret)
+		}
+	}
+	assertLacksLines(t, session.Peer.Content, "user \"subscriber@example.net\"",
+		"password \"not-a-real-password\"")
+	for line := range strings.SplitSeq(session.Peer.Content, "\n") {
+		if strings.HasPrefix(line, "user ") || strings.HasPrefix(line, "password ") {
+			t.Errorf("the peer file carries the directive %q", line)
+		}
+	}
+}
+
+// The renderer names the files the credentials are in and never opens them, so a session
+// whose files do exist and do hold something renders exactly as one whose files are not
+// there at all.
+func TestTheRendererDoesNotReadTheCredentialFiles(t *testing.T) {
+	dir := t.TempDir()
+	userIDFile := filepath.Join(dir, "user-id")
+	passwordFile := filepath.Join(dir, "password")
+	for path, content := range map[string]string{
+		userIDFile:   "subscriber-in-the-file@example.net",
+		passwordFile: "password-in-the-file",
+	} {
+		if err := os.WriteFile(path, []byte(content+"\n"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", path, err)
+		}
+	}
+
+	out := pppd.Render(load(t, `
+    - kind: Interface
+      metadata: {name: wan}
+      spec: {ifname: eth0}
+    - kind: PPPoESession
+      metadata: {name: pppoe0}
+      spec:
+        interfaceRef: wan
+        userIDFile: `+userIDFile+`
+        passwordFile: `+passwordFile+`
+`))
+	for _, file := range out.Files() {
+		for _, secret := range []string{"subscriber-in-the-file@example.net", "password-in-the-file"} {
+			if strings.Contains(file.Content, secret) {
+				t.Errorf("%s contains %q, so the renderer opened the file", file.Path, secret)
+			}
+		}
+	}
+}
+
+func TestCredentialsQuoting(t *testing.T) {
+	credentials := onlySession(t, pppd.Render(loadExample(t))).Credentials
+
+	// A file read from disk ends with a newline. It is not part of the value, and left
+	// in it would end the pppd directive early.
+	file, err := credentials.Render(pppd.Credentials{UserID: "a@example.net\n", Password: "pw\r\n"})
+	if err != nil {
+		t.Fatalf("rendering: %v", err)
+	}
+	assertHasLines(t, file.Content, `user "a@example.net"`, `password "pw"`)
+
+	// pppd's option parser reads a quoted string with backslash escapes.
+	file, err = credentials.Render(pppd.Credentials{UserID: `a"b`, Password: `c\d`})
+	if err != nil {
+		t.Fatalf("rendering: %v", err)
+	}
+	assertHasLines(t, file.Content, `user "a\"b"`, `password "c\\d"`)
+
+	// A value with a newline inside it cannot be written as one directive, and writing
+	// it anyway would turn the rest of the password into pppd options.
+	if _, err := credentials.Render(pppd.Credentials{UserID: "a\nb", Password: "pw"}); err == nil {
+		t.Error("a value holding a newline was accepted")
+	}
+	if _, err := credentials.Render(pppd.Credentials{UserID: "a", Password: ""}); err == nil {
+		t.Error("an empty password was accepted")
+	}
+}
+
+func TestRootRelocatesEverything(t *testing.T) {
+	out := pppd.Render(loadExample(t), pppd.WithRoot("/run/regied-test"))
+	session := onlySession(t, out)
+	if want := "/run/regied-test/ppp/peers/pppoe0.conf"; session.Peer.Path != want {
+		t.Errorf("peer file at %s, want %s", session.Peer.Path, want)
+	}
+	if want := "/run/regied-test/ppp/credentials/pppoe0.conf"; session.Credentials.Path != want {
+		t.Errorf("credentials at %s, want %s", session.Credentials.Path, want)
+	}
+}
+
+func TestNoSessions(t *testing.T) {
+	out := pppd.Render(load(t, `
+    - kind: Interface
+      metadata: {name: lan}
+      spec: {ifname: br-lan}
+`))
+	if len(out.Sessions) != 0 || len(out.Files()) != 0 {
+		t.Errorf("a configuration with no PPPoESession rendered %+v", out)
+	}
+}
+
+// --- helpers ---------------------------------------------------------------------
+
+// minimalSession is one session over one interface, with the extra spec lines a case
+// wants appended to it.
+func minimalSession(extra string) string {
+	return `
+    - kind: Interface
+      metadata: {name: wan}
+      spec: {ifname: eth0}
+    - kind: PPPoESession
+      metadata: {name: pppoe0}
+      spec:
+        interfaceRef: wan
+        userIDFile: /secrets/id
+        passwordFile: /secrets/pw
+` + extra
+}
+
+func onlySession(t *testing.T, out *pppd.Output) pppd.Session {
+	t.Helper()
+	if len(out.Sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(out.Sessions))
+	}
+	return out.Sessions[0]
+}
+
+func load(t *testing.T, resources string) *config.Config {
+	t.Helper()
+	document := []byte(`apiVersion: net.unstable.cloud/v1alpha1
+kind: NetworkConfig
+metadata:
+  name: test
+spec:
+  resources:
+` + resources)
+	parsed, err := config.Parse(document)
+	if err != nil {
+		t.Fatalf("parsing the test configuration: %v", err)
+	}
+	cfg, err := config.Validate(parsed, config.WithSecretFiles(anySecret{}))
+	if err != nil {
+		t.Fatalf("validating the test configuration: %v", err)
+	}
+	return cfg
+}
+
+func loadExample(t *testing.T) *config.Config {
+	t.Helper()
+	cfg, err := config.Load("../../../config/example.yaml", config.WithSecretFiles(anySecret{}))
+	if err != nil {
+		t.Fatalf("config/example.yaml does not validate:\n%v", err)
+	}
+	return cfg
+}
+
+// anySecret stands in for the filesystem. The renderer takes credentials as an argument,
+// so no test here needs a real file.
+type anySecret struct{}
+
+func (anySecret) CheckSecretFile(string) error { return nil }
+
+func assertGolden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	if *update {
+		if err := os.WriteFile(path, []byte(got), fs.FileMode(0o644)); err != nil {
+			t.Fatalf("rewriting %s: %v", path, err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	if got != string(want) {
+		t.Errorf("%s does not match. Run `go test ./internal/render/pppd -update` to see the whole of it.\n--- want ---\n%s\n--- got ---\n%s",
+			path, want, got)
+	}
+}
+
+func assertHasLines(t *testing.T, content string, want ...string) {
+	t.Helper()
+	lines := strings.Split(content, "\n")
+	for _, line := range want {
+		if !slices.Contains(lines, line) {
+			t.Errorf("no line %q in:\n%s", line, content)
+		}
+	}
+}
+
+func assertLacksLines(t *testing.T, content string, unwanted ...string) {
+	t.Helper()
+	lines := strings.Split(content, "\n")
+	for _, line := range unwanted {
+		if slices.Contains(lines, line) {
+			t.Errorf("unwanted line %q in:\n%s", line, content)
+		}
+	}
+}
