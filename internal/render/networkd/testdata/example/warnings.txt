@@ -1,0 +1,2 @@
+Interface/lan: ipv6.advertise validLifetime and preferredLifetime are not applied, because this interface advertises only its delegated prefix and networkd takes that prefix's lifetimes from the delegation
+DSLiteTunnel/dslite: localAddressFrom names Interface/lan, but systemd 257 can only take a tunnel's local address from the interface it is stacked on, so the tunnel sends from the global address of the underlay Interface/wan (ADR 0011)
