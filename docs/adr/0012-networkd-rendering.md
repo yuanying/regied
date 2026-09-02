@@ -37,12 +37,21 @@ already there belong to the apply engine.
 `PPPoESession` carry no interface name, so the resource name is the kernel name. The
 firewall and the policy routing name links, and this is what lets them.
 
-**networkd is given the PPPoE link only for what policy routing needs.** pppd creates the
-link, names it, addresses it and installs its default route. But a policy's table needs a
-default route through that link, and a route has to live on the link it leaves by, so
-regied writes a `.network` for it that carries the policy's route and rule and nothing
-else, with `KeepConfiguration=yes` so that networkd drops nothing pppd installed. A
-session no policy names gets no file at all and its link stays unmanaged.
+**networkd is given the PPPoE link for the routes that leave by it, and nothing else.**
+pppd creates the link, names it, addresses it and installs its default route. But a route
+has to live on the link it leaves by, and pppd's option file cannot carry one, so regied
+writes a `.network` for that link holding the routes and nothing else, with
+`KeepConfiguration=yes` so that networkd drops nothing pppd installed. A session that
+declares no route and that no policy names gets no file at all and its link stays
+unmanaged.
+
+Both kinds of route go that same way: the static routes a `PPPoESession` declares, which
+are the same thing an `Interface`'s are, and the default route a policy's table needs.
+The alternative for the static ones was for the apply engine to install them over netlink
+once the link came up, which would mean regied watching a link it has already rendered
+and putting the routes back after every redial — the structure ADR 0009 avoids, and the
+lifecycle ADR 0008 declined to write. It would also make how a route is installed depend
+on which kind of uplink it leaves by, which is one more thing to know during an outage.
 
 **The routing policy rule's priority is the table number.** Both are derived together and
 are unique by construction, and the range they are allocated from sits between the rule
@@ -80,5 +89,6 @@ warnings alongside the files. Two exist today, both from
   and the integration tests take that output as the shape they handle, so a change to any
   of it shows up in a diff and has to be argued for.
 - Giving networkd a `.network` for the PPPoE link is the one place where two writers meet
-  on one link. It is deliberate and it is narrow, but it is where to look first if a
+  on one link. It is deliberate and it is narrow — the file carries routes and
+  `KeepConfiguration=yes`, and never an address — but it is where to look first if a
   redial ever comes back without its routing.
