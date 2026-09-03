@@ -114,6 +114,10 @@ type FileChange struct {
 	// printed and never diffed (ADR 0003).
 	Secret bool
 
+	// Withheld says the content is not known, only that the file would be written and
+	// with what mode. Nothing writes such a file; only `regied render` produces one.
+	Withheld bool
+
 	Before     string
 	HadBefore  bool
 	BeforeMode fs.FileMode
@@ -236,6 +240,34 @@ func (p *Plan) Summary() string {
 	return strings.Join(lines, "\n")
 }
 
+// Render is the whole rendering of a configuration, as it would be written to an empty
+// host. It reads nothing and runs nothing, and the values that exist only at apply time
+// are whatever the caller supplies — which may be none of them.
+//
+// It is what answers "what does this configuration mean", for a host other than this one
+// and for a host that does not exist yet (ADR 0006).
+func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
+	rendered, err := e.render(cfg, runtime)
+	if err != nil {
+		return nil, err
+	}
+	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes}
+	for _, item := range rendered.artifacts {
+		plan.Files = append(plan.Files, FileChange{
+			Path:     item.Path,
+			Kind:     ChangeCreate,
+			Mode:     item.Mode,
+			DirMode:  item.DirMode,
+			Content:  item.Content,
+			Secret:   item.Secret,
+			Withheld: item.Withheld,
+		})
+	}
+	slices.SortFunc(plan.Files, func(a, b FileChange) int { return cmp.Compare(a.Path, b.Path) })
+	plan.Firewall = FirewallChange{Ruleset: rendered.ruleset, Apply: true}
+	return plan, nil
+}
+
 // Plan reads the host, renders the configuration, and works out what would have to
 // change. It writes nothing and runs nothing that changes anything: the two commands it
 // may run — the probe that asks whether the table is in the kernel, and the check that
@@ -295,11 +327,12 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 // compare reads what the host holds for one artifact.
 func (e *Engine) compare(item artifact) (FileChange, error) {
 	change := FileChange{
-		Path:    item.Path,
-		Mode:    item.Mode,
-		DirMode: item.DirMode,
-		Content: item.Content,
-		Secret:  item.Secret,
+		Path:     item.Path,
+		Mode:     item.Mode,
+		DirMode:  item.DirMode,
+		Content:  item.Content,
+		Secret:   item.Secret,
+		Withheld: item.Withheld,
 	}
 	before, mode, err := e.host.Files.ReadFile(item.Path)
 	switch {

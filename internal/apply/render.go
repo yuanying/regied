@@ -34,6 +34,12 @@ type artifact struct {
 	DirMode fs.FileMode
 	Content string
 	Secret  bool
+
+	// Withheld says the content is not known here, only that the file exists and with
+	// what mode. It happens in one case: `regied render`, which answers what a
+	// configuration means without reading the host, and so has no credentials to render
+	// the credentials file from. Such a file is reported and never written.
+	Withheld bool
 }
 
 // rendering is everything the four backends produced for one configuration.
@@ -79,6 +85,19 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 		out.sessions = append(out.sessions, session.Name)
 		out.artifacts = append(out.artifacts, fromPPPdFile(session.Peer))
 
+		if runtime.Credentials == nil {
+			// Nothing read the host, so there are no credentials to put in the file.
+			// It is reported by path and mode, which is all ADR 0003 would let it be
+			// reported by anyway.
+			out.artifacts = append(out.artifacts, artifact{
+				Path:     session.Credentials.Path,
+				Mode:     session.Credentials.Mode,
+				DirMode:  session.Credentials.DirMode,
+				Secret:   true,
+				Withheld: true,
+			})
+			continue
+		}
 		credentials, ok := runtime.Credentials[session.Name]
 		if !ok {
 			// CollectRuntime refuses a configuration whose credentials it could not
