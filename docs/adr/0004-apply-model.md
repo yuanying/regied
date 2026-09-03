@@ -121,6 +121,14 @@ restarted without it being in place first.
 
 **dnsmasq comes last** because it binds to the addresses of the links phase 3 configured.
 
+**A unit is taken away after what runs from it has been stopped.** Writing a file is not
+an effect, and reclaiming one usually is not either — but systemctl resolves an instance
+through its template, so a template that is already gone makes the stop fail. On a
+configuration that took its last session away, that failure would roll the whole apply
+back and put the session's configuration back on the host. So the units regied owns are
+the one thing not reclaimed while the files are being written: they are reclaimed by a
+step at the end of phase 5, after the stop, and systemd is told again afterwards.
+
 ### Supervision belongs to systemd
 
 pppd and dnsmasq are long-running processes regied configures. **regied does not fork
@@ -136,6 +144,22 @@ systemd unit for each and asks systemd to start it.
 - Redialling is pppd's `persist` and the LCP echoes beside it, which ADR 0014 already
   put in the peer file. Restarting after a crash is systemd's `Restart=`. regied declares
   both and then stays out of the way.
+
+Three details of those units follow from decisions already made and are easy to get
+wrong in the other direction.
+
+- **What counts as a session's own configuration** — the rule
+  [ADR 0005](0005-apply-rollback.md) rests on — is its two options files and the template
+  it runs from, and nothing else. Some other unit being written is not a reason to
+  restart a line.
+- **The session unit is ordered after `systemd-networkd.service`.** The Ethernet it dials
+  over is networkd's to configure, which is what phase 3 being ahead of phase 5 says. The
+  obvious alternative, `network-pre.target`, is reached *before* networkd has configured
+  anything and would order the session ahead of its own underlay.
+- **regied's dnsmasq unit offers no reload**, and a changed configuration restarts it.
+  dnsmasq re-reads `/etc/hosts`, its lease file and `resolv.conf` on `SIGHUP`; it does not
+  re-read its configuration file. A unit that declared a reload would let systemd choose
+  the reload, and the configuration just written would sit there unapplied.
 
 This is ADR 0008 applied one layer up: process supervision is a solved problem on this
 platform. It also means the state API can ask systemd whether something is running rather
@@ -177,6 +201,20 @@ hand it to `nft` — one transaction, no reload, no process touched, nothing els
 host disturbed. Phase 6 above is that step inside a normal apply, for the ordinary case
 where the line came up during phase 5 and the table written in phase 1 was rendered
 without an address.
+
+**The re-render only ever adds.** Phase 5 may have restarted a session, and a link read a
+few milliseconds after that answers that it is not there. Rendering *that* produces a
+ruleset with the hairpin rules missing, and installing it would take a working port
+forward away and record the result as what is in effect — the exact opposite of what this
+phase is for. So an uplink that held an address when the apply started and answers none
+now stops the re-render: the ruleset already installed stays, it still carries the address
+that uplink had, and the apply says why it was left alone.
+
+Waiting for the session to come back was the alternative and it is rejected. How long a
+redial takes is the provider's business, and an apply that blocks on it is an apply that
+can hang while holding a half-configured host. Leaving the working ruleset in place costs
+nothing until the address actually changes, and noticing that it did is the daemon's job
+anyway.
 
 **What notices a redial outside an apply is the daemon**, and its unit of work is where
 that lives. This record fixes what it must call and what it must not: re-render, compare
