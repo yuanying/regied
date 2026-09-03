@@ -89,7 +89,7 @@ func TestApplyRollsBackToThePreviousGenerationRatherThanToNothing(t *testing.T) 
 
 	// A second apply that changes the handout, and fails while reloading networkd.
 	changed := load(t, strings.Replace(hostFixture, "192.168.10.127", "192.168.10.200", 1)+forwardResource)
-	runner.fail["systemctl reload-or-restart regied-dnsmasq.service"] = errFake
+	runner.fail["systemctl restart regied-dnsmasq.service"] = errFake
 
 	sinceSecondApply := len(runner.ran)
 	_, err := engine.Apply(context.Background(), changed)

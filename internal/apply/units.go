@@ -56,6 +56,9 @@ func (e *Engine) units(rendered *rendering) []artifact {
 // Redialling is not systemd's: pppd's own persist and the LCP echoes beside it are what
 // bring a dropped session back, and they are in the peer file (ADR 0014). Restart= is
 // the backstop for pppd itself dying.
+//
+// The unit is ordered after networkd rather than after network-pre.target, because the
+// Ethernet it dials over is networkd's to configure.
 func pppoeUnitFile(root string) string {
 	return fmt.Sprintf(`%s
 #
@@ -65,8 +68,12 @@ func pppoeUnitFile(root string) string {
 [Unit]
 Description=regied PPPoE session %%i
 Documentation=man:pppd(8)
-After=network-pre.target
-Wants=network-pre.target
+# The Ethernet this dials over is configured by systemd-networkd, and the apply model
+# puts networkd ahead of the sessions for that reason (ADR 0004). Ordering against
+# network-pre.target would do the opposite: that target is reached before networkd has
+# configured anything, so pppd would start ahead of its own underlay.
+Wants=systemd-networkd.service
+After=systemd-networkd.service
 
 [Service]
 Type=exec
@@ -85,6 +92,8 @@ WantedBy=multi-user.target
 // regied did not write and belongs to whoever installed it (ADR 0009). A host may run
 // both, and this unit's dnsmasq answers only on the links the configuration named,
 // because the generated file says bind-dynamic and lists them.
+//
+// It offers no reload, because dnsmasq has none for its configuration file.
 func dnsmasqUnitFile(root string) string {
 	return fmt.Sprintf(`%s
 #
@@ -94,13 +103,16 @@ func dnsmasqUnitFile(root string) string {
 [Unit]
 Description=regied dnsmasq (address handout and DNS)
 Documentation=man:dnsmasq(8)
-After=network.target
-Wants=network.target
+# It binds to the addresses of the links networkd configures.
+Wants=systemd-networkd.service
+After=systemd-networkd.service
 
 [Service]
 Type=exec
+# There is no ExecReload. dnsmasq re-reads /etc/hosts, its lease file and resolv.conf on
+# SIGHUP, and does not re-read its configuration file, so offering a reload would let a
+# changed configuration go unapplied. regied restarts it instead.
 ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=%s/dnsmasq/dnsmasq.conf
-ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/yuanying/regied/internal/config"
@@ -23,6 +25,11 @@ type Result struct {
 	// running. That is the ordinary case on a cold start: the table written first was
 	// rendered before the line had dialled.
 	FirewallReapplied bool
+
+	// Notes is what went wrong after the commit stage had already succeeded. The
+	// configuration is on the host; something regied does around it is not, and saying
+	// so is not the same as saying the apply failed (ADR 0005).
+	Notes []string
 }
 
 // Error is what Apply returns when the commit stage failed. It says what failed, and
@@ -77,9 +84,12 @@ func (e *Engine) ApplyPlan(ctx context.Context, cfg *config.Config, plan *Plan) 
 	}
 
 	if err := e.stage(plan); err != nil {
-		// Nothing has run, so putting the files back is the whole of the rollback.
-		e.restoreFiles(plan)
-		return nil, err
+		// Nothing has run, so putting the files back is the whole of the rollback. What
+		// could not be put back is the first thing an operator needs, so it travels
+		// with the failure rather than being dropped (ADR 0005).
+		failure := &Error{Phase: PhaseStaging, Step: "writing what the configuration asks for", Cause: err}
+		failure.Rollback = e.restoreFiles(plan)
+		return nil, failure
 	}
 
 	if attempted, failure := e.commit(ctx, plan); failure != nil {
@@ -87,15 +97,14 @@ func (e *Engine) ApplyPlan(ctx context.Context, cfg *config.Config, plan *Plan) 
 		return nil, failure
 	}
 
+	// Everything the configuration asked for is on the host. What follows is regied's
+	// own bookkeeping, and a failure in it is reported rather than rolled back: telling
+	// an operator that an apply failed when the host is running the new configuration
+	// is worse than telling them what could not be written down (ADR 0005).
 	if err := e.record(plan); err != nil {
-		return nil, err
+		result.Notes = append(result.Notes, fmt.Sprintf("%v; the next apply will install the ruleset again", err))
 	}
-
-	reapplied, err := e.settleFirewall(ctx, cfg, plan)
-	if err != nil {
-		return nil, err
-	}
-	result.FirewallReapplied = reapplied
+	e.settleFirewall(ctx, cfg, plan, result)
 	return result, nil
 }
 
@@ -108,12 +117,18 @@ func (e *Engine) stage(plan *Plan) error {
 			// Only a rendering produces one of these, and a rendering is never applied.
 			continue
 		}
-		switch change.Kind {
-		case ChangeCreate, ChangeUpdate:
-			if err := e.write(change); err != nil {
+		switch {
+		case change.Kind == ChangeCreate || change.Kind == ChangeUpdate:
+			content, err := plan.contentFor(change)
+			if err != nil {
 				return err
 			}
-		case ChangeRemove:
+			if err := e.write(change, content); err != nil {
+				return err
+			}
+		case change.Kind == ChangeRemove && change.Deferred:
+			// Taken away by a step, once whatever runs from it has been stopped.
+		case change.Kind == ChangeRemove:
 			if err := e.host.Files.Remove(change.Path); err != nil {
 				return fmt.Errorf("cannot reclaim %s: %w", change.Path, err)
 			}
@@ -122,7 +137,7 @@ func (e *Engine) stage(plan *Plan) error {
 	return nil
 }
 
-func (e *Engine) write(change FileChange) error {
+func (e *Engine) write(change FileChange, content string) error {
 	dirMode := change.DirMode
 	if dirMode == 0 {
 		dirMode = 0o755
@@ -138,7 +153,7 @@ func (e *Engine) write(change FileChange) error {
 	if err := e.host.Files.MkdirAll(dir, dirMode); err != nil {
 		return fmt.Errorf("cannot create %s: %w", dir, err)
 	}
-	if err := e.host.Files.WriteFile(change.Path, []byte(change.Content), change.Mode); err != nil {
+	if err := e.host.Files.WriteFile(change.Path, []byte(content), change.Mode); err != nil {
 		return fmt.Errorf("cannot write %s: %w", change.Path, err)
 	}
 	return nil
@@ -156,11 +171,19 @@ func (e *Engine) commit(ctx context.Context, plan *Plan) (int, *Error) {
 }
 
 func (e *Engine) run(ctx context.Context, step Step) error {
-	if step.Kind == StepSysctl {
+	switch step.Kind {
+	case StepSysctl:
 		if err := e.host.Sysctl.Set(step.Switch.Key, step.Switch.Value); err != nil {
 			return fmt.Errorf("cannot set %s: %w", step.Switch.Key, err)
 		}
 		return nil
+	case StepRemove:
+		if err := e.host.Files.Remove(step.File.Path); err != nil {
+			return fmt.Errorf("cannot reclaim %s: %w", step.File.Path, err)
+		}
+		return nil
+	case StepWrite:
+		return e.write(step.File, step.File.Content)
 	}
 	_, err := e.host.Runner.Run(ctx, step.Command)
 	return err
@@ -173,11 +196,12 @@ func (e *Engine) restoreFiles(plan *Plan) []string {
 	var problems []string
 	for _, change := range plan.Files {
 		var err error
+		before, hadBefore := plan.previousFor(change)
 		switch {
 		case change.Kind == ChangeNone:
 			continue
-		case change.HadBefore:
-			err = e.host.Files.WriteFile(change.Path, []byte(change.Before), change.BeforeMode)
+		case hadBefore:
+			err = e.host.Files.WriteFile(change.Path, []byte(before), change.BeforeMode)
 		default:
 			err = e.host.Files.Remove(change.Path)
 		}
@@ -222,7 +246,7 @@ func (e *Engine) record(plan *Plan) error {
 		return fmt.Errorf("cannot create %s: %w", path.Dir(record), err)
 	}
 	if err := e.host.Files.WriteFile(record, []byte(plan.Firewall.Ruleset), 0o644); err != nil {
-		return fmt.Errorf("cannot write %s: %w", record, err)
+		return fmt.Errorf("cannot record the installed ruleset in %s: %w", record, err)
 	}
 	return nil
 }
@@ -234,23 +258,59 @@ func (e *Engine) record(plan *Plan) error {
 // Only the nftables table depends on the address an uplink is holding, so this is the
 // whole of what a changed address calls for. Nothing is reloaded and no process is
 // touched (ADR 0004).
-func (e *Engine) settleFirewall(ctx context.Context, cfg *config.Config, plan *Plan) (bool, error) {
-	// Only the addresses are read again. The credentials were used and dropped in the
-	// staging stage, and nothing here needs them (ADR 0003).
+//
+// **It only ever adds.** A link read a few milliseconds after its session was restarted
+// answers that it is not there, and rendering that would produce a ruleset without the
+// hairpin rules — which installing would take a working port forward away and record the
+// result as what is in effect. So an uplink that had an address and no longer answers
+// stops the settle, and the ruleset already installed stays. Noticing the redial that
+// follows belongs to the daemon.
+func (e *Engine) settleFirewall(ctx context.Context, cfg *config.Config, plan *Plan, result *Result) {
 	addresses, _ := readUplinkAddresses(cfg, e.host)
+
+	if lost := uplinksThatWentQuiet(plan.uplinks, addresses.UplinkAddresses); len(lost) > 0 {
+		result.Notes = append(result.Notes, fmt.Sprintf(
+			"%s held an address when this apply started and answers none now, so the ruleset was left as it was installed; it carries the address they had",
+			strings.Join(lost, ", ")))
+		return
+	}
+
 	ruleset, err := renderRuleset(cfg, addresses)
 	if err != nil {
-		return false, err
+		result.Notes = append(result.Notes, fmt.Sprintf("the ruleset could not be rendered again after the processes started: %v", err))
+		return
 	}
 	if ruleset == plan.Firewall.Ruleset {
-		return false, nil
+		return
 	}
 
 	if _, err := e.host.Runner.Run(ctx, Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: ruleset}); err != nil {
-		return false, fmt.Errorf("an uplink address appeared while applying, and the ruleset carrying it was refused: %w", err)
+		result.Notes = append(result.Notes, fmt.Sprintf("an uplink address appeared while applying, and the ruleset carrying it was refused: %v", err))
+		return
 	}
+	result.FirewallReapplied = true
+
 	settled := &Plan{Firewall: FirewallChange{Ruleset: ruleset, Before: plan.Firewall.Ruleset, Present: true, Apply: true}}
-	return true, e.record(settled)
+	if err := e.record(settled); err != nil {
+		result.Notes = append(result.Notes, err.Error())
+	}
+}
+
+// uplinksThatWentQuiet names the uplinks that held an address when the plan was computed
+// and hold none now. Which addresses they hold does not matter: a session that came back
+// on a different one is exactly what the settle is for.
+func uplinksThatWentQuiet(before, after map[string][]netip.Addr) []string {
+	var lost []string
+	for name, addresses := range before {
+		if len(addresses) == 0 {
+			continue
+		}
+		if len(after[name]) == 0 {
+			lost = append(lost, name)
+		}
+	}
+	slices.Sort(lost)
+	return lost
 }
 
 // ErrCommandNotFound is what a Runner reports for a command that is not installed. It is
