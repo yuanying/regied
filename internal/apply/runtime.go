@@ -175,9 +175,25 @@ func (c *collector) resolveAFTRs(ctx context.Context) {
 // (ADR 0013). Only the hairpin half of a port forward reads any of this, which is why a
 // changed address re-runs the firewall phase and nothing else (ADR 0004).
 func (c *collector) readLinkAddresses() {
+	runtime, missing := readUplinkAddresses(c.cfg, c.host)
+	c.runtime.NFTables = runtime
+	if len(missing) > 0 {
+		c.notef("no address was read from %s; anything that matches on one is left out of the ruleset", strings.Join(missing, ", "))
+	}
+}
+
+// readUplinkAddresses reads what each link resource is holding, and names the ones that
+// answered nothing.
+//
+// It is on its own because it is the whole of what the last phase of an apply re-reads:
+// only the nftables table depends on an uplink's address, so a session that dialled
+// while the apply was running calls for this and for nothing else. In particular it does
+// not call for the credentials to be read again (ADR 0003, ADR 0004).
+func readUplinkAddresses(cfg *config.Config, host Host) (nftables.Runtime, []string) {
+	runtime := nftables.Runtime{UplinkAddresses: make(map[string][]netip.Addr)}
 	var missing []string
-	for _, link := range linkResources(c.cfg) {
-		addresses, err := c.host.Links.Addresses(link.ifname)
+	for _, link := range linkResources(cfg) {
+		addresses, err := host.Links.Addresses(link.ifname)
 		if err != nil {
 			missing = append(missing, fmt.Sprintf("%s (%s)", link.name, link.ifname))
 			continue
@@ -193,11 +209,9 @@ func (c *collector) readLinkAddresses() {
 			continue
 		}
 		slices.SortFunc(usable, func(a, b netip.Addr) int { return a.Compare(b) })
-		c.runtime.NFTables.UplinkAddresses[link.name] = usable
+		runtime.UplinkAddresses[link.name] = usable
 	}
-	if len(missing) > 0 {
-		c.notef("no address was read from %s; anything that matches on one is left out of the ruleset", strings.Join(missing, ", "))
-	}
+	return runtime, missing
 }
 
 // isReachableAddress is whether an address is one something outside could have resolved.

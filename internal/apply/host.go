@@ -223,6 +223,9 @@ func (OSRunner) Run(ctx context.Context, cmd Command) ([]byte, error) {
 	command.Stderr = &stderr
 	out, err := command.Output()
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return out, fmt.Errorf("%s: %w", cmd, ErrCommandNotFound)
+		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			return out, fmt.Errorf("%s: %w", cmd, err)

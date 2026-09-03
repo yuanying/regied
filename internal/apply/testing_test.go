@@ -56,9 +56,10 @@ type fakeFiles struct {
 	readErr  map[string]error
 	writeErr map[string]error
 
-	// writes and removes record what happened, in order.
+	// writes, removes and dirs record what happened, in order.
 	writes  []string
 	removes []string
+	dirs    []string
 }
 
 type fakeFile struct {
@@ -103,7 +104,10 @@ func (f *fakeFiles) WriteFile(name string, data []byte, mode fs.FileMode) error 
 	return nil
 }
 
-func (f *fakeFiles) MkdirAll(string, fs.FileMode) error { return nil }
+func (f *fakeFiles) MkdirAll(dir string, mode fs.FileMode) error {
+	f.dirs = append(f.dirs, fmt.Sprintf("%s %04o", dir, mode))
+	return nil
+}
 
 func (f *fakeFiles) Remove(name string) error {
 	delete(f.files, name)
@@ -130,6 +134,10 @@ type fakeRunner struct {
 	// fail makes one command fail, keyed by its rendered form.
 	fail map[string]error
 
+	// onRun is called before each command, so that a test can make the host change
+	// under the engine the way a line coming up does.
+	onRun func(Command)
+
 	ran []Command
 }
 
@@ -138,6 +146,9 @@ func newFakeRunner() *fakeRunner {
 }
 
 func (r *fakeRunner) Run(_ context.Context, cmd Command) ([]byte, error) {
+	if r.onRun != nil {
+		r.onRun(cmd)
+	}
 	r.ran = append(r.ran, cmd)
 	key := cmd.String()
 	if err := r.fail[key]; err != nil {
