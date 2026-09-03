@@ -136,11 +136,18 @@ same link.
 | `mode` | yes | `slaac` — advertise the prefix for stateless autoconfiguration |
 | `otherInformation` | no | Default `false`. Set the O flag, telling clients to ask DHCPv6 for the rest |
 | `dnsServers` | no | Advertised as RDNSS |
-| `validLifetime` | no | Default `24h` |
-| `preferredLifetime` | no | Default half of `validLifetime` |
+| `validLifetime` | no | Default `24h`. Literal prefixes only. See below |
+| `preferredLifetime` | no | Default half of `validLifetime`. Literal prefixes only |
 
 The prefix advertised is the one this interface holds. It is not written here, so it
 cannot drift from the address that is actually configured.
+
+**The two lifetimes apply only to a prefix written as a literal address.** A prefix that
+comes from delegation is announced by the delegation itself, and networkd takes its
+lifetimes from the delegation — how long the provider says the prefix is good for is not
+something a downstream advertisement may extend, and there is no directive that
+overrides it. An interface whose IPv6 address is entirely derived and that sets either
+field is warned about at render time: what was written goes nowhere.
 
 ---
 
@@ -188,7 +195,7 @@ Backend: a `.netdev` of kind `ip6tnl`, mode `ipip6`, and its `.network`.
 | Field | Required | Value |
 |---|---|---|
 | `underlayRef` | yes | The `Interface` carrying the IPv6 that the tunnel runs over |
-| `localAddressFrom.interfaceRef` | one of | Take the tunnel's local address from this interface's IPv6 address |
+| `localAddressFrom.interfaceRef` | one of | Take the tunnel's local address from this interface's IPv6 address. See below |
 | `localAddress` | one of | A literal IPv6 address, for a statically addressed deployment |
 | `aftrHost` | one of | The provider's AFTR by name. Resolved at apply time |
 | `aftrAddress` | one of | The provider's AFTR as a literal IPv6 address |
@@ -204,6 +211,17 @@ and holds it to the same 15 characters an `ifname` is.
 Exactly one of `localAddressFrom` and `localAddress` is required. `localAddressFrom` is
 the one to use where the prefix comes from delegation: the tunnel then follows a prefix
 change instead of going dark until somebody edits the file.
+
+**On the platform regied targets, `localAddressFrom` can only be the underlay.** A
+tunnel's local address is `Local=` in networkd's `[Tunnel]` section, and systemd 257
+takes there an address of the link the tunnel is stacked on — `slaac` or `dhcp6`. The
+value that would take one out of a delegated prefix, `dhcp_pd`, arrived in systemd 258
+and is not on Debian 13 ([ADR 0011](../adr/0011-target-platform.md)). So the field is
+rendered as the underlay's own global address, and naming any other interface is
+reported as a warning: the tunnel comes up, and it sends from an address other than the
+one the file asked for. What the field means does not change — the address is taken from
+an interface rather than written down — and a platform carrying systemd 258 is what
+makes naming another interface do what it says.
 
 Exactly one of `aftrHost` and `aftrAddress` is required, in the same way as the pair
 above, and `aftrHost` is the one to reach for. Providers publish a stable, well-known name
