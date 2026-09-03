@@ -52,6 +52,10 @@ Declare a member as an `Interface` only to give it a property that is its own, s
 MTU, and then it must not carry addresses. The addresses belong to the bridge, and so
 does the name a `FirewallZone` names.
 
+`ifname`, and every name in `bridge.members`, is a name the kernel has to hold: at most
+15 characters, because `IFNAMSIZ` is 16 and the last byte is the terminator. A longer one
+is a validation error rather than something the kernel refuses partway through an apply.
+
 The bridge is created with spanning tree disabled, VLAN filtering disabled, and the
 kernel's defaults for the remaining timers. There is no field for any of them, and the
 omission is deliberate: joining several ports into one segment is all the schema claims
@@ -162,7 +166,8 @@ Backend: a pppd peer file, a secrets file with restrictive permissions, and a su
 | `routes` | no | As on `Interface` |
 
 The link is named after `metadata.name`, so other resources and the firewall see a stable
-name across redials.
+name across redials. That makes the name a kernel interface name, and it is held to the
+same 15 characters an `ifname` is.
 
 `defaultRoute.metric` is how a host with two uplinks says which one its own traffic uses.
 Traffic originating on the router is not subject to policy routing, so the metric is the
@@ -192,6 +197,9 @@ Backend: a `.netdev` of kind `ip6tnl`, mode `ipip6`, and its `.network`.
 | `defaultRoute.install` | no | Default `true` |
 | `defaultRoute.metric` | no | Default `0` |
 | `routes` | no | As on `Interface` |
+
+The tunnel link is named after `metadata.name`, which makes it a kernel interface name
+and holds it to the same 15 characters an `ifname` is.
 
 Exactly one of `localAddressFrom` and `localAddress` is required. `localAddressFrom` is
 the one to use where the prefix comes from delegation: the tunnel then follows a prefix

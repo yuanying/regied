@@ -938,3 +938,82 @@ func TestValidateAtMostOneDNSForwarder(t *testing.T) {
 `, secrets())
 	assertProblems(t, problems, []string{`a host has at most one DNSForwarder, and "lan" is already declared`})
 }
+
+// A name that becomes a link on the host has to be one the kernel can hold: IFNAMSIZ is
+// 16 bytes including the terminator, so 15 characters. Nothing below this catches it,
+// and without the check the configuration is refused by the kernel halfway through an
+// apply rather than before one starts.
+func TestValidateLinkNameLength(t *testing.T) {
+	cases := []struct {
+		name      string
+		resources string
+		want      []string
+	}{
+		{
+			name: "an interface name of sixteen characters",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan-downstair
+        addresses: [192.168.10.1/24]
+`,
+			want: []string{`spec.ifname: "br-lan-downstair" is 16 characters; a link name the kernel takes is at most 15`},
+		},
+		{
+			name: "a bridge member the kernel could not name",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        bridge: {members: [eth1, enp0s31f6-vlan100]}
+`,
+			want: []string{`spec.bridge.members[1]: "enp0s31f6-vlan100" is 17 characters; a link name the kernel takes is at most 15`},
+		},
+		{
+			name: "a PPPoE session named after more than the kernel holds",
+			resources: ifaceWAN + `    - kind: PPPoESession
+      metadata: {name: pppoe-upstream-1}
+      spec:
+        interfaceRef: wan
+        userIDFile: /secrets/user-id
+        passwordFile: /secrets/password
+`,
+			want: []string{`metadata.name: "pppoe-upstream-1" is 16 characters; the link this puts on the host is named after it, and a link name the kernel takes is at most 15`},
+		},
+		{
+			name: "a DS-Lite tunnel named after more than the kernel holds",
+			resources: ifaceWAN + ifaceLAN + `    - kind: DSLiteTunnel
+      metadata: {name: dslite-upstream-1}
+      spec:
+        underlayRef: wan
+        localAddressFrom: {interfaceRef: lan}
+        aftrHost: aftr.example.net
+`,
+			want: []string{`metadata.name: "dslite-upstream-1" is 17 characters; the link this puts on the host is named after it, and a link name the kernel takes is at most 15`},
+		},
+		{
+			name: "names of exactly fifteen characters",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan-upstairs
+        bridge: {members: [eth1, enp0s31f6-vlan1]}
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, problems := check(t, tc.resources, secrets())
+			if len(tc.want) == 0 {
+				if cfg == nil {
+					t.Fatalf("rejected a name the kernel can hold:\n%s", problems)
+				}
+				return
+			}
+			if cfg != nil {
+				t.Fatal("accepted a link name the kernel cannot hold")
+			}
+			assertProblems(t, problems, tc.want)
+		})
+	}
+}
