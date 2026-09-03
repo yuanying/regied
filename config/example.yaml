@@ -131,7 +131,7 @@ spec:
     # excludeDestinations is what keeps traffic that must not leave from
     # leaving. It is also what makes hairpin work: the mark is set after
     # destination translation, so a LAN host reaching the published service
-    # through the global address is already addressed to 192.168.10.20 by
+    # through the global address is already addressed to 192.168.10.200 by
     # then, matches the LAN exclusion, and stays local.
     # ------------------------------------------------------------------
 
@@ -176,6 +176,12 @@ spec:
     # No listening address: it is the uplink's, and it follows the uplink.
     # openFirewall defaults to true, so each of these also gets the accept
     # that lets the translated traffic through the wan-to-lan policy below.
+    #
+    # Every target is in the range the policy above sends out this uplink, and
+    # that is not a coincidence. The reply to a connection that arrived here is
+    # routed by the source address of the host that answers, not by the uplink
+    # it arrived on, so a target that policy routing sends out the tunnel would
+    # be reached and would never answer.
     - kind: PortForward
       metadata: {name: https}
       spec:
@@ -183,7 +189,7 @@ spec:
         protocol: tcp
         port: 443
         target:
-          address: 192.168.10.20
+          address: 192.168.10.200
           port: 443
 
     - kind: PortForward
@@ -193,7 +199,7 @@ spec:
         protocol: tcp
         port: 10022
         target:
-          address: 192.168.10.20
+          address: 192.168.10.200
           port: 22
 
     # A range is one rule, not eleven.
@@ -204,7 +210,7 @@ spec:
         protocol: udp
         portRange: 60000-60010
         target:
-          address: 192.168.10.30
+          address: 192.168.10.210
 
     # ------------------------------------------------------------------
     # Firewall
@@ -231,8 +237,8 @@ spec:
       spec:
         family: ipv6
         addresses:
-          - 2001:db8:0:1::20
-          - 2001:db8:0:1::30
+          - 2001:db8:0:1::200
+          - 2001:db8:0:1::210
         networks:
           - 2001:db8:0:2::/64
 
@@ -319,15 +325,17 @@ spec:
         # Which side of 192.168.10.128 a mapping falls on decides which uplink
         # that host leaves by. See the policies above.
         staticMappings:
+          # host-a and host-b are published from outside, so they sit above
+          # 192.168.10.128 and leave by the PPPoE uplink the forwards are on.
           - name: host-a
             macAddress: 00:00:5e:00:53:01
-            address: 192.168.10.20
+            address: 192.168.10.200
           - name: host-b
             macAddress: 00:00:5e:00:53:02
-            address: 192.168.10.30
+            address: 192.168.10.210
           - name: host-c
             macAddress: 00:00:5e:00:53:03
-            address: 192.168.10.200
+            address: 192.168.10.20
         ipv6:
           mode: stateless
           informationRefreshTime: 6h
@@ -347,4 +355,4 @@ spec:
           # A public name answered with an internal address, so that clients
           # inside reach the service directly instead of going out and back.
           - name: service.example.com
-            address: 192.168.10.20
+            address: 192.168.10.200

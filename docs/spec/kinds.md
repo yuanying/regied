@@ -453,6 +453,12 @@ width by construction, and is the usual way to write it.
 A `PortForward` whose `egressRef` names a `DSLiteTunnel` is a validation error: nothing
 can be published through it.
 
+**The target has to be a host that leaves by the uplink it is published on.** The reply
+to a connection that arrived on an uplink is routed by the source address of the host
+answering it, so on a host with policy routing the target must fall in a source range
+that an `EgressRoutePolicy` sends out that uplink. A target outside every such range is
+reached and never answers, and regied warns about it.
+
 ---
 
 ## DHCPServer

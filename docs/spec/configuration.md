@@ -202,3 +202,13 @@ It warns, and continues, about:
   brought up for the first time has no DUID to carry over, which is a legitimate
   configuration. A host replacing one that already holds a delegation and omitting it
   will quietly be delegated a different prefix.
+- a `DHCPServer` with an `ipv6` block whose interface does not advertise
+  `otherInformation`. Nothing would ever ask for what is configured there.
+- a `PortForward` whose `target.address` is outside every source range an
+  `EgressRoutePolicy` sends out the uplink the forward is published on. The reply to a
+  connection that arrived on an uplink is routed by the source address of the host that
+  answers it, not by the uplink it arrived on, so the translation happens, the packet
+  reaches the host, and the reply leaves by another uplink: the connection is never
+  established, and nothing in the configuration looks wrong. Putting the reply back on
+  the uplink the connection arrived on needs a mark per uplink rather than a mark per
+  policy, so regied says this and continues rather than rewriting the routing.

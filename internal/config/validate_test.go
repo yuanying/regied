@@ -1017,3 +1017,101 @@ func TestValidateLinkNameLength(t *testing.T) {
 		})
 	}
 }
+
+// A connection arriving on an uplink is answered by the host inside, and that reply is
+// routed by the source address of the host rather than by the uplink the connection
+// arrived on. Where policy routing sends the host out another uplink, the forward is
+// installed, the packet reaches the host, and nothing comes back.
+//
+// regied does not fix this yet -- remembering the uplink a connection arrived on needs a
+// mark per uplink -- so it says so and continues.
+func TestValidateWarnsAboutAPortForwardReturnPath(t *testing.T) {
+	base := ifaceWAN + ifaceLAN + pppoe + dslite
+	policies := `    - kind: EgressRoutePolicy
+      metadata: {name: upper-half-via-pppoe}
+      spec:
+        priority: 10
+        egressRef: pppoe0
+        sourceRanges: [192.168.10.128-192.168.10.255]
+    - kind: EgressRoutePolicy
+      metadata: {name: rest-via-dslite}
+      spec:
+        priority: 20
+        egressRef: dslite
+        sourceRanges: [192.168.10.0/24]
+`
+	forward := func(target string) string {
+		return `    - kind: PortForward
+      metadata: {name: https}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 443
+        target: {address: ` + target + `}
+`
+	}
+
+	t.Run("a target no range sends out the uplink it is published on", func(t *testing.T) {
+		cfg, problems := check(t, base+policies+forward("192.168.10.20"), secrets())
+		if cfg == nil {
+			t.Fatalf("this is a warning, not an error:\n%s", problems)
+		}
+		assertProblems(t, problems, []string{
+			`spec.target.address: 192.168.10.20 is outside every source range that sends traffic out "pppoe0"`,
+		})
+	})
+
+	t.Run("a target inside such a range", func(t *testing.T) {
+		cfg, problems := check(t, base+policies+forward("192.168.10.200"), secrets())
+		if cfg == nil {
+			t.Fatalf("rejected a forward whose target leaves by the right uplink:\n%s", problems)
+		}
+		assertProblems(t, problems, nil)
+	})
+
+	t.Run("a target inside a range named by an address set", func(t *testing.T) {
+		cfg, problems := check(t, base+`    - kind: IPAddressSet
+      metadata: {name: published}
+      spec:
+        family: ipv4
+        addresses: [192.168.10.20]
+        networks: [192.168.10.192/26]
+    - kind: EgressRoutePolicy
+      metadata: {name: published-via-pppoe}
+      spec:
+        priority: 10
+        egressRef: pppoe0
+        sourceAddressSetRefs: [published]
+`+forward("192.168.10.20"), secrets())
+		if cfg == nil {
+			t.Fatalf("a set is a source range like any other:\n%s", problems)
+		}
+		assertProblems(t, problems, nil)
+	})
+
+	// Nothing routes by source address here, so the reply follows the main table and
+	// this says nothing about it.
+	t.Run("a host with no policy on that uplink", func(t *testing.T) {
+		cfg, problems := check(t, base+forward("192.168.10.20"), secrets())
+		if cfg == nil {
+			t.Fatalf("rejected a forward on a host with no policy routing:\n%s", problems)
+		}
+		assertProblems(t, problems, nil)
+	})
+
+	// The policies that matter are the ones of the target's family.
+	t.Run("a policy of the other family", func(t *testing.T) {
+		cfg, problems := check(t, base+`    - kind: EgressRoutePolicy
+      metadata: {name: v6-via-pppoe}
+      spec:
+        family: ipv6
+        priority: 10
+        egressRef: pppoe0
+        sourceRanges: [2001:db8:0:1::/64]
+`+forward("192.168.10.20"), secrets())
+		if cfg == nil {
+			t.Fatalf("rejected a forward an IPv6 policy says nothing about:\n%s", problems)
+		}
+		assertProblems(t, problems, nil)
+	})
+}
