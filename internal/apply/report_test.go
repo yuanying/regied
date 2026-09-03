@@ -117,6 +117,50 @@ func TestReportShowsTheRulesetInFullWhenThereIsNoneToCompareWith(t *testing.T) {
 	}
 }
 
+// C-5. A file whose content is the same and whose mode is not still has to say what
+// would change, or the line is a claim with nothing behind it.
+func TestReportSaysWhatChangedWhenOnlyTheModeDid(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	cfg := load(t, hostFixture)
+	mustApply(t, engine, cfg)
+	delete(runner.fail, "nft list table inet regied")
+
+	peer := "/etc/regied/ppp/peers/pppoe0.conf"
+	content, _ := files.content(peer)
+	files.put(peer, content, 0o600)
+
+	report := reportOf(t, engine, cfg)
+
+	if !strings.Contains(report, "mode 0600 -> 0644") {
+		t.Errorf("a mode-only change does not say what would change:\n%s", report)
+	}
+	if strings.Contains(report, "@@") {
+		t.Errorf("a file whose content did not change is shown as a diff:\n%s", report)
+	}
+}
+
+// C-2. The warnings matter more on a real apply than on a dry run, not less, so they
+// have to be printable on their own.
+func TestWarningsCanBeReportedWithoutTheWholePlan(t *testing.T) {
+	plan := &Plan{
+		Warnings: []string{"a declaration that could not be rendered as written"},
+		Notes:    []string{"the line is not up"},
+	}
+
+	var b strings.Builder
+	ReportWarnings(&b, plan)
+
+	for _, want := range []string{"could not be rendered as written", "the line is not up"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("%q is missing:\n%s", want, b.String())
+		}
+	}
+	// Nothing else: this goes in front of an apply, not instead of one.
+	if strings.Contains(b.String(), "Nothing to do") {
+		t.Errorf("the warnings carry the closing line of a whole report:\n%s", b.String())
+	}
+}
+
 func reportOf(t *testing.T, engine *Engine, cfg *config.Config) string {
 	t.Helper()
 	return renderReport(mustPlan(t, engine, cfg))

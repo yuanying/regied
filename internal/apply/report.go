@@ -16,8 +16,7 @@ func Report(w io.Writer, plan *Plan) {
 	// The warnings come first. A declaration that could not be rendered as written
 	// matters more than any line of the diff below it, and it is the reason a dry-run
 	// exists at all.
-	section(w, "Warnings", plan.Warnings)
-	section(w, "What this host could not answer", plan.Notes)
+	ReportWarnings(w, plan)
 
 	reportFiles(w, plan)
 	reportFirewall(w, plan)
@@ -32,6 +31,17 @@ func Report(w io.Writer, plan *Plan) {
 	default:
 		fmt.Fprintln(w, "This is a dry run. Nothing above has been done.")
 	}
+}
+
+// ReportWarnings writes the renderers' warnings and what the host could not answer, and
+// nothing else.
+//
+// Report writes them too. This exists so that an apply that is not a dry run can put
+// them in front of what it is about to do: a declaration that could not be rendered as
+// written matters more when it is being applied, not less (ADR 0006).
+func ReportWarnings(w io.Writer, plan *Plan) {
+	section(w, "Warnings", plan.Warnings)
+	section(w, "What this host could not answer", plan.Notes)
 }
 
 func section(w io.Writer, title string, lines []string) {
@@ -80,6 +90,11 @@ func reportFile(w io.Writer, change FileChange) {
 		fmt.Fprintf(w, "  create %s (mode %04o)\n", change.Path, change.Mode)
 	case ChangeUpdate:
 		fmt.Fprintf(w, "  update %s (mode %04o)\n", change.Path, change.Mode)
+		// A file may be replaced because its mode moved and not its content. Saying
+		// "update" and then showing nothing is a claim with nothing behind it.
+		if change.HadBefore && change.BeforeMode != change.Mode {
+			fmt.Fprintf(w, "    mode %04o -> %04o\n", change.BeforeMode, change.Mode)
+		}
 	}
 
 	// A credentials file is reported by path, mode, and whether its content would
@@ -99,19 +114,25 @@ func reportFile(w io.Writer, change FileChange) {
 		indent(w, change.Content)
 		return
 	}
-	indent(w, unifiedDiff(change.Before, change.Content))
+	diff := unifiedDiff(change.Before, change.Content)
+	if diff == "" {
+		fmt.Fprintln(w, "    the content would not change")
+		return
+	}
+	indent(w, diff)
 }
 
+// secretVerdict says what would happen to a credentials file without saying anything
+// about what is in it. The verdict comes from the change kind, because the plan does not
+// carry the content to compare (ADR 0003).
 func secretVerdict(change FileChange) string {
 	switch {
 	case change.Withheld:
 		return "nothing was read from this host, so whether it would change is not known"
-	case !change.HadBefore:
+	case change.Kind == ChangeCreate:
 		return "there was no such file before"
-	case change.Before != change.Content:
-		return "its content would change"
 	default:
-		return "its content would not change"
+		return "its content or mode would change, so the session will be restarted"
 	}
 }
 
