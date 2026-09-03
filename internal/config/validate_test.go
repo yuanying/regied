@@ -913,3 +913,28 @@ func TestValidateReportsEveryProblemAtOnce(t *testing.T) {
 		`metadata.name: "self" is reserved for the host itself`,
 	})
 }
+
+// One dnsmasq serves the host, and it has one cache and one set of upstreams, so a
+// second DNSForwarder describes something the process cannot do. What two of them would
+// mean is not written anywhere, and merging them quietly is a decision the file does not
+// show. One resource holds as much as the kind can express: listenOn, upstreams and
+// conditional are all lists.
+func TestValidateAtMostOneDNSForwarder(t *testing.T) {
+	_, problems := check(t, ifaceLAN+`    - kind: Interface
+      metadata: {name: guest}
+      spec:
+        ifname: br-guest
+        addresses: [192.168.20.1/24]
+    - kind: DNSForwarder
+      metadata: {name: lan}
+      spec:
+        listenOn: [lan]
+        upstreams: [192.0.2.53]
+    - kind: DNSForwarder
+      metadata: {name: guest}
+      spec:
+        listenOn: [guest]
+        upstreams: [198.51.100.53]
+`, secrets())
+	assertProblems(t, problems, []string{`a host has at most one DNSForwarder, and "lan" is already declared`})
+}

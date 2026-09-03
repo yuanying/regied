@@ -162,14 +162,11 @@ func writeDNS(b *strings.Builder, forwarders []config.Named[*v1alpha1.DNSForward
 		return
 	}
 
-	// dnsmasq has one cache, so several forwarders share it and the largest wins. It has
-	// one set of upstreams too, and they are the union of what the forwarders name.
-	cacheSize := 0
-	for _, forwarder := range forwarders {
-		if size := forwarder.Spec.CacheSizeOrDefault(); size > cacheSize {
-			cacheSize = size
-		}
-	}
+	// A host declares at most one DNSForwarder: dnsmasq has one cache and one set of
+	// upstreams, so a second one would ask the process for something it cannot do, and
+	// validation refuses it (docs/spec/kinds.md).
+	forwarder := forwarders[0]
+	spec := forwarder.Spec
 
 	b.WriteString("\n")
 	b.WriteString("# DNS. The upstreams are declared, so the host resolver is not consulted: on\n")
@@ -181,26 +178,23 @@ func writeDNS(b *strings.Builder, forwarders []config.Named[*v1alpha1.DNSForward
 	b.WriteString("no-hosts\n")
 	b.WriteString("domain-needed\n")
 	b.WriteString("bogus-priv\n")
-	fmt.Fprintf(b, "cache-size=%d\n", cacheSize)
+	fmt.Fprintf(b, "cache-size=%d\n", spec.CacheSizeOrDefault())
 
-	for _, forwarder := range forwarders {
-		spec := forwarder.Spec
-		fmt.Fprintf(b, "\n# DNSForwarder/%s\n", forwarder.Name)
-		for _, upstream := range spec.Upstreams {
-			fmt.Fprintf(b, "server=%s\n", upstream)
+	fmt.Fprintf(b, "\n# DNSForwarder/%s\n", forwarder.Name)
+	for _, upstream := range spec.Upstreams {
+		fmt.Fprintf(b, "server=%s\n", upstream)
+	}
+	// A server directive carries one address, so a zone answered by two resolvers is two
+	// lines.
+	for _, conditional := range spec.Conditional {
+		for _, server := range conditional.Servers {
+			fmt.Fprintf(b, "server=/%s/%s\n", conditional.Domain, server)
 		}
-		// A server directive carries one address, so a zone answered by two resolvers is
-		// two lines.
-		for _, conditional := range spec.Conditional {
-			for _, server := range conditional.Servers {
-				fmt.Fprintf(b, "server=/%s/%s\n", conditional.Domain, server)
-			}
-		}
-		// host-record answers exactly this name. address=/name/ would also answer for
-		// everything below it, which is more than the schema says.
-		for _, host := range spec.StaticHosts {
-			fmt.Fprintf(b, "host-record=%s,%s\n", host.Name, host.Address)
-		}
+	}
+	// host-record answers exactly this name. address=/name/ would also answer for
+	// everything below it, which is more than the schema says.
+	for _, host := range spec.StaticHosts {
+		fmt.Fprintf(b, "host-record=%s,%s\n", host.Name, host.Address)
 	}
 }
 

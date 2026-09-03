@@ -215,35 +215,6 @@ func TestWithoutAForwarderDNSIsOff(t *testing.T) {
 	assertLacksLines(t, content, "no-resolv")
 }
 
-// dnsmasq has one cache and one set of upstreams. Two forwarders merge into them, and
-// the larger cache wins rather than the last one written.
-func TestForwardersMerge(t *testing.T) {
-	content := render(t, `
-    - kind: Interface
-      metadata: {name: lan}
-      spec: {ifname: br-lan, addresses: [192.168.10.1/24]}
-    - kind: Interface
-      metadata: {name: guest}
-      spec: {ifname: br-guest, addresses: [192.168.20.1/24]}
-    - kind: DNSForwarder
-      metadata: {name: lan}
-      spec:
-        listenOn: [lan]
-        cacheSize: 1000
-        upstreams: [192.0.2.53]
-    - kind: DNSForwarder
-      metadata: {name: guest}
-      spec:
-        listenOn: [guest]
-        cacheSize: 150
-        upstreams: [198.51.100.53]
-`)
-	assertHasLines(t, content, "cache-size=1000", "server=192.0.2.53", "server=198.51.100.53")
-	if got := strings.Count(content, "cache-size="); got != 1 {
-		t.Errorf("cache-size appears %d times, want once:\n%s", got, content)
-	}
-}
-
 // A PPPoE session is a link a forwarder may listen on, and its link carries the
 // resource's name rather than the interface it runs over.
 func TestListeningOnAnUplink(t *testing.T) {

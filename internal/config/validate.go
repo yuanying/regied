@@ -18,6 +18,7 @@ func Validate(document *v1alpha1.NetworkConfig, opts ...Option) (*Config, error)
 
 	v.buildIndex()
 	v.checkDocument()
+	v.checkSingletons()
 	for _, resource := range v.order {
 		v.checkResource(resource)
 	}
@@ -87,6 +88,22 @@ func (v *validator) checkDocument() {
 	if v.document.Spec.Global.SourceValidationEnabled() && len(v.byKind[v1alpha1.KindEgressRoutePolicy]) > 0 {
 		v.errorf(nil, "spec.global.sourceValidation",
 			"cannot be true while an EgressRoutePolicy is declared: policy routing makes return paths asymmetric, and reverse path filtering drops exactly that traffic")
+	}
+}
+
+// checkSingletons refuses a second resource of a kind a host can only have one of.
+//
+// One dnsmasq serves the host, and it has one cache and one set of upstreams, so a
+// second DNSForwarder asks the process for something it cannot do. The kind is shaped to
+// need only one: listenOn, upstreams, conditional and staticHosts are all lists.
+func (v *validator) checkSingletons() {
+	forwarders := v.byKind[v1alpha1.KindDNSForwarder]
+	if len(forwarders) < 2 {
+		return
+	}
+	for _, resource := range forwarders[1:] {
+		v.errorf(resource, "", "a host has at most one DNSForwarder, and %q is already declared: one dnsmasq serves the host, and it has one cache and one set of upstreams",
+			forwarders[0].Metadata.Name)
 	}
 }
 
