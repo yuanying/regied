@@ -78,6 +78,9 @@ spec:
           advertise:
             mode: slaac
             otherInformation: true
+            # The lifetimes apply to a prefix written here as a literal. This
+            # interface advertises only its delegated prefix, whose lifetimes
+            # come from the delegation, so regied says this one is not applied.
             validLifetime: 24h
 
     # ------------------------------------------------------------------
@@ -112,6 +115,10 @@ spec:
       metadata: {name: dslite}
       spec:
         underlayRef: wan
+        # The address the tunnel sends from is taken from an interface rather
+        # than written down. systemd 257 can only take it from the link the
+        # tunnel is stacked on, so naming another interface is reported and the
+        # tunnel sends from the underlay's global address (ADR 0011).
         localAddressFrom:
           interfaceRef: lan
         aftrHost: aftr.example.net
