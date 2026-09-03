@@ -353,6 +353,7 @@ func (v *validator) checkPortForward(resource *v1alpha1.Resource, spec *v1alpha1
 		return
 	}
 	v.exclusive(resource, "spec.target", "port", "portRange", spec.Target.Port != nil, spec.Target.PortRange != nil)
+	v.checkForwardReturnPath(resource, spec)
 
 	// A range has to be translated onto a range of the same width. Where the widths
 	// differ, which outside port lands on which inside one is decided by the kernel and
@@ -371,6 +372,90 @@ func (v *validator) checkPortForward(resource *v1alpha1.Resource, spec *v1alpha1
 	}
 	v.errorf(resource, field, "%s covers %s, but the forward listens on %s, which covers %d",
 		target, ports(target.Width()), listen, listen.Width())
+}
+
+// checkForwardReturnPath warns when the host a forward points at is not one that policy
+// routing sends out the uplink the forward is published on.
+//
+// A connection arriving on an uplink is answered by the host inside, and the reply is
+// routed by that host's source address rather than by the uplink the connection arrived
+// on. Where a policy sends the host out another uplink, the translation happens, the
+// packet reaches the host, and the reply leaves somewhere else: the connection is never
+// established, and nothing about the configuration looks wrong.
+//
+// Fixing it means remembering the uplink a connection arrived on and putting the reply
+// back on it, which needs a mark per uplink rather than a mark per policy. Until that
+// exists this is a warning and not a rewrite.
+//
+// A host where no policy names this uplink and this family is not routing by source at
+// all, and the reply follows the main table: there is nothing to say about it.
+func (v *validator) checkForwardReturnPath(resource *v1alpha1.Resource, spec *v1alpha1.PortForwardSpec) {
+	if spec.EgressRef == "" || spec.Target == nil || !spec.Target.Address.IsValid() {
+		return
+	}
+	target := spec.Target.Address.Addr
+	family := familyOf(target)
+
+	selects := false
+	for _, policy := range v.byKind[v1alpha1.KindEgressRoutePolicy] {
+		policySpec, ok := policy.Spec.(*v1alpha1.EgressRoutePolicySpec)
+		if !ok || policySpec.EgressRef != spec.EgressRef || policySpec.FamilyOrDefault() != family {
+			continue
+		}
+		if v.policyMatches(policySpec, target) {
+			return
+		}
+		selects = true
+	}
+	if !selects {
+		return
+	}
+	v.warnf(resource, "spec.target.address",
+		"%s is outside every source range that sends traffic out %q, so the reply to a connection arriving there leaves by whichever uplink policy routing picks for this address and the connection is never established; move the host into one of those ranges, or publish it through the uplink it leaves by",
+		spec.Target.Address, spec.EgressRef)
+}
+
+// policyMatches reports whether a policy's match covers one address, through a range it
+// holds itself or through a set it names.
+func (v *validator) policyMatches(spec *v1alpha1.EgressRoutePolicySpec, address netip.Addr) bool {
+	for _, source := range spec.SourceRanges {
+		if sourceRangeContains(source, address) {
+			return true
+		}
+	}
+	for _, ref := range spec.SourceAddressSetRefs {
+		set := v.index[v1alpha1.KindIPAddressSet][ref]
+		if set == nil {
+			continue
+		}
+		setSpec, ok := set.Spec.(*v1alpha1.IPAddressSetSpec)
+		if !ok {
+			continue
+		}
+		for _, member := range setSpec.Addresses {
+			if member.Addr == address {
+				return true
+			}
+		}
+		for _, network := range setSpec.Networks {
+			if network.Contains(address) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// sourceRangeContains reports whether a source range covers an address, in either of the
+// two forms one may be written in.
+func sourceRangeContains(source v1alpha1.SourceRange, address netip.Addr) bool {
+	if source.IsPrefix() {
+		return source.Prefix.Contains(address)
+	}
+	if !source.From.IsValid() || source.From.BitLen() != address.BitLen() {
+		return false
+	}
+	return !address.Less(source.From) && !source.To.Less(address)
 }
 
 func ports(n int) string {

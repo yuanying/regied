@@ -26,7 +26,7 @@ table inet regied {
 	set addrset_published-v6 {
 		type ipv6_addr
 		flags interval
-		elements = { 2001:db8:0:1::20, 2001:db8:0:1::30, 2001:db8:0:2::/64 }
+		elements = { 2001:db8:0:1::200, 2001:db8:0:1::210, 2001:db8:0:2::/64 }
 	}
 
 	# FirewallPolicy "lan-to-self": lan to self
@@ -77,21 +77,21 @@ table inet regied {
 	# hairpinned connection fall out of a policy's local exclusion
 	chain prerouting_nat {
 		type nat hook prerouting priority dstnat; policy accept;
-		iifname "pppoe0" meta nfproto ipv4 tcp dport 443 dnat ip to 192.168.10.20:443 comment "PortForward/https"
-		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 tcp dport 443 dnat ip to 192.168.10.20:443 comment "PortForward/https"
-		iifname "pppoe0" meta nfproto ipv4 udp dport 60000-60010 dnat ip to 192.168.10.30:60000-60010 comment "PortForward/mosh"
-		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 udp dport 60000-60010 dnat ip to 192.168.10.30:60000-60010 comment "PortForward/mosh"
-		iifname "pppoe0" meta nfproto ipv4 tcp dport 10022 dnat ip to 192.168.10.20:22 comment "PortForward/ssh"
-		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 tcp dport 10022 dnat ip to 192.168.10.20:22 comment "PortForward/ssh"
+		iifname "pppoe0" meta nfproto ipv4 tcp dport 443 dnat ip to 192.168.10.200:443 comment "PortForward/https"
+		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 tcp dport 443 dnat ip to 192.168.10.200:443 comment "PortForward/https"
+		iifname "pppoe0" meta nfproto ipv4 udp dport 60000-60010 dnat ip to 192.168.10.210:60000-60010 comment "PortForward/mosh"
+		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 udp dport 60000-60010 dnat ip to 192.168.10.210:60000-60010 comment "PortForward/mosh"
+		iifname "pppoe0" meta nfproto ipv4 tcp dport 10022 dnat ip to 192.168.10.200:22 comment "PortForward/ssh"
+		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 tcp dport 10022 dnat ip to 192.168.10.200:22 comment "PortForward/ssh"
 	}
 
 	# translation on the way out: the hairpin half of a port forward, then the
 	# source translation each uplink asked for
 	chain postrouting_nat {
 		type nat hook postrouting priority srcnat; policy accept;
-		iifname != "pppoe0" ct status dnat meta nfproto ipv4 ip daddr 192.168.10.20 tcp dport 443 masquerade comment "PortForward/https"
-		iifname != "pppoe0" ct status dnat meta nfproto ipv4 ip daddr 192.168.10.30 udp dport 60000-60010 masquerade comment "PortForward/mosh"
-		iifname != "pppoe0" ct status dnat meta nfproto ipv4 ip daddr 192.168.10.20 tcp dport 22 masquerade comment "PortForward/ssh"
+		iifname != "pppoe0" ct status dnat meta nfproto ipv4 ip daddr 192.168.10.200 tcp dport 443 masquerade comment "PortForward/https"
+		iifname != "pppoe0" ct status dnat meta nfproto ipv4 ip daddr 192.168.10.210 udp dport 60000-60010 masquerade comment "PortForward/mosh"
+		iifname != "pppoe0" ct status dnat meta nfproto ipv4 ip daddr 192.168.10.200 tcp dport 22 masquerade comment "PortForward/ssh"
 		oifname "pppoe0" ip saddr 192.168.10.0/24 masquerade comment "SourceNAT/masquerade-pppoe"
 	}
 
@@ -114,12 +114,12 @@ table inet regied {
 	# traffic passing through. A pair of zones with no policy is dropped
 	chain forward {
 		type filter hook forward priority filter; policy drop;
-		ct status dnat meta nfproto ipv4 ip daddr 192.168.10.20 tcp dport 443 counter accept comment "PortForward/https"
-		ct status dnat meta nfproto ipv4 ip saddr 192.168.10.20 tcp sport 443 counter accept comment "PortForward/https"
-		ct status dnat meta nfproto ipv4 ip daddr 192.168.10.30 udp dport 60000-60010 counter accept comment "PortForward/mosh"
-		ct status dnat meta nfproto ipv4 ip saddr 192.168.10.30 udp sport 60000-60010 counter accept comment "PortForward/mosh"
-		ct status dnat meta nfproto ipv4 ip daddr 192.168.10.20 tcp dport 22 counter accept comment "PortForward/ssh"
-		ct status dnat meta nfproto ipv4 ip saddr 192.168.10.20 tcp sport 22 counter accept comment "PortForward/ssh"
+		ct status dnat meta nfproto ipv4 ip daddr 192.168.10.200 tcp dport 443 counter accept comment "PortForward/https"
+		ct status dnat meta nfproto ipv4 ip saddr 192.168.10.200 tcp sport 443 counter accept comment "PortForward/https"
+		ct status dnat meta nfproto ipv4 ip daddr 192.168.10.210 udp dport 60000-60010 counter accept comment "PortForward/mosh"
+		ct status dnat meta nfproto ipv4 ip saddr 192.168.10.210 udp sport 60000-60010 counter accept comment "PortForward/mosh"
+		ct status dnat meta nfproto ipv4 ip daddr 192.168.10.200 tcp dport 22 counter accept comment "PortForward/ssh"
+		ct status dnat meta nfproto ipv4 ip saddr 192.168.10.200 tcp sport 22 counter accept comment "PortForward/ssh"
 		iifname @zone_lan oifname @zone_wan jump policy_lan-to-wan
 		iifname @zone_wan oifname @zone_lan jump policy_wan-to-lan
 	}
