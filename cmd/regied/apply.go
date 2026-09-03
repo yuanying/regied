@@ -44,6 +44,11 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// A declaration that could not be rendered as written matters more when it is being
+	// applied than when it is being previewed, so it goes in front of the apply rather
+	// than only in front of a dry run (ADR 0006).
+	apply.ReportWarnings(stderr, plan)
+
 	result, err := engine.ApplyPlan(ctx, cfg, plan)
 	if err != nil {
 		return reportError(stderr, err)
@@ -64,4 +69,10 @@ func reportResult(stdout io.Writer, result *apply.Result) {
 		fmt.Fprintln(stdout, "An uplink address appeared while applying; the ruleset was rendered again with it.")
 	}
 	fmt.Fprintln(stdout, "Applied.")
+	// What follows happened after the configuration was on the host. It is not a failed
+	// apply, and saying so would tell the operator the opposite of what happened
+	// (ADR 0005) — but it still has to be read, so it goes last.
+	for _, note := range result.Notes {
+		fmt.Fprintf(stdout, "  note: %s\n", note)
+	}
 }
