@@ -22,6 +22,7 @@ func Validate(document *v1alpha1.NetworkConfig, opts ...Option) (*Config, error)
 	for _, resource := range v.order {
 		v.checkResource(resource)
 	}
+	v.checkLinkNames()
 	v.checkBridgeMembers()
 	v.checkDerivationCycles()
 	routing := v.deriveRouting()
@@ -457,6 +458,51 @@ func (v *validator) checkRoutes(resource *v1alpha1.Resource, field string, route
 	for i, route := range routes {
 		v.required(resource, fmt.Sprintf("%s[%d].destination", field, i), route.Destination.IsValid())
 	}
+}
+
+// --- names that reach the kernel -------------------------------------------------
+
+// MaxLinkNameLength is the longest name the kernel accepts for a link. IFNAMSIZ is 16
+// bytes and the last one is the terminator.
+const MaxLinkNameLength = 15
+
+// checkLinkNames refuses a name that would become a link the kernel cannot name.
+//
+// Which kinds put a link on the host is what ResourceKind.IsLink says. An Interface
+// carries the kernel name in spec.ifname, and names the bridge members it enslaves the
+// same way; a PPPoESession and a DSLiteTunnel are named after the resource, so that the
+// firewall sees a stable name across redials.
+//
+// Without this the name is refused by the kernel partway through an apply, where what
+// fails is a link that other resources are written against rather than the name that was
+// too long.
+func (v *validator) checkLinkNames() {
+	for _, resource := range v.order {
+		if !resource.Kind.IsLink() {
+			continue
+		}
+		spec, isInterface := resource.Spec.(*v1alpha1.InterfaceSpec)
+		if !isInterface {
+			v.checkLinkName(resource, "metadata.name", resource.Metadata.Name,
+				"the link this puts on the host is named after it, and ")
+			continue
+		}
+		v.checkLinkName(resource, "spec.ifname", spec.Ifname, "")
+		if spec.Bridge == nil {
+			continue
+		}
+		for i, member := range spec.Bridge.Members {
+			v.checkLinkName(resource, fmt.Sprintf("spec.bridge.members[%d]", i), member, "")
+		}
+	}
+}
+
+func (v *validator) checkLinkName(resource *v1alpha1.Resource, field, name, because string) {
+	if len(name) <= MaxLinkNameLength {
+		return
+	}
+	v.errorf(resource, field, "%q is %d characters; %sa link name the kernel takes is at most %d",
+		name, len(name), because, MaxLinkNameLength)
 }
 
 // --- cross-resource checks -------------------------------------------------------

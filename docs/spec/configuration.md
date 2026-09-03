@@ -185,6 +185,9 @@ Beyond references resolving and required fields being present, regied rejects:
   an inclusive range
 - a `DSLiteTunnel` carrying both `aftrHost` and `aftrAddress`
 - a `DSLiteTunnel` carrying neither
+- a name that becomes a link on the host and is longer than 15 characters, which is all
+  the kernel holds: an `Interface`'s `ifname` and its `bridge.members`, and the
+  `metadata.name` of a `PPPoESession` or a `DSLiteTunnel`
 - a second `DNSForwarder`. One dnsmasq serves the host, and it has one cache and one set
   of upstreams
 - a `FirewallZone` named `self`
