@@ -24,11 +24,14 @@ func Report(w io.Writer, plan *Plan) {
 	reportSwitches(w, plan)
 	reportSteps(w, plan)
 
-	if plan.Empty() {
+	switch {
+	case plan.Rendered:
+		fmt.Fprintln(w, "This is a rendering. Nothing on this host was read, and nothing was changed.")
+	case plan.Empty():
 		fmt.Fprintln(w, "Nothing to do: the host already holds this configuration.")
-		return
+	default:
+		fmt.Fprintln(w, "This is a dry run. Nothing above has been done.")
 	}
-	fmt.Fprintln(w, "This is a dry run. Nothing above has been done.")
 }
 
 func section(w io.Writer, title string, lines []string) {
@@ -88,6 +91,12 @@ func reportFile(w io.Writer, change FileChange) {
 	}
 	if change.Withheld {
 		fmt.Fprintln(w, "    content not shown: nothing was read from this host")
+		return
+	}
+	// A file that is not replacing anything is shown as it would be written. Decorating
+	// every line of it as an addition says nothing, and a rendering is all such files.
+	if change.Kind == ChangeCreate {
+		indent(w, change.Content)
 		return
 	}
 	indent(w, unifiedDiff(change.Before, change.Content))

@@ -194,6 +194,10 @@ type Plan struct {
 	Switches []SwitchChange
 	Firewall FirewallChange
 	Steps    []Step
+
+	// Rendered says this is a rendering rather than a plan against a host: nothing was
+	// read, so every file is shown as it would be written and nothing is compared.
+	Rendered bool
 }
 
 // Empty is whether applying this plan would change nothing at all. An idempotent engine
@@ -251,7 +255,7 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes}
+	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Rendered: true}
 	for _, item := range rendered.artifacts {
 		plan.Files = append(plan.Files, FileChange{
 			Path:     item.Path,
