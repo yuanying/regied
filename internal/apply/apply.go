@@ -104,6 +104,10 @@ func (e *Engine) ApplyPlan(ctx context.Context, cfg *config.Config, plan *Plan) 
 // it starts, and nft never reads a file by itself.
 func (e *Engine) stage(plan *Plan) error {
 	for _, change := range plan.Files {
+		if change.Withheld {
+			// Only a rendering produces one of these, and a rendering is never applied.
+			continue
+		}
 		switch change.Kind {
 		case ChangeCreate, ChangeUpdate:
 			if err := e.write(change); err != nil {
