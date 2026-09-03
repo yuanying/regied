@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -66,7 +67,10 @@ func New(host Host, opts Options) *Engine {
 type Phase int
 
 const (
-	PhaseFirewall Phase = iota
+	// PhaseStaging is not one of the six: it is where the files are written and
+	// nothing has run. It exists so that a failure there can say where it was.
+	PhaseStaging Phase = iota
+	PhaseFirewall
 	PhaseKernel
 	PhaseNetworkd
 	PhaseProcessConfig
@@ -75,6 +79,8 @@ const (
 
 func (p Phase) String() string {
 	switch p {
+	case PhaseStaging:
+		return "staging"
 	case PhaseFirewall:
 		return "firewall"
 	case PhaseKernel:
@@ -118,6 +124,10 @@ type FileChange struct {
 	// with what mode. Nothing writes such a file; only `regied render` produces one.
 	Withheld bool
 
+	// Deferred says this file is not reclaimed while the files are being written, but
+	// by a step, once whatever still runs from it has been stopped (ADR 0004).
+	Deferred bool
+
 	Before     string
 	HadBefore  bool
 	BeforeMode fs.FileMode
@@ -152,6 +162,10 @@ type StepKind string
 const (
 	StepCommand StepKind = "command"
 	StepSysctl  StepKind = "sysctl"
+	// StepRemove and StepWrite are the reclaiming that cannot happen while the files
+	// are being written, because something is still running from the file.
+	StepRemove StepKind = "remove"
+	StepWrite  StepKind = "write"
 )
 
 // Step is one thing the commit stage does.
@@ -162,6 +176,7 @@ type Step struct {
 
 	Command Command
 	Switch  SwitchChange
+	File    FileChange
 
 	// Undo puts back what this step changed. Every step has one, because a step without
 	// a way back is a step a later failure could not roll back (ADR 0005).
@@ -169,8 +184,13 @@ type Step struct {
 }
 
 func (s Step) describe() string {
-	if s.Kind == StepSysctl {
+	switch s.Kind {
+	case StepSysctl:
 		return fmt.Sprintf("%s = %s", s.Switch.Key, s.Switch.Value)
+	case StepRemove:
+		return "reclaim " + s.File.Path
+	case StepWrite:
+		return "put back " + s.File.Path
 	}
 	return s.Command.String()
 }
@@ -198,6 +218,65 @@ type Plan struct {
 	// Rendered says this is a rendering rather than a plan against a host: nothing was
 	// read, so every file is shown as it would be written and nothing is compared.
 	Rendered bool
+
+	// secrets is the content of the files marked Secret, which is why they are not in
+	// the FileChanges above. Nothing that prints can reach this field, so printing a
+	// plan cannot print a credential — which is what ADR 0003 asks for, and what a rule
+	// to be careful would not give (ADR 0004).
+	secrets map[string]secretContent
+
+	// uplinks is what each uplink was holding when this plan was computed. It is what
+	// the settle step compares against, so that a link read while its session is
+	// redialling cannot take the rules that depend on an address away (ADR 0004).
+	uplinks map[string][]netip.Addr
+}
+
+// secretContent is what a file the plan may not carry holds, and what is there now. Both
+// are credentials, so both live here rather than in a FileChange.
+type secretContent struct {
+	content   string
+	before    string
+	hadBefore bool
+}
+
+// hide moves a secret file's content out of the change and into the plan's own store.
+// The change keeps everything an operator may see: the path, the mode, and whether the
+// file would be created or replaced.
+func (p *Plan) hide(change *FileChange) {
+	if !change.Secret || change.Withheld {
+		return
+	}
+	if p.secrets == nil {
+		p.secrets = make(map[string]secretContent)
+	}
+	p.secrets[change.Path] = secretContent{
+		content:   change.Content,
+		before:    change.Before,
+		hadBefore: change.HadBefore,
+	}
+	change.Content, change.Before = "", ""
+}
+
+// contentFor is what to write for one file, whether or not the plan carries its content.
+func (p *Plan) contentFor(change FileChange) (string, error) {
+	if !change.Secret {
+		return change.Content, nil
+	}
+	secret, ok := p.secrets[change.Path]
+	if !ok {
+		return "", fmt.Errorf("nothing was rendered for %s", change.Path)
+	}
+	return secret.content, nil
+}
+
+// previousFor is what one file held before this plan, whether or not the plan carries
+// it. The second result says whether there was a file at all.
+func (p *Plan) previousFor(change FileChange) (string, bool) {
+	if !change.Secret {
+		return change.Before, change.HadBefore
+	}
+	secret := p.secrets[change.Path]
+	return secret.before, secret.hadBefore
 }
 
 // Empty is whether applying this plan would change nothing at all. An idempotent engine
@@ -257,7 +336,7 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 	}
 	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Rendered: true}
 	for _, item := range rendered.artifacts {
-		plan.Files = append(plan.Files, FileChange{
+		change := FileChange{
 			Path:     item.Path,
 			Kind:     ChangeCreate,
 			Mode:     item.Mode,
@@ -265,7 +344,9 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 			Content:  item.Content,
 			Secret:   item.Secret,
 			Withheld: item.Withheld,
-		})
+		}
+		plan.hide(&change)
+		plan.Files = append(plan.Files, change)
 	}
 	slices.SortFunc(plan.Files, func(a, b FileChange) int { return cmp.Compare(a.Path, b.Path) })
 	plan.Firewall = FirewallChange{Ruleset: rendered.ruleset, Apply: true}
@@ -290,7 +371,11 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		return nil, err
 	}
 
-	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes}
+	plan := &Plan{
+		Warnings: rendered.warnings,
+		Notes:    runtime.Notes,
+		uplinks:  runtime.NFTables.UplinkAddresses,
+	}
 
 	desired := make(map[string]bool, len(rendered.artifacts))
 	for _, item := range rendered.artifacts {
@@ -299,6 +384,7 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		if err != nil {
 			return nil, err
 		}
+		plan.hide(&change)
 		plan.Files = append(plan.Files, change)
 	}
 
@@ -388,6 +474,10 @@ func (e *Engine) reclaim(desired map[string]bool) ([]FileChange, error) {
 				Before:     string(before),
 				HadBefore:  true,
 				BeforeMode: mode,
+				// A unit file is what systemctl resolves an instance through, so it
+				// cannot be taken away until whatever runs from it has been stopped
+				// (ADR 0004).
+				Deferred: dir.deferred,
 			})
 		}
 	}
@@ -403,6 +493,9 @@ type ownedDir struct {
 	// marked says the first line of every file regied puts here carries the ownership
 	// marker.
 	marked bool
+	// deferred says a file here is reclaimed by a step rather than while the files are
+	// being written, because something may still be running from it.
+	deferred bool
 }
 
 func (e *Engine) ownedDirs() []ownedDir {
@@ -415,7 +508,7 @@ func (e *Engine) ownedDirs() []ownedDir {
 		{path: e.opts.Root + "/dnsmasq", marked: true},
 		// /etc/systemd/system holds everybody's units and the symlinks systemctl
 		// enable makes, so both the name and the marker have to say it is ours.
-		{path: e.opts.UnitDir, prefix: unitPrefix, marked: true},
+		{path: e.opts.UnitDir, prefix: unitPrefix, marked: true, deferred: true},
 	}
 }
 
@@ -530,21 +623,60 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 		})
 	}
 
-	unitsChanged := changedIn(plan, e.opts.UnitDir+"/")
-	if unitsChanged {
+	// A unit that was written is one systemd has to be told about before anything is
+	// started from it. A unit that goes away is told about afterwards, because it is
+	// taken away after the stop (ADR 0004).
+	if writtenIn(plan, e.opts.UnitDir+"/") {
 		reload := Command{Name: "systemctl", Args: []string{"daemon-reload"}}
 		steps = append(steps, Step{
 			Phase:   PhaseProcessConfig,
 			Kind:    StepCommand,
-			Reason:  "a unit changed",
+			Reason:  "a unit was written",
 			Command: reload,
 			Undo:    &Step{Phase: PhaseProcessConfig, Kind: StepCommand, Command: reload},
 		})
 	}
 
-	steps = append(steps, e.sessionSteps(plan, rendered, unitsChanged)...)
-	steps = append(steps, e.dnsmasqSteps(plan, rendered, unitsChanged)...)
+	steps = append(steps, e.sessionSteps(plan)...)
+	steps = append(steps, e.dnsmasqSteps(plan, rendered)...)
+	steps = append(steps, e.reclaimUnitSteps(plan)...)
 	return steps
+}
+
+// reclaimUnitSteps takes the units away, after everything that ran from them has been
+// stopped.
+//
+// systemctl resolves an instance through its template, so taking the template away first
+// would make the stop fail — and on a configuration that removed its last session, that
+// failure would roll the whole apply back and put the session's configuration back
+// (ADR 0004).
+func (e *Engine) reclaimUnitSteps(plan *Plan) []Step {
+	var steps []Step
+	for _, change := range plan.Files {
+		if !change.Deferred || change.Kind != ChangeRemove {
+			continue
+		}
+		restored := change
+		restored.Content, restored.Mode = change.Before, change.BeforeMode
+		steps = append(steps, Step{
+			Phase:  PhaseProcesses,
+			Kind:   StepRemove,
+			Reason: "nothing runs from this unit any more",
+			File:   change,
+			Undo:   &Step{Phase: PhaseProcesses, Kind: StepWrite, File: restored},
+		})
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+	reload := Command{Name: "systemctl", Args: []string{"daemon-reload"}}
+	return append(steps, Step{
+		Phase:   PhaseProcesses,
+		Kind:    StepCommand,
+		Reason:  "a unit was taken away",
+		Command: reload,
+		Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: reload},
+	})
 }
 
 func firewallReason(change FirewallChange) string {
@@ -586,9 +718,14 @@ func sysctlUndo(change SwitchChange) *Step {
 // A session is restarted only when its own configuration changed, because a restart is
 // the one thing a rollback cannot undo: what comes back is a new session, possibly on a
 // different address (ADR 0005).
-func (e *Engine) sessionSteps(plan *Plan, rendered *rendering, unitsChanged bool) []Step {
+func (e *Engine) sessionSteps(plan *Plan) []Step {
 	var steps []Step
-	for _, session := range rendered.sessions {
+	// The one unit a session runs from. Any other unit changing has nothing to do with
+	// it, and restarting a line over an unrelated change is exactly what ADR 0005 says
+	// must not happen.
+	templateChanged := changeFor(plan, e.opts.UnitDir+"/"+pppoeTemplateUnit).Kind == ChangeUpdate
+
+	for _, session := range sessionsIn(plan, e.opts.Root+"/ppp/peers/") {
 		peer := changeFor(plan, e.opts.Root+"/ppp/peers/"+session+".conf")
 		credentials := changeFor(plan, e.opts.Root+"/ppp/credentials/"+session+".conf")
 		unit := pppoeUnit(session)
@@ -602,7 +739,7 @@ func (e *Engine) sessionSteps(plan *Plan, rendered *rendering, unitsChanged bool
 				Command: systemctl("enable", "--now", unit),
 				Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("disable", "--now", unit)},
 			})
-		case peer.Kind == ChangeUpdate || credentials.Kind != ChangeNone || unitsChanged:
+		case peer.Kind == ChangeUpdate || credentials.Kind != ChangeNone || templateChanged:
 			restart := systemctl("restart", unit)
 			steps = append(steps, Step{
 				Phase:   PhaseProcesses,
@@ -628,9 +765,10 @@ func (e *Engine) sessionSteps(plan *Plan, rendered *rendering, unitsChanged bool
 
 // dnsmasqSteps starts, reloads or stops regied's own dnsmasq. It comes after the links,
 // because it binds to the addresses they hold.
-func (e *Engine) dnsmasqSteps(plan *Plan, rendered *rendering, unitsChanged bool) []Step {
+func (e *Engine) dnsmasqSteps(plan *Plan, rendered *rendering) []Step {
 	path := e.opts.Root + "/dnsmasq/dnsmasq.conf"
 	change := changeFor(plan, path)
+	unitChanged := changeFor(plan, e.opts.UnitDir+"/"+dnsmasqUnit).Kind == ChangeUpdate
 
 	switch {
 	case rendered.dnsmasq && change.Kind == ChangeCreate:
@@ -641,14 +779,17 @@ func (e *Engine) dnsmasqSteps(plan *Plan, rendered *rendering, unitsChanged bool
 			Command: systemctl("enable", "--now", dnsmasqUnit),
 			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("disable", "--now", dnsmasqUnit)},
 		}}
-	case rendered.dnsmasq && (change.Kind == ChangeUpdate || unitsChanged):
-		reload := systemctl("reload-or-restart", dnsmasqUnit)
+	case rendered.dnsmasq && (change.Kind == ChangeUpdate || unitChanged):
+		// Restart, not reload. dnsmasq re-reads /etc/hosts, its lease file and
+		// resolv.conf on SIGHUP, and nothing else: a reload would leave the
+		// configuration that was just written unapplied.
+		restart := systemctl("restart", dnsmasqUnit)
 		return []Step{{
 			Phase:   PhaseProcesses,
 			Kind:    StepCommand,
 			Reason:  "the dnsmasq configuration changed",
-			Command: reload,
-			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: reload},
+			Command: restart,
+			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: restart},
 		}}
 	case !rendered.dnsmasq && change.Kind == ChangeRemove:
 		return []Step{{
@@ -684,6 +825,33 @@ func changedIn(plan *Plan, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// writtenIn is whether any file under a prefix would be created or replaced. It is not
+// the same question as changedIn: a file that goes away is reclaimed later, once nothing
+// runs from it.
+func writtenIn(plan *Plan, prefix string) bool {
+	for _, change := range plan.Files {
+		if !strings.HasPrefix(change.Path, prefix) {
+			continue
+		}
+		if change.Kind == ChangeCreate || change.Kind == ChangeUpdate {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionsIn is the sessions this plan writes a peer file for, in path order.
+func sessionsIn(plan *Plan, prefix string) []string {
+	var out []string
+	for _, change := range plan.Files {
+		if change.Kind == ChangeRemove || !strings.HasPrefix(change.Path, prefix) {
+			continue
+		}
+		out = append(out, strings.TrimSuffix(strings.TrimPrefix(change.Path, prefix), ".conf"))
+	}
+	return out
 }
 
 // reclaimedSessions is the sessions whose peer file this plan takes away.
