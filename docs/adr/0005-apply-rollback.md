@@ -87,6 +87,22 @@ is to be told the truth about where it stopped.
 The same reasoning applies to the exit code and the log: a rolled-back apply is a failure,
 not a partial success, and it exits non-zero.
 
+### After the commit stage succeeded, a failure is reported, not rolled back
+
+Once the last command has run, the host is running the new configuration. What is left is
+regied's own bookkeeping — writing down the ruleset it installed, and rendering the table
+once more in case a session dialled while the apply was running. Both can fail, and
+neither is a reason to undo anything.
+
+Rolling back at that point would take a working configuration off a host to recover from
+not being able to write a note about it. Reporting a failed apply is nearly as bad in a
+different way: the operator reads "failed", believes the change did not land, and acts on
+that. So a failure here is reported as what it is — the configuration is applied, and this
+one thing around it is not — and the exit status stays zero.
+
+The rule in the previous section is unchanged and this is its boundary: **a rolled-back
+apply is a failure and exits non-zero.** An apply that was not rolled back is not.
+
 ### Rollback covers one apply, and nothing wider
 
 There is no "revert to the last known good configuration" and no generation history.
