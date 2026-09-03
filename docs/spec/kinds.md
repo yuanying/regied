@@ -516,6 +516,14 @@ Backend: dnsmasq, merged with every `DHCPServer` into one configuration.
 `listenOn` names links, not addresses, so an interface whose address comes from a
 delegated prefix keeps being listened on after the prefix changes.
 
+**A host has at most one `DNSForwarder`, and a second one is a validation error.**
+dnsmasq is one process with one cache and one set of upstreams, so two resources could
+only be merged into them, and what the merge decided — whose cache size won, which
+upstreams the other's clients ended up asking — would be written nowhere. One resource
+holds everything the kind can express: `listenOn`, `upstreams`, `conditional` and
+`staticHosts` are all lists, so a host resolving for several segments names them all
+here.
+
 ### `conditional[]`
 
 | Field | Required | Value |

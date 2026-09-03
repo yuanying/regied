@@ -178,6 +178,8 @@ nftables は自分のテーブルだけを作り替える。ルールセット�
 - `sourceRanges` に CIDR でも閉区間でもない裸のアドレスを書いた `EgressRoutePolicy`
 - `aftrHost` と `aftrAddress` の両方を持つ `DSLiteTunnel`
 - そのどちらも持たない `DSLiteTunnel`
+- 2 つ目の `DNSForwarder`。ホストを 1 つの dnsmasq が受け持ち、
+  キャッシュも上位リゾルバも 1 組しか無い
 - `self` という名前の `FirewallZone`
 - `from` が `self` である `FirewallPolicy`
 - 参照先の秘密情報ファイルが無い・読めない・空

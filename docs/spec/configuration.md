@@ -187,6 +187,8 @@ Beyond references resolving and required fields being present, regied rejects:
   an inclusive range
 - a `DSLiteTunnel` carrying both `aftrHost` and `aftrAddress`
 - a `DSLiteTunnel` carrying neither
+- a second `DNSForwarder`. One dnsmasq serves the host, and it has one cache and one set
+  of upstreams
 - a `FirewallZone` named `self`
 - a `FirewallPolicy` whose `from` is `self`
 - a secret file that is missing, unreadable, or empty
