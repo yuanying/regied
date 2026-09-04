@@ -531,3 +531,28 @@ func TestSourceValidationReachesTheLinksAlreadyThere(t *testing.T) {
 		t.Error("a link that is not on the host yet is given a switch that cannot be written")
 	}
 }
+
+// Round 3. The rules a directory carries are decided by comparing paths, and a path
+// with a slash too many is not the same string. Options are cleaned so that where a
+// caller puts a slash cannot decide whether a credential is hidden.
+func TestOptionsWithATrailingSlashKeepTheirRules(t *testing.T) {
+	_, _, _, host := planFixture(t)
+	engine := New(host, Options{Root: "/etc/regied/", UnitDir: "/etc/systemd/system/"})
+
+	plan := mustPlan(t, engine, load(t, hostFixture))
+
+	credentials, ok := fileChangeFor(plan, "/etc/regied/ppp/credentials/pppoe0.conf")
+	if !ok {
+		t.Fatalf("the credentials file is not at its path; files:\n%s", plan.Summary())
+	}
+	if !credentials.Secret || credentials.Content != "" {
+		t.Error("a trailing slash on Root put the credential into the plan")
+	}
+	template, ok := fileChangeFor(plan, "/etc/systemd/system/regied-pppoe@.service")
+	if !ok {
+		t.Fatalf("the template unit is not at its path; files:\n%s", plan.Summary())
+	}
+	if !template.Deferred {
+		t.Error("a trailing slash on UnitDir made the unit an ordinary file")
+	}
+}

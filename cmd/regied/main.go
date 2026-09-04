@@ -70,6 +70,15 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	return flags
 }
 
+// parseExit is the exit code for a flag set that did not parse: asking for help is not
+// an error, anything else is usage.
+func parseExit(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	return 2
+}
+
 // reportError prints a problem the way an operator reading a console wants it: the
 // message on its own lines, with nothing wrapped around it.
 func reportError(stderr io.Writer, err error) int {

@@ -43,6 +43,11 @@ func (o Options) withDefaults() Options {
 	if o.UnitDir == "" {
 		o.UnitDir = DefaultUnitDir
 	}
+	// The rules a directory carries are found by comparing paths, and a path with a
+	// slash too many is not the same string. Where a caller puts a slash must not decide
+	// whether a credential is hidden.
+	o.NetworkdDir, o.Root, o.StateDir, o.UnitDir =
+		path.Clean(o.NetworkdDir), path.Clean(o.Root), path.Clean(o.StateDir), path.Clean(o.UnitDir)
 	return o
 }
 

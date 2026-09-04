@@ -25,7 +25,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 	flags.Var(duid, "duid", "the contents of a DUID file, as path=value (repeatable)")
 	flags.Var(uplink, "uplink-address", "an address an uplink is holding, as name=address (repeatable, and repeatable per uplink)")
 	if err := flags.Parse(args); err != nil {
-		return 2
+		return parseExit(err)
 	}
 
 	cfg, err := config.Load(*path, config.WithSecretFiles(namedFilesOnly{}))
