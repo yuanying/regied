@@ -95,6 +95,11 @@ target should go on seeing.
 
 ### What only the running host knows arrives as an argument
 
+*Amended by [ADR 0015](0015-uplink-addresses-in-sets.md): the uplink address is no longer
+an argument to the renderer. The hairpin rules match on a named set per uplink and
+family, and the address reaches the set at run time. The renderer takes nothing from the
+host.*
+
 Rendering reads no kernel, runs no command, and looks at no interface. The one value it
 needs that a configuration cannot hold — the address an uplink is holding, which the
 hairpin translation has to match on — is passed in. An uplink that is not up yet is not

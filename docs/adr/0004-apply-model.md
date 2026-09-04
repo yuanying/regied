@@ -218,6 +218,11 @@ ahead of phase 2.
 
 ### A changed uplink address re-runs the firewall phase and nothing else
 
+*Amended by [ADR 0015](0015-uplink-addresses-in-sets.md): the ruleset no longer carries
+an uplink address, so there is nothing to re-render. Phase 6 becomes seeding the uplink
+sets in phase 1, and the rules below about when the re-render must not run go with it.
+The rest of this record stands.*
+
 Of everything regied renders, **only the nftables table depends on the address an uplink
 is holding**. When a session redials with a different one, the hairpin rules are the one
 thing that has gone stale.
