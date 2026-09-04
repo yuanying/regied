@@ -85,7 +85,9 @@ Two of these deserve a note.
 **`sourceValidation` defaults to off.** Policy routing makes return paths asymmetric by
 design: a reply arrives on the interface the routing table would not have chosen. Strict
 reverse path filtering drops exactly that traffic. Turning it on is only safe on a host
-with no `EgressRoutePolicy`, and regied rejects the combination.
+with no `EgressRoutePolicy`, and regied rejects the combination. The value is written to
+`all`, to `default`, and to every link the configuration names that is on the host at the
+time, because the kernel applies the larger of `all` and the link's own setting.
 
 **`mssClamp: auto`** clamps on every path whose MTU is lower than the segment the traffic
 came from, rather than on one named interface type. A tunnel needs it as much as a PPPoE
