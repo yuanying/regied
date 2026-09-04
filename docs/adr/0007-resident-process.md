@@ -364,6 +364,14 @@ that decides exposure exists. A machine-readable rendering of the dry-run. A
 per-connection view of conntrack. Streaming of logs, which is `journalctl`'s. A daemon
 that applies.
 
+**That line is about hosts, not about sources.** What ADR 0009 refuses is regied managing
+another machine or shipping configuration to it. It does not refuse regied learning from
+somewhere else what *this* host should be doing — that record already puts regied beside a
+cluster's own writers, next to a BGP daemon installing learned routes and on a host where
+kube-proxy or Cilium already holds nftables state. Reading another system's API to find
+out what this host should do is on the near side of the line; telling another host what to
+do is on the far side.
+
 The reason is the one ADR 0002 gives for not adding kinds ahead of need. An endpoint is a
 promise about an interface, and the ones that are hard to withdraw are the ones added
 before anybody needed them.
@@ -396,3 +404,25 @@ before anybody needed them.
 - **A revision is comparable off the host.** Anyone with a copy of the declaration can
   compute the digest and compare it to what `/api/v1/status` reports, without regied and
   without ssh, which is what makes the field worth having in a fleet of one.
+- **The shape generalises past uplink addresses.** ADR 0015 chose it for one kind of
+  runtime state — the address a line is holding — but nothing in the shape is about
+  addresses. The rendered text stays a function of the configuration alone, the resident
+  process writes the elements, and the apply neither depends on them nor waits for them.
+  Runtime state arriving from somewhere else entirely — the healthy backends behind a
+  load-balanced address a Kubernetes cluster asked for, to name the case that prompted
+  this paragraph — would sit in the same place, be written by the same half of the same
+  process, and leave the rendered text alone. This is a property inherited from ADR 0015,
+  not a plan made here: **no endpoint, no kind and no field is promised**, and one is added
+  when something needs it and not before (ADR 0002).
+- **What makes the uplink sets safe does not hold for runtime state in general.** ADR 0013
+  replaces regied's table in one transaction, and a replacement empties every set in it.
+  That costs an uplink's set nothing, because the apply re-seeds it from the kernel on the
+  way past (ADR 0015): the kernel holds the answer, so any writer can recompute it at any
+  time. An element whose source is not the kernel has no such recovery. The apply cannot
+  re-seed what it cannot ask for, so every replacement of the table would open a window
+  that stays dark until whatever does know the answer notices and writes it again. This
+  record neither solves that nor needs to — it can only concern elements that do not exist
+  yet, and solving it belongs to the record that adds them. It is named here so that the
+  condition is explicit: the uplink sets are safe *because the kernel holds their answer*,
+  and reading them as evidence that the problem is handled in general would be reading
+  them wrongly.
