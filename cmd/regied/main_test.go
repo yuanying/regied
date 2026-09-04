@@ -38,7 +38,6 @@ func TestRenderShowsTheExample(t *testing.T) {
 		"-config", "../../config/example.yaml",
 		"-aftr", "dslite=2001:db8:53::1",
 		"-duid", "/etc/regied/secrets/dhcpv6-duid=00:03:00:01:00:00:5e:00:53:01",
-		"-uplink-address", "pppoe0=192.0.2.10",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("rendering the example exits %d:\n%s", code, stderr.String())
@@ -85,20 +84,21 @@ func TestPairsWantsNameEqualsValue(t *testing.T) {
 	}
 }
 
-// 差し戻し 2. An uplink may hold an address in each family, and the engine takes them
-// all. A flag that keeps only the last one cannot say so.
-func TestUplinkAddressesAccumulate(t *testing.T) {
-	values := multiPairs{}
-	for _, argument := range []string{"pppoe0=192.0.2.10", "pppoe0=2001:db8::1", "dslite=192.0.2.20"} {
-		if err := values.Set(argument); err != nil {
-			t.Fatalf("%s was refused: %v", argument, err)
-		}
+// The ruleset holds no uplink address, so a rendering needs none supplied: the hairpin
+// translation names the uplink's set and is there whatever the line is doing (ADR 0015).
+func TestRenderNeedsNoUplinkAddress(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"render",
+		"-config", "../../config/example.yaml",
+		"-aftr", "dslite=2001:db8:53::1",
+		"-duid", "/etc/regied/secrets/dhcpv6-duid=00:03:00:01:00:00:5e:00:53:01",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("rendering the example exits %d:\n%s", code, stderr.String())
 	}
-	if got := values["pppoe0"]; len(got) != 2 {
-		t.Errorf("the uplink holds %v, want both addresses", got)
-	}
-	if got := values["dslite"]; len(got) != 1 {
-		t.Errorf("the other uplink holds %v", got)
+	if !strings.Contains(stdout.String(), "ip daddr @uplink4_pppoe0") {
+		t.Error("the rendering has no hairpin translation, so it is not complete without the host")
 	}
 }
 

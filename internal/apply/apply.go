@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"path"
-	"slices"
 	"strings"
 
 	"github.com/yuanying/regied/internal/config"
@@ -19,13 +17,6 @@ type Result struct {
 	// Changed is whether anything on the host moved. An idempotent engine answers no
 	// most of the time, and that answer is worth having (ADR 0004).
 	Changed bool
-
-	// FirewallReapplied is whether the ruleset had to be rendered and installed a
-	// second time because an uplink's address appeared or changed while the apply was
-	// running. It is not the ordinary case: a session started in the process phase has
-	// not dialled by the time the firewall is settled, so on a cold start the rules that
-	// depend on its address wait for the next apply, or for the daemon (ADR 0004).
-	FirewallReapplied bool
 
 	// Notes is what went wrong after the commit stage had already succeeded. The
 	// configuration is on the host; something regied does around it is not, and saying
@@ -73,12 +64,12 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config) (*Result, error)
 	if err != nil {
 		return nil, err
 	}
-	return e.ApplyPlan(ctx, cfg, plan)
+	return e.ApplyPlan(ctx, plan)
 }
 
 // ApplyPlan commits a plan that has already been computed, which is what lets a dry-run
 // and an apply be the same code path up to the point where the commands run (ADR 0006).
-func (e *Engine) ApplyPlan(ctx context.Context, cfg *config.Config, plan *Plan) (*Result, error) {
+func (e *Engine) ApplyPlan(ctx context.Context, plan *Plan) (*Result, error) {
 	result := &Result{Plan: plan, Changed: !plan.Empty()}
 	if plan.Empty() {
 		return result, nil
@@ -112,7 +103,6 @@ func (e *Engine) ApplyPlan(ctx context.Context, cfg *config.Config, plan *Plan) 
 	if err := e.record(plan); err != nil {
 		result.Notes = append(result.Notes, fmt.Sprintf("%v; the next apply will install the ruleset again", err))
 	}
-	e.settleFirewall(ctx, cfg, plan, result)
 	return result, nil
 }
 
@@ -195,6 +185,7 @@ func (e *Engine) run(ctx context.Context, step Step) error {
 	case StepKeep:
 		return nil
 	}
+	// StepCommand and StepSeed, both of which are one command.
 	_, err := e.host.Runner.Run(ctx, step.Command)
 	return err
 }
@@ -246,8 +237,12 @@ func (e *Engine) undo(ctx context.Context, plan *Plan, attempted int) []string {
 			continue
 		}
 		if step.Undo.Kind == StepKeep {
-			// Deliberately nothing. The operator is told what was left and why.
-			problems = append(problems, step.Undo.Reason)
+			// Deliberately nothing. The operator is told what was left and why, unless
+			// there was nothing to leave: a step whose undo has no reason is one the
+			// rollback has no work for and nothing to report.
+			if step.Undo.Reason != "" {
+				problems = append(problems, step.Undo.Reason)
+			}
 			continue
 		}
 		if err := e.run(ctx, *step.Undo); err != nil {
@@ -280,73 +275,6 @@ func (e *Engine) record(plan *Plan) error {
 		return fmt.Errorf("cannot record the installed ruleset in %s: %w", record, err)
 	}
 	return nil
-}
-
-// settleFirewall is the last phase: the ruleset is rendered again, now that the
-// processes have been started and a session may have dialled, and installed if it came
-// out different.
-//
-// Only the nftables table depends on the address an uplink is holding, so this is the
-// whole of what a changed address calls for. Nothing is reloaded and no process is
-// touched (ADR 0004).
-//
-// **It only ever adds.** A link read a few milliseconds after its session was restarted
-// answers that it is not there, and rendering that would produce a ruleset without the
-// hairpin rules — which installing would take a working port forward away and record the
-// result as what is in effect. So an uplink that had an address and no longer answers
-// stops the settle, and the ruleset already installed stays. Noticing the redial that
-// follows belongs to the daemon.
-//
-// **It does not wait.** A session started a moment ago has not dialled yet either, and
-// the settle reads it the same way: nothing to add. The hairpin rules of a cold start
-// wait for the daemon, or for the next apply. Blocking here on a provider's dial time
-// was considered and rejected (ADR 0004).
-func (e *Engine) settleFirewall(ctx context.Context, cfg *config.Config, plan *Plan, result *Result) {
-	addresses, _ := readUplinkAddresses(cfg, e.host)
-
-	if lost := uplinksThatWentQuiet(plan.uplinks, addresses.UplinkAddresses); len(lost) > 0 {
-		result.Notes = append(result.Notes, fmt.Sprintf(
-			"%s held an address when this apply started and answers none now, so the ruleset was left as it was installed; it carries the address they had",
-			strings.Join(lost, ", ")))
-		return
-	}
-
-	ruleset, err := renderRuleset(cfg, addresses)
-	if err != nil {
-		result.Notes = append(result.Notes, fmt.Sprintf("the ruleset could not be rendered again after the processes started: %v", err))
-		return
-	}
-	if ruleset == plan.Firewall.Ruleset {
-		return
-	}
-
-	if _, err := e.host.Runner.Run(ctx, Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: ruleset}); err != nil {
-		result.Notes = append(result.Notes, fmt.Sprintf("an uplink address appeared while applying, and the ruleset carrying it was refused: %v", err))
-		return
-	}
-	result.FirewallReapplied = true
-
-	settled := &Plan{Firewall: FirewallChange{Ruleset: ruleset, Before: plan.Firewall.Ruleset, Table: TablePresent, Apply: true}}
-	if err := e.record(settled); err != nil {
-		result.Notes = append(result.Notes, err.Error())
-	}
-}
-
-// uplinksThatWentQuiet names the uplinks that held an address when the plan was computed
-// and hold none now. Which addresses they hold does not matter: a session that came back
-// on a different one is exactly what the settle is for.
-func uplinksThatWentQuiet(before, after map[string][]netip.Addr) []string {
-	var lost []string
-	for name, addresses := range before {
-		if len(addresses) == 0 {
-			continue
-		}
-		if len(after[name]) == 0 {
-			lost = append(lost, name)
-		}
-	}
-	slices.Sort(lost)
-	return lost
 }
 
 // ErrCommandNotFound is what a Runner reports for a command that is not installed. It is

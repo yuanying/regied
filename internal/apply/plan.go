@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
 	"github.com/yuanying/regied/internal/render/networkd"
 	"github.com/yuanying/regied/internal/render/nftables"
@@ -150,8 +151,16 @@ type SwitchChange struct {
 
 // FirewallChange is the one table regied owns.
 type FirewallChange struct {
-	// Ruleset is the text to hand to nft.
+	// Ruleset is the table, as text. It is a function of the configuration alone: it
+	// names a set per uplink where an address would be, and holds no address (ADR 0015).
 	Ruleset string
+	// Elements is what this apply would put into those sets: the addresses each uplink's
+	// link is holding now. Replacing a table empties its sets, so every apply that
+	// installs the table seeds them again from the kernel.
+	//
+	// They are not part of Ruleset, which is what is recorded and compared, and they
+	// never decide whether the table has to be applied.
+	Elements []SetElements
 	// Before is the text the last apply recorded having installed.
 	Before string
 	// Table is what the probe could establish about the kernel, and Note is why it
@@ -160,6 +169,72 @@ type FirewallChange struct {
 	Note  string
 	// Apply is whether the ruleset has to be installed.
 	Apply bool
+}
+
+// SetElements is what goes into one named set.
+type SetElements struct {
+	Set      string
+	Elements []string
+}
+
+// String is the elements as they are written in a rule or a set declaration.
+func (s SetElements) String() string {
+	return fmt.Sprintf("%s { %s }", s.Set, strings.Join(s.Elements, ", "))
+}
+
+// Text is the table and the seeding of its sets as one file, which is what `nft --check`
+// is handed: a check of the ruleset that left the elements out would pass on something
+// the apply then runs (ADR 0006).
+//
+// The commit stage runs them as two steps rather than as this one file, so that a
+// seeding that nft refuses cannot take the table with it, and so that a rollback can put
+// the previous table back without the elements deciding whether that succeeds (ADR 0005).
+func (c FirewallChange) Text() string {
+	return c.Ruleset + seedingText(c.Elements)
+}
+
+// seedingText is the nft statements that put the elements in, or nothing at all when
+// there is nothing to seed.
+func seedingText(elements []SetElements) string {
+	if len(elements) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n# What each uplink is holding, read from the kernel by this apply. It is not part of\n")
+	b.WriteString("# the ruleset above: what a line holds is runtime state (ADR 0015).\n")
+	for _, entry := range elements {
+		fmt.Fprintf(&b, "add element %s %s %s\n", nftables.TableFamily, nftables.TableName, entry)
+	}
+	return b.String()
+}
+
+// uplinkElements is what the uplink sets would be seeded with: what each uplink's link is
+// holding, by set name, in a fixed order.
+func uplinkElements(cfg *config.Config, addresses map[string][]netip.Addr) []SetElements {
+	var out []SetElements
+	for _, link := range uplinkResources(cfg) {
+		for _, family := range []v1alpha1.Family{v1alpha1.FamilyIPv4, v1alpha1.FamilyIPv6} {
+			var values []string
+			for _, address := range addresses[link.name] {
+				if addressFamily(address) == family {
+					values = append(values, address.String())
+				}
+			}
+			if len(values) == 0 {
+				continue
+			}
+			out = append(out, SetElements{Set: nftables.UplinkSetName(link.ifname, family), Elements: values})
+		}
+	}
+	slices.SortFunc(out, func(a, b SetElements) int { return cmp.Compare(a.Set, b.Set) })
+	return out
+}
+
+func addressFamily(address netip.Addr) v1alpha1.Family {
+	if address.Is4() {
+		return v1alpha1.FamilyIPv4
+	}
+	return v1alpha1.FamilyIPv6
 }
 
 // TableState is what asking the kernel about regied's table answered.
@@ -193,8 +268,14 @@ const (
 	// are being written, because something is still running from the file.
 	StepRemove StepKind = "remove"
 	StepWrite  StepKind = "write"
+	// StepSeed puts into the ruleset's uplink sets what the links are holding. It runs a
+	// command like StepCommand and is a kind of its own so that the dry-run can tell the
+	// two nft transactions of the firewall phase apart (ADR 0015).
+	StepSeed StepKind = "seed"
 	// StepKeep does nothing on purpose. It is what an undo is when there is nothing
-	// safe to put back, and its Reason is what the rollback reports (ADR 0005).
+	// safe to put back, and its Reason is what the rollback reports (ADR 0005). With no
+	// Reason it is a step that needs no undo at all, and the rollback says nothing about
+	// it: seeding the sets of a table the rollback removed is the one case.
 	StepKeep StepKind = "keep"
 )
 
@@ -215,6 +296,8 @@ type Step struct {
 
 func (s Step) describe() string {
 	switch s.Kind {
+	case StepSeed:
+		return s.Reason
 	case StepSysctl:
 		return fmt.Sprintf("%s = %s", s.Switch.Key, s.Switch.Value)
 	case StepRemove:
@@ -256,11 +339,6 @@ type Plan struct {
 	// plan cannot print a credential — which is what ADR 0003 asks for, and what a rule
 	// to be careful would not give (ADR 0004).
 	secrets map[string]secretContent
-
-	// uplinks is what each uplink was holding when this plan was computed. It is what
-	// the settle step compares against, so that a link read while its session is
-	// redialling cannot take the rules that depend on an address away (ADR 0004).
-	uplinks map[string][]netip.Addr
 }
 
 // secretContent is what a file the plan may not carry holds, and what is there now. Both
@@ -345,8 +423,11 @@ func (p *Plan) Summary() string {
 		}
 	}
 	for _, step := range p.Steps {
-		if step.Kind == StepCommand {
+		switch step.Kind {
+		case StepCommand:
 			lines = append(lines, "run "+step.Command.String())
+		case StepSeed:
+			lines = append(lines, step.describe())
 		}
 	}
 	if len(lines) == 0 {
@@ -406,11 +487,7 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		return nil, err
 	}
 
-	plan := &Plan{
-		Warnings: rendered.warnings,
-		Notes:    runtime.Notes,
-		uplinks:  runtime.NFTables.UplinkAddresses,
-	}
+	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes}
 
 	desired := make(map[string]bool, len(rendered.artifacts))
 	for _, item := range rendered.artifacts {
@@ -439,7 +516,7 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		return nil, err
 	}
 
-	plan.Firewall, err = e.firewall(ctx, rendered.ruleset)
+	plan.Firewall, err = e.firewall(ctx, rendered.ruleset, uplinkElements(cfg, runtime.UplinkAddresses))
 	if err != nil {
 		return nil, err
 	}
@@ -605,8 +682,12 @@ func (e *Engine) switches(cfg *config.Config) ([]SwitchChange, error) {
 }
 
 // firewall reads what the last apply recorded and whether the table is in the kernel.
-func (e *Engine) firewall(ctx context.Context, ruleset string) (FirewallChange, error) {
-	change := FirewallChange{Ruleset: ruleset}
+//
+// The elements go in the change but not into the comparison: a line that came up since
+// the last apply is not a reason to replace the table, and one that went down is not a
+// reason either (ADR 0015).
+func (e *Engine) firewall(ctx context.Context, ruleset string, elements []SetElements) (FirewallChange, error) {
+	change := FirewallChange{Ruleset: ruleset, Elements: elements}
 
 	recorded, _, err := e.host.Files.ReadFile(e.opts.rulesetRecord())
 	switch {
@@ -651,7 +732,7 @@ func (e *Engine) checkRuleset(ctx context.Context, plan *Plan) error {
 	_, err := e.host.Runner.Run(ctx, Command{
 		Name:  "nft",
 		Args:  []string{"--check", "-f", "-"},
-		Stdin: plan.Firewall.Ruleset,
+		Stdin: plan.Firewall.Text(),
 	})
 	switch {
 	case errors.Is(err, ErrCommandNotFound):
@@ -681,6 +762,18 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 			Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: plan.Firewall.Ruleset},
 			Undo:    firewallUndo(plan.Firewall),
 		})
+		// Right after the table, and only when the table went in: replacing it emptied
+		// its uplink sets, and what the links are holding has to go back in (ADR 0015).
+		// A table that was left alone kept the elements it had.
+		if len(plan.Firewall.Elements) > 0 {
+			steps = append(steps, Step{
+				Phase:   PhaseFirewall,
+				Kind:    StepSeed,
+				Reason:  "seed the uplink sets: " + describeElements(plan.Firewall.Elements),
+				Command: seedCommand(plan.Firewall.Elements),
+				Undo:    seedUndo(plan.Firewall),
+			})
+		}
 	}
 
 	for _, change := range plan.Switches {
@@ -767,6 +860,38 @@ func firewallUndo(change FirewallChange) *Step {
 			"the %s %s table this apply installed was left in place: there is no record of what was there before it, and taking it off would leave the host with no firewall",
 			nftables.TableFamily, nftables.TableName),
 	}
+}
+
+func seedCommand(elements []SetElements) Command {
+	return Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: seedingText(elements)}
+}
+
+// seedUndo puts the addresses back into the sets of whatever table the rollback leaves
+// behind. Both tables that survive a rollback need it: the one the previous apply
+// installed, which comes back as text and therefore with empty sets, and the one this
+// apply installed and the rollback could not remove.
+//
+// The one case with nothing to do is the table the rollback takes off, and there the undo
+// says nothing rather than reporting a seeding that was never wanted (ADR 0005).
+func seedUndo(change FirewallChange) *Step {
+	if change.Before == "" && change.Table == TableAbsent {
+		return &Step{Phase: PhaseFirewall, Kind: StepKeep}
+	}
+	return &Step{
+		Phase:   PhaseFirewall,
+		Kind:    StepSeed,
+		Reason:  "seed the uplink sets of the table the rollback left: " + describeElements(change.Elements),
+		Command: seedCommand(change.Elements),
+	}
+}
+
+// describeElements is the seeding as one line, for the dry-run and for the summary.
+func describeElements(elements []SetElements) string {
+	out := make([]string, 0, len(elements))
+	for _, entry := range elements {
+		out = append(out, entry.String())
+	}
+	return strings.Join(out, ", ")
 }
 
 func sysctlUndo(change SwitchChange) *Step {

@@ -76,7 +76,7 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 		})
 	}
 
-	out.ruleset, err = renderRuleset(cfg, runtime.NFTables)
+	out.ruleset, err = renderRuleset(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -133,11 +133,11 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 	return out, nil
 }
 
-// renderRuleset is the one table regied owns, as the text to hand to nft. It is the only
-// rendering that depends on an uplink's address, which is why the last phase of an apply
-// can call it on its own (ADR 0004).
-func renderRuleset(cfg *config.Config, runtime nftables.Runtime) (string, error) {
-	ruleset, err := nftables.Render(cfg, runtime)
+// renderRuleset is the one table regied owns, as the text to hand to nft. It is a
+// function of the configuration alone: what the uplinks are holding reaches the kernel as
+// set elements, not as text (ADR 0015).
+func renderRuleset(cfg *config.Config) (string, error) {
+	ruleset, err := nftables.Render(cfg)
 	if err != nil {
 		return "", err
 	}

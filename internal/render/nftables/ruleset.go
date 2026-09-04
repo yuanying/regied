@@ -23,13 +23,14 @@ type Ruleset struct {
 	Chains []Chain
 }
 
-// Set is one named set inside the table: a zone's interface names, or an IPAddressSet.
+// Set is one named set inside the table: a zone's interface names, an IPAddressSet, or
+// the addresses one uplink is holding.
 type Set struct {
 	Name     string
 	Type     string   // ifname, ipv4_addr, ipv6_addr
 	Flags    []string // interval, for a set that holds prefixes
 	Elements []string // written as they appear in the output, quoted where the type needs it
-	Comment  string   // what this set came from, emitted as a comment line
+	Comment  string   // what this set came from. Several lines are emitted as several comment lines
 }
 
 // Chain is one chain. Base is nil for a chain that is only jumped to. A Comment of
@@ -64,6 +65,11 @@ const rulesetHeader = `# regied's nftables ruleset. Generated on every apply; ed
 # below add the table if it is not already there and then remove it, so that the one
 # that follows goes in whether or not a previous apply left anything behind. nft runs
 # the whole file as a single transaction, so the table is never half replaced.
+#
+# The uplink sets below are empty here on purpose. What a line is holding is runtime
+# state, so it is never rendered: the apply seeds these sets from the kernel and pppd's
+# hooks keep them, and the hairpin rules match on the set rather than on an address
+# (ADR 0015).
 
 `
 
@@ -89,8 +95,8 @@ func (r *Ruleset) String() string {
 
 func (s Set) String() string {
 	var b strings.Builder
-	if s.Comment != "" {
-		fmt.Fprintf(&b, "\t# %s\n", s.Comment)
+	for _, line := range commentLines(s.Comment) {
+		fmt.Fprintf(&b, "\t# %s\n", line)
 	}
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype %s\n", s.Name, s.Type)
 	if len(s.Flags) > 0 {

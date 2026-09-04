@@ -154,6 +154,15 @@ func reportFirewall(w io.Writer, plan *Plan) {
 	} else {
 		indent(w, unifiedDiff(plan.Firewall.Before, plan.Firewall.Ruleset))
 	}
+	// The ruleset says which set the hairpin rules match on; what would go into it is
+	// what the links are holding, and it is shown beside the ruleset rather than in it
+	// (ADR 0015). Nothing here decided that the ruleset has to be installed.
+	if len(plan.Firewall.Elements) > 0 {
+		fmt.Fprintln(w, "  and into the uplink sets")
+		for _, entry := range plan.Firewall.Elements {
+			fmt.Fprintf(w, "    %s\n", entry)
+		}
+	}
 	fmt.Fprintln(w)
 }
 

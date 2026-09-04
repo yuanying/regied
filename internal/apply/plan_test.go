@@ -43,9 +43,9 @@ const hostFixture = `  global:
           end: 192.168.10.127
 `
 
-// forwardResource publishes a service through the session. It is the one thing whose
-// rendering depends on the address the uplink is holding: the hairpin translation has to
-// match on it (ADR 0013).
+// forwardResource publishes a service through the session. It is the one thing that
+// brings the address the uplink is holding into play: the hairpin translation matches on
+// the uplink's set, and the apply is what puts the address in it (ADR 0015).
 const forwardResource = `    - kind: PortForward
       metadata: {name: https}
       spec:
@@ -56,6 +56,19 @@ const forwardResource = `    - kind: PortForward
         target:
           address: 192.168.10.20
           port: 443
+`
+
+// secondForward is a second published service, for a test that needs the ruleset to
+// change without anything else changing with it.
+const secondForward = `    - kind: PortForward
+      metadata: {name: ssh}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 10022
+        target:
+          address: 192.168.10.20
+          port: 22
 `
 
 // planFixture is an engine over a host holding nothing, with the fixture's secrets in

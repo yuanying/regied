@@ -13,17 +13,17 @@ import (
 //
 // The values that exist only at apply time are given on the command line, and what
 // depends on one that was not given is left out exactly as an apply would leave it out.
-// Nothing here opens a credential file: the file that holds one is reported by path and
-// mode, which is all it could be reported by anyway (ADR 0003).
+// The nftables ruleset needs none of them: it names a set per uplink where an address
+// would be, so it is whole here (ADR 0015). Nothing here opens a credential file: the
+// file that holds one is reported by path and mode, which is all it could be reported by
+// anyway (ADR 0003).
 func renderCommand(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("render", stderr)
 	path := flags.String("config", DefaultConfigPath, "the configuration to render")
 	aftr := pairs{}
 	duid := pairs{}
-	uplink := multiPairs{}
 	flags.Var(aftr, "aftr", "a DS-Lite tunnel's resolved AFTR address, as name=address (repeatable)")
 	flags.Var(duid, "duid", "the contents of a DUID file, as path=value (repeatable)")
-	flags.Var(uplink, "uplink-address", "an address an uplink is holding, as name=address (repeatable, and repeatable per uplink)")
 	if err := flags.Parse(args); err != nil {
 		return parseExit(err)
 	}
@@ -34,7 +34,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	reportConfigWarnings(stderr, cfg)
 
-	runtime, err := runtimeFromFlags(aftr, duid, uplink)
+	runtime, err := runtimeFromFlags(aftr, duid)
 	if err != nil {
 		return reportError(stderr, err)
 	}
@@ -49,11 +49,10 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 
 // runtimeFromFlags builds the apply-time values out of what was written on the command
 // line. Credentials are deliberately not among them.
-func runtimeFromFlags(aftr, duid pairs, uplink multiPairs) (*apply.Runtime, error) {
+func runtimeFromFlags(aftr, duid pairs) (*apply.Runtime, error) {
 	runtime := &apply.Runtime{}
 	runtime.Networkd.AFTRAddresses = map[string]netip.Addr{}
 	runtime.Networkd.DUIDs = map[string]string{}
-	runtime.NFTables.UplinkAddresses = map[string][]netip.Addr{}
 
 	for name, value := range aftr {
 		address, err := netip.ParseAddr(value)
@@ -64,15 +63,6 @@ func runtimeFromFlags(aftr, duid pairs, uplink multiPairs) (*apply.Runtime, erro
 	}
 	for path, value := range duid {
 		runtime.Networkd.DUIDs[path] = value
-	}
-	for name, values := range uplink {
-		for _, value := range values {
-			address, err := netip.ParseAddr(value)
-			if err != nil {
-				return nil, fmt.Errorf("-uplink-address %s=%s: %w", name, value, err)
-			}
-			runtime.NFTables.UplinkAddresses[name] = append(runtime.NFTables.UplinkAddresses[name], address)
-		}
 	}
 	return runtime, nil
 }
