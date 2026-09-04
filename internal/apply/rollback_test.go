@@ -101,3 +101,27 @@ func TestRollbackStopsWhatRunsFromAUnitBeforeTakingTheUnitAway(t *testing.T) {
 		}
 	}
 }
+
+// Round 3. A unit the rollback takes back off is one systemd was told about. Taking the
+// file away and not saying so leaves systemd able to start a unit that no longer exists.
+func TestRollbackTellsSystemdOnceTheUnitsItCreatedAreGone(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	template := "/etc/systemd/system/regied-pppoe@.service"
+
+	var templateAtReload []bool
+	runner.onRun = func(cmd Command) {
+		if cmd.String() == "systemctl daemon-reload" {
+			_, ok := files.content(template)
+			templateAtReload = append(templateAtReload, ok)
+		}
+	}
+	runner.fail["systemctl enable --now regied-dnsmasq.service"] = errFake
+
+	if _, err := engine.Apply(context.Background(), load(t, hostFixture)); err == nil {
+		t.Fatal("the failing start was not reported")
+	}
+
+	if len(templateAtReload) == 0 || templateAtReload[len(templateAtReload)-1] {
+		t.Errorf("systemd was not reloaded after the units were taken away; reloads saw the template: %v", templateAtReload)
+	}
+}

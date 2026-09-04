@@ -709,56 +709,14 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 	// started from it. A unit that goes away is told about afterwards, because it is
 	// taken away after the stop (ADR 0004).
 	if writtenIn(plan, e.opts.UnitDir+"/") {
-		reload := Command{Name: "systemctl", Args: []string{"daemon-reload"}}
-		steps = append(steps, Step{
-			Phase:   PhaseProcessConfig,
-			Kind:    StepCommand,
-			Reason:  "a unit was written",
-			Command: reload,
-			Undo:    &Step{Phase: PhaseProcessConfig, Kind: StepCommand, Command: reload},
-		})
+		steps = append(steps, daemonReload(PhaseProcessConfig, "a unit was written"))
 	}
 
-	steps = append(steps, e.sessionSteps(plan)...)
-	steps = append(steps, e.dnsmasqSteps(plan, rendered)...)
-	steps = append(steps, e.reclaimUnitSteps(plan)...)
+	for _, service := range e.services(plan, rendered) {
+		steps = append(steps, service.steps()...)
+	}
+	steps = append(steps, deferredReclaim(deferredFiles(plan, ChangeRemove), "nothing runs from this unit any more")...)
 	return steps
-}
-
-// reclaimUnitSteps takes the units away, after everything that ran from them has been
-// stopped.
-//
-// systemctl resolves an instance through its template, so taking the template away first
-// would make the stop fail — and on a configuration that removed its last session, that
-// failure would roll the whole apply back and put the session's configuration back
-// (ADR 0004).
-func (e *Engine) reclaimUnitSteps(plan *Plan) []Step {
-	var steps []Step
-	for _, change := range plan.Files {
-		if !change.Deferred || change.Kind != ChangeRemove {
-			continue
-		}
-		restored := change
-		restored.Content, restored.Mode = change.Before, change.BeforeMode
-		steps = append(steps, Step{
-			Phase:  PhaseProcesses,
-			Kind:   StepRemove,
-			Reason: "nothing runs from this unit any more",
-			File:   change,
-			Undo:   &Step{Phase: PhaseProcesses, Kind: StepWrite, File: restored},
-		})
-	}
-	if len(steps) == 0 {
-		return nil
-	}
-	reload := Command{Name: "systemctl", Args: []string{"daemon-reload"}}
-	return append(steps, Step{
-		Phase:   PhaseProcesses,
-		Kind:    StepCommand,
-		Reason:  "a unit was taken away",
-		Command: reload,
-		Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: reload},
-	})
 }
 
 func firewallReason(change FirewallChange) string {
@@ -815,102 +773,6 @@ func sysctlUndo(change SwitchChange) *Step {
 	return &Step{Phase: PhaseKernel, Kind: StepSysctl, Switch: restored}
 }
 
-// sessionSteps starts, restarts and stops the PPPoE sessions.
-//
-// A session is restarted only when its own configuration changed, because a restart is
-// the one thing a rollback cannot undo: what comes back is a new session, possibly on a
-// different address (ADR 0005).
-func (e *Engine) sessionSteps(plan *Plan) []Step {
-	var steps []Step
-	// The one unit a session runs from. Any other unit changing has nothing to do with
-	// it, and restarting a line over an unrelated change is exactly what ADR 0005 says
-	// must not happen. But a template that had to be *written back* — because somebody
-	// deleted it — leaves the sessions stopped and not enabled, and that needs starting
-	// rather than restarting.
-	template := changeFor(plan, e.opts.UnitDir+"/"+pppoeTemplateUnit)
-
-	for _, session := range sessionsIn(plan, e.opts.Root+"/ppp/peers/") {
-		peer := changeFor(plan, e.opts.Root+"/ppp/peers/"+session+".conf")
-		credentials := changeFor(plan, e.opts.Root+"/ppp/credentials/"+session+".conf")
-		unit := pppoeUnit(session)
-
-		switch {
-		case peer.Kind == ChangeCreate || template.Kind == ChangeCreate:
-			steps = append(steps, Step{
-				Phase:   PhaseProcesses,
-				Kind:    StepCommand,
-				Reason:  "the session, or the unit it runs from, is not on the host yet",
-				Command: systemctl("enable", "--now", unit),
-				Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("disable", "--now", unit)},
-			})
-		case wasWritten(peer) || wasWritten(credentials) || wasWritten(template):
-			restart := systemctl("restart", unit)
-			steps = append(steps, Step{
-				Phase:   PhaseProcesses,
-				Kind:    StepCommand,
-				Reason:  "the session's configuration changed",
-				Command: restart,
-				Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: restart},
-			})
-		}
-	}
-	for _, session := range reclaimedSessions(plan, e.opts.Root+"/ppp/peers/") {
-		unit := pppoeUnit(session)
-		steps = append(steps, Step{
-			Phase:   PhaseProcesses,
-			Kind:    StepCommand,
-			Reason:  "the session is no longer declared",
-			Command: systemctl("disable", "--now", unit),
-			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("enable", "--now", unit)},
-		})
-	}
-	return steps
-}
-
-// dnsmasqSteps starts, restarts or stops regied's own dnsmasq. It comes after the links,
-// because it binds to the addresses they hold.
-func (e *Engine) dnsmasqSteps(plan *Plan, rendered *rendering) []Step {
-	conf := e.opts.Root + "/dnsmasq/dnsmasq.conf"
-	change := changeFor(plan, conf)
-	unit := changeFor(plan, e.opts.UnitDir+"/"+dnsmasqUnit)
-
-	switch {
-	case rendered.dnsmasq && (change.Kind == ChangeCreate || unit.Kind == ChangeCreate):
-		return []Step{{
-			Phase:   PhaseProcesses,
-			Kind:    StepCommand,
-			Reason:  "dnsmasq, or the unit it runs from, is not on the host yet",
-			Command: systemctl("enable", "--now", dnsmasqUnit),
-			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("disable", "--now", dnsmasqUnit)},
-		}}
-	case rendered.dnsmasq && (wasWritten(change) || wasWritten(unit)):
-		// Restart, not reload. dnsmasq re-reads /etc/hosts, its lease file and
-		// resolv.conf on SIGHUP, and nothing else: a reload would leave the
-		// configuration that was just written unapplied.
-		restart := systemctl("restart", dnsmasqUnit)
-		return []Step{{
-			Phase:   PhaseProcesses,
-			Kind:    StepCommand,
-			Reason:  "the dnsmasq configuration changed",
-			Command: restart,
-			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: restart},
-		}}
-	case !rendered.dnsmasq && change.Kind == ChangeRemove:
-		return []Step{{
-			Phase:   PhaseProcesses,
-			Kind:    StepCommand,
-			Reason:  "the host no longer declares any address handout or DNS",
-			Command: systemctl("disable", "--now", dnsmasqUnit),
-			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("enable", "--now", dnsmasqUnit)},
-		}}
-	}
-	return nil
-}
-
-func systemctl(args ...string) Command {
-	return Command{Name: "systemctl", Args: args}
-}
-
 // changeFor is the plan's entry for one path, or an unchanged one when the plan has
 // nothing to say about it.
 func changeFor(plan *Plan, path string) FileChange {
@@ -951,29 +813,4 @@ func writtenIn(plan *Plan, prefix string) bool {
 		}
 	}
 	return false
-}
-
-// sessionsIn is the sessions this plan writes a peer file for, in path order.
-func sessionsIn(plan *Plan, prefix string) []string {
-	var out []string
-	for _, change := range plan.Files {
-		if change.Kind == ChangeRemove || !strings.HasPrefix(change.Path, prefix) {
-			continue
-		}
-		out = append(out, strings.TrimSuffix(strings.TrimPrefix(change.Path, prefix), ".conf"))
-	}
-	return out
-}
-
-// reclaimedSessions is the sessions whose peer file this plan takes away.
-func reclaimedSessions(plan *Plan, prefix string) []string {
-	var out []string
-	for _, change := range plan.Files {
-		if change.Kind != ChangeRemove || !strings.HasPrefix(change.Path, prefix) {
-			continue
-		}
-		out = append(out, strings.TrimSuffix(strings.TrimPrefix(change.Path, prefix), ".conf"))
-	}
-	slices.Sort(out)
-	return out
 }
