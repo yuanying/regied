@@ -51,6 +51,12 @@ neither root nor a network, as `make test` requires.
 dry-run and diagnostics walk, so there is no path by which printing a plan can print one
 ([ADR 0003](0003-secrets-out-of-configuration.md)).
 
+**Whether a file holds one is decided by the directory it is in**, not by whichever part
+of the engine happens to be moving it. A credentials file being reclaimed is a credentials
+file, and so is one being written; the same is true of the ordering a unit needs. Hanging
+these on the directory is what keeps a path from acquiring half its rules when a new one
+is added.
+
 **The AFTR name must resolve to an IPv6 address, and a name that does not is an error.**
 The tunnel being configured is what carries IPv4, so the resolver has to be reachable over
 IPv6 and the answer has to be an IPv6 address; falling back to IPv4 would mean resolving
@@ -68,7 +74,11 @@ not up, and the rules that depend on it are left out and say so.
 - The nftables table is replaced in one transaction, so applying the same text is the
   same operation again. It is handed to `nft` when the text differs from what regied
   recorded at its last apply, **or when the table is not in the kernel at all** — which
-  is the case after a reboot, and after somebody flushed it.
+  is the case after a reboot, and after somebody flushed it. Asking the kernel has three
+  answers, not two: present, absent, and *could not be asked*, which is what a machine
+  with no nft says. Reading the third as the second would make a preview taken away from
+  the host claim it would install a ruleset the host already has, so it is reported
+  instead ([ADR 0006](0006-dry-run-and-rendering.md)) and the ruleset is left alone.
 - A kernel switch is read before it is written and written only if it differs.
 - A reload or a restart runs only when something the process in question reads actually
   changed.

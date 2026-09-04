@@ -41,6 +41,22 @@ order, over the previous configuration.
 or deleted if there was none. The files regied owns, including the ones it had reclaimed.
 The kernel switches, because each was read before it was written.
 
+**With one exception, and it is the one that decides what "reversible" means here.** If
+regied has no record of the ruleset it installed last time and the table *is* in the
+kernel, there is nothing to put back. Deleting it is not the reverse of installing it: it
+would take the firewall off a host that was running one, to recover from a missing note.
+The table this apply installed is left in place and the rollback says so. The host is then
+running a firewall it did not ask for in a rollback it did ask for, which is a mixture —
+and a mixture that filters is better than a host that forwards with nothing in front of
+it. This state is reachable because a failure to write that record is reported rather than
+rolled back, which the section below is about.
+
+**A rollback follows the same ordering rules the apply does.** Putting a file's content
+back is always safe, because the file goes on existing and nothing that resolves through
+it breaks. Taking a file away is not, and a unit this apply created is taken away only
+after the stops that resolve through it have run — the rule ADR 0004 states for the
+forward direction, read from the same place rather than written out twice.
+
 **Reversible in effect, not in state: networkd.** Restoring the files and reloading
 returns networkd to the previous declaration. It does not return the kernel to the instant
 before. An address networkd removed was removed, and a link it took down and brought back
