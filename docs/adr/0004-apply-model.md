@@ -143,6 +143,18 @@ back and put the session's configuration back on the host. So the units regied o
 the one thing not reclaimed while the files are being written: they are reclaimed by a
 step at the end of phase 5, after the stop, and systemd is told again afterwards.
 
+**What phase 5 does to a process is decided from two things and nothing else: whether
+the configuration declares it, and whether anything it reads was written.** Not from the
+kind of change one particular file had. A process the configuration no longer declares
+is stopped and disabled if anything of it is still on the host — a unit, an options
+file, a credential — whichever it is. A process the configuration declares and nothing
+of which was on the host before is enabled and started. One whose unit had to be put
+back — somebody deleted it — is enabled and restarted, because what runs from it may
+still be running from systemd's copy of the old one, and a start would do nothing.
+Otherwise it is restarted if anything it reads was written, and left alone if not. The
+rule was first written the other way, one file at a time, and every file that could go
+missing on its own became a case that was not there.
+
 ### Supervision belongs to systemd
 
 pppd and dnsmasq are long-running processes regied configures. **regied does not fork

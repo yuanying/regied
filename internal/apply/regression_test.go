@@ -296,10 +296,14 @@ func TestAUnitWrittenBackStartsWhatRunsFromIt(t *testing.T) {
 
 	plan := mustPlan(t, engine, cfg)
 
+	// Enabled, and restarted rather than started: what runs from the unit may still be
+	// running from systemd's copy of the old one (round 3).
 	commands := stepCommands(plan)
 	for _, want := range []string{
-		"systemctl enable --now regied-pppoe@pppoe0.service",
-		"systemctl enable --now regied-dnsmasq.service",
+		"systemctl enable regied-pppoe@pppoe0.service",
+		"systemctl restart regied-pppoe@pppoe0.service",
+		"systemctl enable regied-dnsmasq.service",
+		"systemctl restart regied-dnsmasq.service",
 	} {
 		if !contains(commands, want) {
 			t.Errorf("a unit written back does not start what runs from it; want %q, got:\n%s",
@@ -375,6 +379,86 @@ func TestAProbeThatCouldNotBeAskedNeverLetsARollbackDeleteTheTable(t *testing.T)
 	for _, cmd := range runner.ran {
 		if cmd.Stdin == "table inet regied\ndelete table inet regied\n" {
 			t.Fatal("the rollback deleted the table over a probe that had no answer")
+		}
+	}
+}
+
+// hostFixtureLinksOnly is the same host with neither the session nor the address
+// handout, so that both of what ran are to be stopped.
+const hostFixtureLinksOnly = `  global:
+    ipForwarding: true
+    logMartians: true
+  resources:
+    - kind: Interface
+      metadata: {name: wan}
+      spec: {ifname: eth0}
+    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        bridge:
+          members: [eth1, eth2]
+        addresses: [192.168.10.1/24]
+`
+
+// Round 3. A unit written back is written back to a process that may still be running
+// from systemd's copy of the old one, and with a configuration that may have changed in
+// the same apply. Starting what is already running does nothing; the process has to be
+// restarted, the way it is for any other file it reads.
+func TestAUnitWrittenBackRestartsWhatReadsAFileThatChanged(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustApply(t, engine, load(t, hostFixture))
+	tablePresent(runner)
+
+	delete(files.files, "/etc/systemd/system/regied-pppoe@.service")
+	delete(files.files, "/etc/systemd/system/regied-dnsmasq.service")
+	changed := strings.Replace(hostFixture, "end: 192.168.10.127", "end: 192.168.10.200", 1)
+	changed = strings.Replace(changed, "interfaceRef: wan\n", "interfaceRef: wan\n        mtu: 1454\n", 1)
+
+	plan := mustPlan(t, engine, load(t, changed))
+
+	commands := stepCommands(plan)
+	for _, unit := range []string{"regied-pppoe@pppoe0.service", "regied-dnsmasq.service"} {
+		enable := slices.Index(commands, "systemctl enable "+unit)
+		restart := slices.Index(commands, "systemctl restart "+unit)
+		if enable < 0 || restart < 0 || restart < enable {
+			t.Errorf("%s is not enabled and then restarted; got:\n%s", unit, strings.Join(commands, "\n"))
+		}
+		if contains(commands, "systemctl enable --now "+unit) {
+			t.Errorf("%s is started as if nothing ran from it, so a changed file is never read", unit)
+		}
+	}
+}
+
+// Round 3. What says a process is to be stopped is that the configuration no longer
+// declares it, not that one particular file of its is being reclaimed. A file somebody
+// deleted by hand must not leave the process running with no unit behind it.
+func TestAProcessIsStoppedWhenOnlyItsUnitIsLeft(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustApply(t, engine, load(t, hostFixture))
+	tablePresent(runner)
+
+	delete(files.files, "/etc/regied/dnsmasq/dnsmasq.conf")
+	delete(files.files, "/etc/regied/ppp/peers/pppoe0.conf")
+
+	plan := mustPlan(t, engine, load(t, hostFixtureLinksOnly))
+
+	var described []string
+	for _, step := range plan.Steps {
+		described = append(described, step.describe())
+	}
+	for unit, path := range map[string]string{
+		"regied-pppoe@pppoe0.service": "/etc/systemd/system/regied-pppoe@.service",
+		"regied-dnsmasq.service":      "/etc/systemd/system/regied-dnsmasq.service",
+	} {
+		stop := slices.Index(described, "systemctl disable --now "+unit)
+		reclaim := slices.Index(described, "reclaim "+path)
+		if stop < 0 {
+			t.Errorf("%s is not stopped; got:\n%s", unit, strings.Join(described, "\n"))
+			continue
+		}
+		if reclaim >= 0 && reclaim < stop {
+			t.Errorf("%s is reclaimed before what runs from it is stopped", path)
 		}
 	}
 }

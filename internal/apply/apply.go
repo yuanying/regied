@@ -88,7 +88,14 @@ func (e *Engine) ApplyPlan(ctx context.Context, cfg *config.Config, plan *Plan) 
 		// could not be put back is the first thing an operator needs, so it travels
 		// with the failure rather than being dropped (ADR 0005).
 		failure := &Error{Phase: PhaseStaging, Step: "writing what the configuration asks for", Cause: err}
-		failure.Rollback = append(e.restoreFiles(plan), e.removeWhatThisApplyCreated(plan)...)
+		failure.Rollback = e.restoreFiles(plan)
+		// systemd was never told about the units this apply created, so they are
+		// taken away without telling it they are gone.
+		for _, change := range deferredFiles(plan, ChangeCreate) {
+			if err := e.host.Files.Remove(change.Path); err != nil {
+				failure.Rollback = append(failure.Rollback, fmt.Sprintf("%s could not be taken back off: %v", change.Path, err))
+			}
+		}
 		return nil, failure
 	}
 
@@ -222,21 +229,6 @@ func (e *Engine) restoreFiles(plan *Plan) []string {
 	return problems
 }
 
-// removeWhatThisApplyCreated takes away the deferred files restoreFiles left, now that
-// nothing resolves through them any more.
-func (e *Engine) removeWhatThisApplyCreated(plan *Plan) []string {
-	var problems []string
-	for _, change := range plan.Files {
-		if !change.Deferred || change.Kind != ChangeCreate {
-			continue
-		}
-		if err := e.host.Files.Remove(change.Path); err != nil {
-			problems = append(problems, fmt.Sprintf("%s could not be taken back off: %v", change.Path, err))
-		}
-	}
-	return problems
-}
-
 // undo re-runs, over the restored files, the steps that had already been attempted. A
 // step that failed is undone too: it may have taken effect before it failed.
 //
@@ -261,7 +253,15 @@ func (e *Engine) undo(ctx context.Context, plan *Plan, attempted int) []string {
 			problems = append(problems, fmt.Sprintf("%q failed: %v", step.Undo.describe(), err))
 		}
 	}
-	return append(problems, e.removeWhatThisApplyCreated(plan)...)
+	// The units this apply created go last, once the undo of every start has run
+	// through them, and systemd is told — the same steps the forward direction takes
+	// for a unit the configuration dropped.
+	for _, step := range deferredReclaim(deferredFiles(plan, ChangeCreate), "this apply created it") {
+		if err := e.run(ctx, step); err != nil {
+			problems = append(problems, fmt.Sprintf("%q failed: %v", step.describe(), err))
+		}
+	}
+	return problems
 }
 
 // record remembers the ruleset that was installed. It is the one thing an apply leaves

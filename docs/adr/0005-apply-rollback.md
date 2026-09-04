@@ -56,8 +56,9 @@ rolled back, which the section below is about.
 **A rollback follows the same ordering rules the apply does.** Putting a file's content
 back is always safe, because the file goes on existing and nothing that resolves through
 it breaks. Taking a file away is not, and a unit this apply created is taken away only
-after the stops that resolve through it have run — the rule ADR 0004 states for the
-forward direction, read from the same place rather than written out twice.
+after the stops that resolve through it have run, and systemd is told once it is gone —
+the same steps ADR 0004 states for the forward direction, built by the same code rather
+than written out twice.
 
 **Reversible in effect, not in state: networkd.** Restoring the files and reloading
 returns networkd to the previous declaration. It does not return the kernel to the instant
