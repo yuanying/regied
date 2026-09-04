@@ -1,14 +1,34 @@
 # ADR 0007: The resident process answers questions and follows addresses. It does not apply
 
-- Status: Accepted (2026-09-04). **Decided, not implemented.**
+- Status: Deferred (2026-09-04). **Decided, and then set aside: nothing here is being
+  built.** The HTTP API turned out not to be wanted yet, and the work of building it is
+  not scheduled. It becomes a decision to act on when a host is found to need something
+  resident.
 
-> **There is no resident process on the host today.** `regied` has two commands, `render`
-> and `apply`; there is no `serve`, no listener, and no unit that runs anything at boot.
-> The only thing an apply leaves behind is the text of the ruleset it installed
-> ([ADR 0004](0004-apply-model.md)), written under regied's state directory on success.
-> Nothing on a host can therefore answer which declaration was applied, when, or whether
-> it succeeded — the first thing the API is asked for. None of what follows exists yet:
-> no record of an apply, no endpoints, no socket, no units, no address watcher.
+> **There is no resident process on the host, and none is planned for now.** `regied` has
+> two commands, `render` and `apply`; there is no `serve`, no listener, and no unit that
+> runs anything at boot. The only thing an apply leaves behind is the text of the ruleset
+> it installed ([ADR 0004](0004-apply-model.md)), written under regied's state directory
+> on success. None of what follows exists: no record of an apply, no endpoints, no socket,
+> no units, no address watcher.
+>
+> **Everything below is therefore a decision about how to build this, not a description of
+> anything running.** That includes the two questions that were still open when it was
+> written — where it listens, and whether it has any write endpoint at all. They are
+> settled at the time it is built, against whatever is true then, and not now.
+>
+> **The record is kept rather than withdrawn, for two reasons.** The first is that a host
+> which does turn out to need something resident should start from a design to argue with
+> rather than from nothing. The second is what writing it turned up in the apply engine,
+> which is worth not having to find twice: **the apply records the text of the ruleset it
+> installed and nothing else.** No revision, no timestamp, no outcome, no trace that an
+> apply was rolled back. So nothing on a host can say which declaration is running or
+> whether the last attempt succeeded — and that gap is real whether or not anything ever
+> serves it over HTTP.
+>
+> **One decision here does not wait on the rest**: the unit that runs an apply at boot,
+> which is needed by any host that installs regied. It is argued for in its own section
+> below, and the reasoning there does not depend on the resident process existing.
 >
 > The record the daemon half rests on, [ADR 0015](0015-uplink-addresses-in-sets.md), is
 > itself decided and not built. Read both as what is to be, not what is.
@@ -309,6 +329,14 @@ the operator meets, not something regied enforces.
 They belong in the directory a distribution's own units live in, which leaves
 `/etc/systemd/system` to the operator's overrides and to the units regied writes there —
 the same separation ADR 0012 made with file name prefixes.
+
+**The boot-time apply unit stands on its own.** Everything argued for it here — that the
+ruleset is kernel state somebody has to install after every reboot, that the somebody is
+an apply rather than a file, the ordering against networkd and `network-online.target`,
+the `nftables.service` hazard, and the package shipping it rather than regied rendering it
+— follows from ADR 0004 and holds for any host running regied, whether or not there is
+ever a resident process for it to sit beside. A host that installs regied and never serves
+anything still needs it.
 
 ### The daemon half: following the sets
 
