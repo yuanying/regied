@@ -15,12 +15,33 @@ import (
 
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
+	"github.com/yuanying/regied/internal/render/nftables"
 )
 
 // DefaultRoot is the directory regied's generated pppd configuration lives under. Every
 // file below it belongs to regied and is rewritten on apply; nothing regied did not
 // write is under it (ADR 0009).
 const DefaultRoot = "/etc/regied"
+
+// DefaultPPPDir is pppd's own directory, where the hook directories are. Unlike
+// DefaultRoot it is shared with the distribution and with whatever else runs ppp on this
+// host, so what regied writes there carries its name and its ownership marker, and
+// nothing else in those directories is read or written (ADR 0009).
+const DefaultPPPDir = "/etc/ppp"
+
+// HookPrefix is on the name of every file regied puts in a hook directory. It is how
+// reclaiming tells regied's hooks from the distribution's.
+const HookPrefix = "regied-"
+
+// hookName is the one script, which sits in both directories. One script serves every
+// session: the set it writes to is named after the interface pppd hands it (ADR 0015).
+const hookName = HookPrefix + "uplink-set"
+
+// UpHookDir and DownHookDir are the directories pppd runs its hooks out of, under a
+// given pppd directory. The apply engine asks for them by name because they are two more
+// shared directories it has to reclaim from.
+func UpHookDir(pppDir string) string   { return pppDir + "/ip-up.d" }
+func DownHookDir(pppDir string) string { return pppDir + "/ip-down.d" }
 
 // ownershipMarker is the first line of every file this package produces. It says who
 // wrote the file, so that a file without it is somebody else's and is left alone.
@@ -43,16 +64,20 @@ type File struct {
 // Output is every PPPoE session, rendered.
 type Output struct {
 	Sessions []Session
+
+	// Hooks is the ip-up and ip-down scripts, in that order, or nothing at all on a host
+	// that declares no session.
+	Hooks []File
 }
 
 // Files is the files whose content follows from the configuration alone. The credentials
 // file is not among them: its content is not known until apply has read the credentials.
 func (o *Output) Files() []File {
-	files := make([]File, 0, len(o.Sessions))
+	files := make([]File, 0, len(o.Sessions)+len(o.Hooks))
 	for _, session := range o.Sessions {
 		files = append(files, session.Peer)
 	}
-	return files
+	return append(files, o.Hooks...)
 }
 
 // Session is one PPPoESession rendered.
@@ -145,7 +170,8 @@ func quote(value string) string {
 type Option func(*options)
 
 type options struct {
-	root string
+	root   string
+	pppDir string
 }
 
 // WithRoot puts the generated files under a directory other than DefaultRoot.
@@ -153,8 +179,13 @@ func WithRoot(dir string) Option {
 	return func(o *options) { o.root = dir }
 }
 
+// WithPPPDir puts the hooks under a directory other than DefaultPPPDir.
+func WithPPPDir(dir string) Option {
+	return func(o *options) { o.pppDir = dir }
+}
+
 func resolveOptions(opts []Option) options {
-	resolved := options{root: DefaultRoot}
+	resolved := options{root: DefaultRoot, pppDir: DefaultPPPDir}
 	for _, opt := range opts {
 		opt(&resolved)
 	}
@@ -181,7 +212,93 @@ func Render(cfg *config.Config, opts ...Option) *Output {
 	for _, session := range sessions {
 		out.Sessions = append(out.Sessions, renderSession(cfg, resolved, session))
 	}
+	if len(out.Sessions) > 0 {
+		out.Hooks = hooks(resolved)
+	}
 	return out
+}
+
+// hooks is the pair of scripts pppd runs when a session comes up and when it goes down.
+//
+// They exist because the nftables ruleset holds no uplink address: it declares a set per
+// uplink and family, and something has to put the address in. pppd learns it first, and
+// on a host coming up it learns it after the apply has already installed the table, which
+// is the cold start the apply's own seeding cannot cover (ADR 0015).
+func hooks(opts options) []File {
+	return []File{
+		{
+			Path:    UpHookDir(opts.pppDir) + "/" + hookName,
+			Mode:    0o755,
+			DirMode: 0o755,
+			Content: hookScript(up),
+		},
+		{
+			Path:    DownHookDir(opts.pppDir) + "/" + hookName,
+			Mode:    0o755,
+			DirMode: 0o755,
+			Content: hookScript(down),
+		},
+	}
+}
+
+// The two directions one script is written for.
+type direction int
+
+const (
+	up direction = iota
+	down
+)
+
+// hookScript is the script itself.
+//
+// pppd hands a hook the interface name in $1 and the address the session came up with in
+// $4, and the set is named after the interface, so one script serves every session
+// whatever it is called (ADR 0012, ADR 0015). It is IPv4 only, because ip-up is: the
+// IPv6 hook is handed a link-local address, and a global one arrives through networkd,
+// which has no hook.
+//
+// Nothing in it fails. A line that comes up before the boot apply has no table to add to
+// yet, and that is not an error: the apply installs the table with the set moments later
+// and seeds it from the link itself.
+func hookScript(which direction) string {
+	verb := "add"
+	when := "# pppd runs this when a session comes up. It puts the address the session was\n" +
+		"# given into the nftables set the hairpin rules match on.\n"
+	forgiving := "# It never fails. A line that comes up before regied has installed its table has\n" +
+		"# nothing to write to yet, and the apply that installs it seeds the set itself.\n"
+	if which == down {
+		verb = "delete"
+		when = "# pppd runs this when a session goes down. It takes the address the session had\n" +
+			"# out of the nftables set the hairpin rules match on.\n"
+		forgiving = "# It never fails. With no table there is nothing to take the address out of, and\n" +
+			"# the next apply seeds the set from the links as they are then.\n"
+	}
+
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	b.WriteString(ownershipMarker + "\n")
+	b.WriteString("#\n")
+	b.WriteString(when)
+	b.WriteString("# The set is named after the interface pppd passes in, so one script serves every\n")
+	b.WriteString("# session.\n")
+	b.WriteString("#\n")
+	b.WriteString(forgiving)
+	b.WriteString("\n")
+	b.WriteString("interface=\"$1\"\n")
+	b.WriteString("address=\"$4\"\n")
+	b.WriteString("\n")
+	b.WriteString("[ -n \"$interface\" ] || exit 0\n")
+	b.WriteString("[ -n \"$address\" ] || exit 0\n")
+	b.WriteString("\n")
+	// The set name is built by the renderer that declared the set, with the shell's own
+	// variable where the interface goes. Writing it out here would be a second place for
+	// the name to be decided, and a hook writing to a set nothing declares fails silently
+	// by design (ADR 0015).
+	fmt.Fprintf(&b, "nft %s element %s %s %q %q >/dev/null 2>&1\n",
+		verb, nftables.TableFamily, nftables.TableName,
+		nftables.UplinkSetName("${interface}", v1alpha1.FamilyIPv4), "{ ${address} }")
+	b.WriteString("exit 0\n")
+	return b.String()
 }
 
 func renderSession(cfg *config.Config, opts options, session config.Named[*v1alpha1.PPPoESessionSpec]) Session {

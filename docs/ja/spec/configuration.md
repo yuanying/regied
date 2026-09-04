@@ -104,13 +104,20 @@ strict なリバースパスフィルタはまさにそれを落とす。有効�
 | IPv4 over IPv6 のトンネル | `DSLiteTunnel` | systemd-networkd |
 | ルーティングポリシールールとそのテーブル | `EgressRoutePolicy` | systemd-networkd |
 | PPPoE の回線 | `PPPoESession` | pppd |
+| 発呼したアドレスを、ファイアウォールの回線セットに入れること | `PPPoESession` | pppd の ip-up / ip-down フック |
 | アドレス配布、DNS | `DHCPServer`、`DNSForwarder` | dnsmasq |
 | ファイアウォール、NAT、ポリシールーティングの判定 | `FirewallZone`、`FirewallPolicy`、`IPAddressSet`、`SourceNAT`、`PortForward`、`EgressRoutePolicy` | nftables |
 | カーネルのスイッチ | `spec.global` | カーネル |
 
 regied は networkd の設定を自分の接頭辞のファイルとして `/etc/systemd/network/` に置き、
 すべての `DHCPServer` と `DNSForwarder` から 1 つの dnsmasq 設定を組み立て、
-nftables は自分のテーブルだけを作り替える。ルールセット全体を flush することは無く、
+nftables は自分のテーブルだけを作り替える。`PPPoESession` を宣言したホストには
+スクリプトが 2 つ増える。`/etc/ppp/ip-up.d/regied-uplink-set` と
+`/etc/ppp/ip-down.d/regied-uplink-set` である。ルールセットは回線のアドレスを持たないので、
+発呼したアドレスを hairpin のルールがマッチするセットに入れるのがこの 2 つである
+（[ADR 0015](../adr/0015-uplink-addresses-in-sets.md)）。セッションが 1 つも無くなれば
+回収する。これらのディレクトリはどれもディストリビューションと共有なので、regied が置くものは
+自分の名前と所有の印を持つ。ルールセット全体を flush することは無く、
 自分が作っていないファイルを書き換えることも無い
 （[ADR 0009](../adr/0009-ownership-boundary.md)）。
 

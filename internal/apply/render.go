@@ -81,7 +81,10 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 		return nil, err
 	}
 
-	sessions := pppd.Render(cfg, pppd.WithRoot(e.opts.Root))
+	sessions := pppd.Render(cfg, pppd.WithRoot(e.opts.Root), pppd.WithPPPDir(e.opts.PPPDir))
+	for _, hook := range sessions.Hooks {
+		out.artifacts = append(out.artifacts, fromPPPdFile(hook))
+	}
 	for _, session := range sessions.Sessions {
 		out.sessions = append(out.sessions, session.Name)
 		out.artifacts = append(out.artifacts, fromPPPdFile(session.Peer))

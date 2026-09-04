@@ -33,6 +33,14 @@ func TestRenderedFilesCarryTheOwnershipMarker(t *testing.T) {
 		}
 	}
 
+	// A hook is a script, so the marker is the line after the interpreter line. It is
+	// still the line reclaiming recognises it by.
+	for _, hook := range sessions.Hooks {
+		if !hasOwnershipMarker([]byte(hook.Content)) {
+			t.Errorf("%s does not carry the marker this package reclaims by", hook.Path)
+		}
+	}
+
 	names := dnsmasq.Render(cfg)
 	for _, file := range names.Files() {
 		if !strings.HasPrefix(file.Content, ownershipMarker) {

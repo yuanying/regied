@@ -107,14 +107,22 @@ applied at boot, which would enable forwarding before the firewall exists.
 | IPv4-over-IPv6 tunnel | `DSLiteTunnel` | systemd-networkd |
 | Routing policy rule and its table | `EgressRoutePolicy` | systemd-networkd |
 | PPPoE session | `PPPoESession` | pppd |
+| The address a session dials with, into the firewall's uplink set | `PPPoESession` | pppd's ip-up and ip-down hooks |
 | Address handout, DNS | `DHCPServer`, `DNSForwarder` | dnsmasq |
 | Firewall, NAT, policy-routing match | `FirewallZone`, `FirewallPolicy`, `IPAddressSet`, `SourceNAT`, `PortForward`, `EgressRoutePolicy` | nftables |
 | Kernel switches | `spec.global` | kernel |
 
 regied writes networkd files into `/etc/systemd/network/` under its own prefix, builds
 one dnsmasq configuration out of every `DHCPServer` and `DNSForwarder`, and rebuilds only
-its own nftables table. It never flushes the ruleset and never rewrites a file it did not
-create ([ADR 0009](../adr/0009-ownership-boundary.md)).
+its own nftables table. A host that declares a `PPPoESession` also gets two scripts,
+`/etc/ppp/ip-up.d/regied-uplink-set` and `/etc/ppp/ip-down.d/regied-uplink-set`: the
+ruleset holds no uplink address, and these are what put the address a session dialled
+with into the set the hairpin rules match on
+([ADR 0015](../adr/0015-uplink-addresses-in-sets.md)). They are reclaimed when the last
+session goes. Every one of these directories is shared with the distribution, so what
+regied puts there carries its name and its ownership marker; it never flushes the ruleset
+and never rewrites a file it did not create
+([ADR 0009](../adr/0009-ownership-boundary.md)).
 
 ## Secrets
 
