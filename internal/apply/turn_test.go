@@ -484,3 +484,38 @@ func TestTheReportCarriesTheDeclarationsWarnings(t *testing.T) {
 		t.Errorf("the report does not carry what validation warned about: %v", report.Warnings)
 	}
 }
+
+// A submission that finds nothing to change still records the declaration. That is the
+// path a host already running regied takes when it is upgraded to a version that keeps a
+// record: its files and its ruleset are all in place, so the turn changes nothing, and if
+// that left no record the next boot would find none and do nothing (ADR 0016).
+func TestASubmissionRecordsEvenWhenThereIsNothingToChange(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {}, "uplink6_pppoe0": {}})
+
+	// The host holds everything, and the record is taken away: this is the host that was
+	// applied to by a version of regied that kept none.
+	record := "/var/lib/regied/accepted/declaration.yaml"
+	delete(files.files, record)
+	before := len(runner.ran)
+
+	result := mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+
+	if result.Changed {
+		t.Errorf("the second submission changed something: %s", result.Plan.Summary())
+	}
+	if got, _ := files.content(record); got != string(declarationOf(hostFixture)) {
+		t.Error("a submission with nothing to do did not record the declaration")
+	}
+	for _, cmd := range commandsSince(runner, before) {
+		if cmd != "nft list tables" && cmd != listTableCommand().String() {
+			t.Errorf("a submission with nothing to do ran %q", cmd)
+		}
+	}
+	// And the host can now be reconciled, which is the point of recording it.
+	if _, err := engine.Reconcile(context.Background()); err != nil {
+		t.Fatalf("reconciling after the record was written failed: %v", err)
+	}
+}
