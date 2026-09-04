@@ -20,6 +20,19 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 		r.renderBridgeNetDev(iface)
 	}
 
+	// A link whose DUID has not been read gets no file at all. Written without the
+	// DUID, the prefix delegation would send networkd's own identifier, and the
+	// delegated prefix would change under a host that already holds one: that is not a
+	// smaller version of what was declared but a different configuration, so nothing of
+	// the file is written and the DUID is waited for (ADR 0004, ADR 0016). The bridge
+	// above depends on nothing that is read at apply time and is rendered as usual.
+	if path, unread := r.unreadDUID(iface); unread {
+		r.omit(v1alpha1.KindInterface, iface.Name,
+			"the DUID file "+path+" to be read",
+			fileName(iface.Name, ".network"))
+		return
+	}
+
 	u := newUnit(v1alpha1.KindInterface, iface.Name)
 	u.section("Match").set("Name", spec.Ifname)
 
@@ -132,9 +145,22 @@ func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.Inte
 	u.section("IPv6AcceptRA").setBool("UseDNS", client.UseDNSEnabled())
 }
 
+// unreadDUID is the DUID file an interface names whose contents were not supplied, if
+// there is one. An interface that names no file has nothing to wait for.
+func (r *renderer) unreadDUID(iface config.Named[*v1alpha1.InterfaceSpec]) (string, bool) {
+	client := iface.Spec.DHCPv6
+	if client == nil || client.PrefixDelegation == nil || client.PrefixDelegation.DUIDFile == "" {
+		return "", false
+	}
+	path := client.PrefixDelegation.DUIDFile
+	_, ok := r.rt.DUIDs[path]
+	return path, !ok
+}
+
 func (r *renderer) renderDUID(dhcpv6 *section, ifaceName, path string) {
 	raw, ok := r.rt.DUIDs[path]
 	if !ok {
+		// renderInterface omits the whole file before getting here.
 		r.errorf("Interface/%s: nothing was read from the DUID file %s", ifaceName, path)
 		return
 	}

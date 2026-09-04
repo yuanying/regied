@@ -12,7 +12,18 @@ const (
 )
 
 // renderDSLiteTunnel writes the ip6tnl and the link configuration that goes with it.
+//
+// A tunnel whose AFTR name has not been resolved gets neither. An ip6tnl takes its
+// remote when the link is created, so there is no tunnel to write without the address,
+// and the link's file — its routes, its policy tables — would describe a link that does
+// not exist. The whole tunnel waits for the name instead (ADR 0016).
 func (r *renderer) renderDSLiteTunnel(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec]) {
+	if host, unresolved := r.unresolvedAFTR(tunnel); unresolved {
+		r.omit(v1alpha1.KindDSLiteTunnel, tunnel.Name,
+			"the AFTR "+host+" to resolve to an IPv6 address",
+			fileName(tunnel.Name, ".netdev"), fileName(tunnel.Name, ".network"))
+		return
+	}
 	r.renderTunnelNetDev(tunnel)
 
 	spec := tunnel.Spec
@@ -96,10 +107,22 @@ func (r *renderer) tunnelRemote(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec])
 	}
 	address, ok := r.rt.AFTRAddresses[tunnel.Name]
 	if !ok {
+		// renderDSLiteTunnel omits the whole tunnel before getting here.
 		r.errorf("DSLiteTunnel/%s: the AFTR %s has not been resolved to an address", tunnel.Name, spec.AFTRHost)
 		return "", false
 	}
 	return address.String(), true
+}
+
+// unresolvedAFTR is the AFTR name a tunnel was written with whose address was not
+// supplied, if there is one. A tunnel written with an address has nothing to wait for.
+func (r *renderer) unresolvedAFTR(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec]) (string, bool) {
+	spec := tunnel.Spec
+	if spec.AFTRAddress != nil || spec.AFTRHost == "" {
+		return "", false
+	}
+	_, ok := r.rt.AFTRAddresses[tunnel.Name]
+	return spec.AFTRHost, !ok
 }
 
 // renderPPPoESession writes the routes that leave by a link networkd does not own.
