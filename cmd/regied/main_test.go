@@ -133,3 +133,16 @@ spec:
 		t.Errorf("render says nothing about what validation warned of:\n%s", stderr.String())
 	}
 }
+
+// Round 3. Asking for help is not an error, whichever command is asked.
+func TestHelpIsNotAnError(t *testing.T) {
+	for _, command := range []string{"apply", "render"} {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{command, "-h"}, &stdout, &stderr); code != 0 {
+			t.Errorf("regied %s -h exits %d, want 0", command, code)
+		}
+		if !strings.Contains(stderr.String(), "-config") {
+			t.Errorf("regied %s -h does not print the flags:\n%s", command, stderr.String())
+		}
+	}
+}

@@ -21,7 +21,7 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 	path := flags.String("config", DefaultConfigPath, "the configuration to apply")
 	dryRun := flags.Bool("dry-run", false, "show what would change and do none of it")
 	if err := flags.Parse(args); err != nil {
-		return 2
+		return parseExit(err)
 	}
 
 	cfg, err := config.Load(*path)
