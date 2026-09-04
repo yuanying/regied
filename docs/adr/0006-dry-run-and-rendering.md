@@ -90,11 +90,23 @@ what answers it.
 
 ### A dry-run does not need the line to be up
 
+*Amended by [ADR 0015](0015-uplink-addresses-in-sets.md), which is built: the ruleset is
+no longer one of the things that depends on a runtime value. Both dry-runs now show the
+same ruleset — the hairpin rules match on the uplink's set whether or not the line is up —
+and what differs is the line beside it saying which addresses this apply would put into
+that set. A host whose line is not up is told so as a note and shows no elements. The
+point of the section is unchanged: nothing has to be waited for. **What the second
+paragraph below describes is what a dry-run showed before that record.***
+
 Missing runtime values are reported as missing and what depends on them is left out,
-exactly as apply would leave it out. A dry-run on a host whose session has not dialled
-therefore shows a ruleset without the hairpin rules, and one taken after the line came up
-shows them. That difference is not noise: it is the same difference ADR 0004's last phase
-re-applies, made visible.
+exactly as apply would leave it out.
+
+A dry-run on a host whose session has not dialled therefore shows a ruleset without the
+hairpin rules, and one taken after the line came up shows them. That difference is not
+noise: it is the same difference ADR 0004's last phase re-applies, made visible.
+
+`regied render`, which reads no host at all, is complete on its own for the same reason:
+the ruleset needs no runtime value, so nothing in it is left out for want of one.
 
 ## Consequences
 

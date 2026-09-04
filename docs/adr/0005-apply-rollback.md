@@ -113,10 +113,10 @@ regied's own bookkeeping — writing down the ruleset it installed, and renderin
 once more in case a session dialled while the apply was running. Both can fail, and
 neither is a reason to undo anything.
 
-*[ADR 0015](0015-uplink-addresses-in-sets.md), which is decided and not yet built, takes
-the second of those away: with no uplink address in the ruleset there is nothing to render
-again. **Until it is built, both are what happens**, and both are covered by the rule
-below.*
+*Amended by [ADR 0015](0015-uplink-addresses-in-sets.md), which is built: the second of
+those is gone. With no uplink address in the ruleset there is nothing to render again, and
+what is left after the last command is writing down the ruleset that was installed. The
+rule below is unchanged and covers it.*
 
 Rolling back at that point would take a working configuration off a host to recover from
 not being able to write a note about it. Reporting a failed apply is nearly as bad in a
