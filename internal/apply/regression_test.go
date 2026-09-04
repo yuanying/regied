@@ -243,3 +243,105 @@ func TestAFailureAfterTheCommitIsReportedRatherThanCalledAFailedApply(t *testing
 		t.Errorf("nothing says the ruleset could not be recorded: %v", result.Notes)
 	}
 }
+
+// 差し戻し 2. The credential a reclaim reads is a credential like any other. Marking a
+// path secret is a property of the directory it is in, so that neither the writing path
+// nor the reclaiming path can forget it (ADR 0003).
+func TestAReclaimedCredentialsFileIsNotInThePlan(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	stale := "/etc/regied/ppp/credentials/gone.conf"
+	files.put(stale, ownershipMarker+"\nuser \"gone@example.net\"\npassword \"swordfish\"\n", 0o600)
+	files.put("/etc/regied/ppp/peers/gone.conf", ownershipMarker+"\nifname gone\n", 0o644)
+
+	plan := mustPlan(t, engine, load(t, hostFixture))
+
+	change, ok := fileChangeFor(plan, stale)
+	if !ok {
+		t.Fatal("the stale credentials file is not reclaimed")
+	}
+	if !change.Secret {
+		t.Error("a reclaimed credentials file is not marked secret")
+	}
+	for _, field := range []string{change.Before, change.Content} {
+		if strings.Contains(field, "swordfish") || strings.Contains(field, "gone@example.net") {
+			t.Errorf("%s carries the credential it is taking away", stale)
+		}
+	}
+	if strings.Contains(renderReport(plan), "swordfish") {
+		t.Error("the report prints the credential of a file it is reclaiming")
+	}
+
+	// It still has to come back if the apply is rolled back.
+	runner.fail["networkctl reload"] = errFake
+	if _, err := engine.ApplyPlan(context.Background(), load(t, hostFixture), plan); err == nil {
+		t.Fatal("the failing reload was not reported")
+	}
+	restored, ok := files.content(stale)
+	if !ok || !strings.Contains(restored, "swordfish") {
+		t.Errorf("the reclaimed credentials file was not put back: %q", restored)
+	}
+}
+
+// 差し戻し 2. Narrowing what counts as "a unit that affects this process" must not
+// narrow it past a unit that was written back after somebody deleted it: the apply then
+// reports success while nothing is running.
+func TestAUnitWrittenBackStartsWhatRunsFromIt(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	cfg := load(t, hostFixture)
+	mustApply(t, engine, cfg)
+	delete(runner.fail, "nft list table inet regied")
+
+	delete(files.files, "/etc/systemd/system/regied-pppoe@.service")
+	delete(files.files, "/etc/systemd/system/regied-dnsmasq.service")
+
+	plan := mustPlan(t, engine, cfg)
+
+	commands := stepCommands(plan)
+	for _, want := range []string{
+		"systemctl enable --now regied-pppoe@pppoe0.service",
+		"systemctl enable --now regied-dnsmasq.service",
+	} {
+		if !contains(commands, want) {
+			t.Errorf("a unit written back does not start what runs from it; want %q, got:\n%s",
+				want, strings.Join(commands, "\n"))
+		}
+	}
+}
+
+// 差し戻し 2. nft not being installed is not the same answer as the table not being
+// there, and reading one as the other makes a dry-run away from the host claim it would
+// install a ruleset the host already has (ADR 0006).
+func TestNFTBeingAbsentIsNotTheSameAsTheTableBeingAbsent(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	cfg := load(t, hostFixture)
+	mustApply(t, engine, cfg)
+
+	// A machine with no nft at all: neither the probe nor the check can be run.
+	runner.fail["nft list table inet regied"] = ErrCommandNotFound
+	runner.fail["nft --check -f -"] = ErrCommandNotFound
+	_ = files
+
+	plan := mustPlan(t, engine, cfg)
+
+	if plan.Firewall.Apply {
+		t.Error("a host that already holds this ruleset is told the whole table goes in")
+	}
+	if !plan.Empty() {
+		t.Errorf("nothing changed, but the plan is not empty:\n%s", plan.Summary())
+	}
+	if !strings.Contains(strings.Join(plan.Notes, "\n"), "nft") {
+		t.Errorf("nothing says the table could not be checked for: %v", plan.Notes)
+	}
+}
+
+// 差し戻し 2. Render says the apply-time values may all be absent. Absent has to include
+// the whole of them.
+func TestRenderAcceptsNoRuntimeAtAll(t *testing.T) {
+	plan, err := New(Host{}, Options{}).Render(load(t, hostFixture), nil)
+	if err != nil {
+		t.Fatalf("rendering with no runtime values failed: %v", err)
+	}
+	if len(plan.Files) == 0 {
+		t.Error("nothing was rendered")
+	}
+}

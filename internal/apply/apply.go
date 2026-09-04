@@ -88,7 +88,7 @@ func (e *Engine) ApplyPlan(ctx context.Context, cfg *config.Config, plan *Plan) 
 		// could not be put back is the first thing an operator needs, so it travels
 		// with the failure rather than being dropped (ADR 0005).
 		failure := &Error{Phase: PhaseStaging, Step: "writing what the configuration asks for", Cause: err}
-		failure.Rollback = e.restoreFiles(plan)
+		failure.Rollback = append(e.restoreFiles(plan), e.removeWhatThisApplyCreated(plan)...)
 		return nil, failure
 	}
 
@@ -184,6 +184,8 @@ func (e *Engine) run(ctx context.Context, step Step) error {
 		return nil
 	case StepWrite:
 		return e.write(step.File, step.File.Content)
+	case StepKeep:
+		return nil
 	}
 	_, err := e.host.Runner.Run(ctx, step.Command)
 	return err
@@ -192,6 +194,11 @@ func (e *Engine) run(ctx context.Context, step Step) error {
 // restoreFiles puts every file back as it was, including the ones the apply reclaimed.
 // For a file the previous generation is the file itself, which is why the engine keeps
 // almost no state (ADR 0005).
+//
+// Putting content back is always safe: the file goes on existing, so nothing that
+// resolves through it breaks. Taking a file away is not, and for a deferred path — a
+// unit — it has to wait until the undo steps that resolve through it have run. That is
+// the same rule the forward direction follows, read from the same flag (ADR 0004).
 func (e *Engine) restoreFiles(plan *Plan) []string {
 	var problems []string
 	for _, change := range plan.Files {
@@ -202,11 +209,29 @@ func (e *Engine) restoreFiles(plan *Plan) []string {
 			continue
 		case hadBefore:
 			err = e.host.Files.WriteFile(change.Path, []byte(before), change.BeforeMode)
+		case change.Deferred:
+			// This apply created it. It goes once the stops are done.
+			continue
 		default:
 			err = e.host.Files.Remove(change.Path)
 		}
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s could not be put back: %v", change.Path, err))
+		}
+	}
+	return problems
+}
+
+// removeWhatThisApplyCreated takes away the deferred files restoreFiles left, now that
+// nothing resolves through them any more.
+func (e *Engine) removeWhatThisApplyCreated(plan *Plan) []string {
+	var problems []string
+	for _, change := range plan.Files {
+		if !change.Deferred || change.Kind != ChangeCreate {
+			continue
+		}
+		if err := e.host.Files.Remove(change.Path); err != nil {
+			problems = append(problems, fmt.Sprintf("%s could not be taken back off: %v", change.Path, err))
 		}
 	}
 	return problems
@@ -227,11 +252,16 @@ func (e *Engine) undo(ctx context.Context, plan *Plan, attempted int) []string {
 			problems = append(problems, fmt.Sprintf("%q has no way back and was left as it is", step.describe()))
 			continue
 		}
+		if step.Undo.Kind == StepKeep {
+			// Deliberately nothing. The operator is told what was left and why.
+			problems = append(problems, step.Undo.Reason)
+			continue
+		}
 		if err := e.run(ctx, *step.Undo); err != nil {
 			problems = append(problems, fmt.Sprintf("%q failed: %v", step.Undo.describe(), err))
 		}
 	}
-	return problems
+	return append(problems, e.removeWhatThisApplyCreated(plan)...)
 }
 
 // record remembers the ruleset that was installed. It is the one thing an apply leaves
@@ -290,7 +320,7 @@ func (e *Engine) settleFirewall(ctx context.Context, cfg *config.Config, plan *P
 	}
 	result.FirewallReapplied = true
 
-	settled := &Plan{Firewall: FirewallChange{Ruleset: ruleset, Before: plan.Firewall.Ruleset, Present: true, Apply: true}}
+	settled := &Plan{Firewall: FirewallChange{Ruleset: ruleset, Before: plan.Firewall.Ruleset, Table: TablePresent, Apply: true}}
 	if err := e.record(settled); err != nil {
 		result.Notes = append(result.Notes, err.Error())
 	}
