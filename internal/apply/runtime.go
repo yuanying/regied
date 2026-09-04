@@ -33,16 +33,24 @@ type Runtime struct {
 	// by the session's name.
 	Credentials map[string]pppd.Credentials
 
-	// Notes is what the host could not answer without that being a failure. The only
-	// case today is a link that is not up, which is ordinary before the line has dialled
-	// and is why its uplink set has nothing to be seeded with.
+	// Notes is what the host could not answer without that being a failure: a link that
+	// is not up, which is ordinary before the line has dialled and is why its uplink set
+	// has nothing to be seeded with; an AFTR name that does not resolve yet; a DUID file
+	// that cannot be read yet. The last two leave an artifact out of this turn, and the
+	// plan says what it waits for (ADR 0016).
 	Notes []string
 }
 
-// RuntimeError is what CollectRuntime returns when the host cannot answer something an
-// apply cannot proceed without. It reports everything it found rather than the first
+// RuntimeError is what CollectRuntime returns when the host cannot answer something a
+// turn cannot proceed without. It reports everything it found rather than the first
 // thing, because a host being set up for the first time is usually missing several and
 // an operator should learn all of them in one run.
+//
+// Only the credentials are in this class now. A value that is missing is, under a loop,
+// only missing now: the artifact depending on it is left out and picked up on a later
+// turn (ADR 0016). A credential is the exception, because bringing a line up without
+// authentication is not a degraded success and there is no smaller version of a
+// credentials file to write (ADR 0003).
 type RuntimeError struct{ Problems []string }
 
 func (e *RuntimeError) Error() string {
@@ -120,11 +128,18 @@ func (c *collector) collectDUIDs() {
 		if _, done := c.runtime.Networkd.DUIDs[path]; done {
 			continue
 		}
-		// A DUID that cannot be read stops the apply rather than being left out.
-		// networkd would then send one of its own, and the delegated prefix would
-		// change without anybody asking for it (ADR 0003, ADR 0012).
-		if value, ok := c.readSecret("Interface", iface.Name, "the DUID file", path); ok {
-			c.runtime.Networkd.DUIDs[path] = value
+		// A DUID that cannot be read is not handed to the renderer, which then leaves
+		// the link's file out whole rather than write a prefix delegation under which
+		// networkd sends an identifier of its own and the delegated prefix changes
+		// (ADR 0004, ADR 0012). The file is read again next turn (ADR 0016).
+		data, _, err := c.host.Files.ReadFile(path)
+		switch {
+		case err != nil:
+			c.notef("Interface/%s: the DUID file %s cannot be read: %v", iface.Name, path, err)
+		case len(data) == 0:
+			c.notef("Interface/%s: the DUID file %s is empty", iface.Name, path)
+		default:
+			c.runtime.Networkd.DUIDs[path] = string(data)
 		}
 	}
 }
@@ -142,9 +157,11 @@ func (c *collector) collectCredentials() {
 
 // resolveAFTRs looks up the AFTR name of every tunnel that named one.
 //
-// The answer has to be an IPv6 address, and a name that has none is an error rather than
-// a warning. The tunnel being configured is what carries this host's IPv4, so an IPv4
-// answer would describe a road that does not exist yet (ADR 0004).
+// The answer has to be an IPv6 address. The tunnel being configured is what carries this
+// host's IPv4, so an IPv4 answer would describe a road that does not exist yet
+// (ADR 0004). A name that does not resolve, or resolves to no IPv6 address, is not
+// handed over, and the renderer leaves the tunnel out: on a host that has just booted the
+// resolver is not up yet, and the next turn asks again (ADR 0016).
 func (c *collector) resolveAFTRs(ctx context.Context) {
 	for _, tunnel := range config.ResourcesOf[*v1alpha1.DSLiteTunnelSpec](c.cfg) {
 		name := tunnel.Spec.AFTRHost
@@ -153,7 +170,7 @@ func (c *collector) resolveAFTRs(ctx context.Context) {
 		}
 		answers, err := c.host.Resolver.LookupHost(ctx, name)
 		if err != nil {
-			c.failf("DSLiteTunnel/%s: the AFTR %s cannot be resolved: %v", tunnel.Name, name, err)
+			c.notef("DSLiteTunnel/%s: the AFTR %s cannot be resolved: %v", tunnel.Name, name, err)
 			continue
 		}
 		var chosen netip.Addr
@@ -164,7 +181,7 @@ func (c *collector) resolveAFTRs(ctx context.Context) {
 			}
 		}
 		if !chosen.IsValid() {
-			c.failf("DSLiteTunnel/%s: the AFTR %s resolves to no IPv6 address, and this tunnel is what would carry IPv4", tunnel.Name, name)
+			c.notef("DSLiteTunnel/%s: the AFTR %s resolves to no IPv6 address, and this tunnel is what would carry IPv4", tunnel.Name, name)
 			continue
 		}
 		c.runtime.Networkd.AFTRAddresses[tunnel.Name] = chosen

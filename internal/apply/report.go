@@ -26,6 +26,11 @@ func Report(w io.Writer, plan *Plan) {
 	switch {
 	case plan.Rendered:
 		fmt.Fprintln(w, "This is a rendering. Nothing on this host was read, and nothing was changed.")
+	case plan.Empty() && len(plan.Waiting) > 0:
+		// The same "nothing changed" from a host that has converged and from one that
+		// has been waiting for a name for an hour mean different things, and the
+		// difference has to be visible without anybody inferring it (ADR 0016).
+		fmt.Fprintln(w, "Nothing to do now: the host holds everything that could be rendered, and is waiting for the rest.")
 	case plan.Empty():
 		fmt.Fprintln(w, "Nothing to do: the host already holds this configuration.")
 	default:
@@ -42,6 +47,7 @@ func Report(w io.Writer, plan *Plan) {
 func ReportWarnings(w io.Writer, plan *Plan) {
 	section(w, "Warnings", plan.Warnings)
 	section(w, "What this host could not answer", plan.Notes)
+	section(w, "What this turn waits for", plan.Waiting)
 }
 
 func section(w io.Writer, title string, lines []string) {

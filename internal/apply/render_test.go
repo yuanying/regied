@@ -60,3 +60,26 @@ func TestRenderIsCompleteWithoutTheHost(t *testing.T) {
 		t.Errorf("a rendering claims it would seed %v", plan.Firewall.Elements)
 	}
 }
+
+// A rendering given none of the apply-time values leaves out what depends on them and
+// says so, the same way an apply would (ADR 0006, ADR 0016).
+func TestRenderWaitsForTheValuesItWasNotGiven(t *testing.T) {
+	plan, err := New(Host{}, Options{}).Render(load(t, uplinkFixture), nil)
+	if err != nil {
+		t.Fatalf("rendering without the apply-time values failed: %v", err)
+	}
+	waiting := strings.Join(plan.Waiting, "\n")
+	for _, want := range []string{"aftr.example.net", "/etc/regied/secrets/dhcpv6-duid"} {
+		if !strings.Contains(waiting, want) {
+			t.Errorf("the rendering does not say it waits for %s: %v", want, plan.Waiting)
+		}
+	}
+	for _, change := range plan.Files {
+		if strings.Contains(change.Path, "dslite") || change.Path == "/etc/systemd/network/50-regied-wan.network" {
+			t.Errorf("%s was rendered without the value it depends on", change.Path)
+		}
+	}
+	if !strings.Contains(renderReport(plan), "aftr.example.net") {
+		t.Error("the printed rendering does not say what it waits for")
+	}
+}

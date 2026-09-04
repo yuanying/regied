@@ -107,31 +107,53 @@ func TestCollectRuntimeAcceptsAnUplinkThatIsNotUp(t *testing.T) {
 	}
 }
 
-func TestCollectRuntimeRefusesAnAFTRThatIsNotReachableOverIPv6(t *testing.T) {
+// An AFTR name that resolves only to IPv4 is no address to build the tunnel on: the tunnel
+// is what would carry IPv4. It is not a failure either. The tunnel is left out for this
+// turn, the host is told what it could not answer, and a later turn asks again
+// (ADR 0016).
+func TestCollectRuntimeNotesAnAFTRThatIsNotReachableOverIPv6(t *testing.T) {
 	cfg := load(t, uplinkFixture)
 	host, files, _ := testHost()
 	putSecrets(files)
-	// The name resolves, but only to IPv4. The tunnel being configured is what would
-	// carry that IPv4, so there is no address here to build it on.
 	host.Resolver = fakeResolver{"aftr.example.net": addrs(t, "192.0.2.53")}
 
-	_, err := CollectRuntime(context.Background(), cfg, host)
-	requireErrorContaining(t, err, "aftr.example.net")
-	requireErrorContaining(t, err, "IPv6")
+	rt, err := CollectRuntime(context.Background(), cfg, host)
+	if err != nil {
+		t.Fatalf("an AFTR with no IPv6 address is not a failure, but: %v", err)
+	}
+	if _, ok := rt.Networkd.AFTRAddresses["dslite"]; ok {
+		t.Error("an IPv4 answer was taken as the AFTR's address")
+	}
+	notes := strings.Join(rt.Notes, "\n")
+	if !strings.Contains(notes, "aftr.example.net") || !strings.Contains(notes, "IPv6") {
+		t.Errorf("the notes do not say what the host could not answer and why: %v", rt.Notes)
+	}
 }
 
-func TestCollectRuntimeRefusesAnAFTRThatDoesNotResolve(t *testing.T) {
+// A name that does not resolve is the ordinary state of a host that has just booted, before
+// its resolver is reachable. The tunnel waits for it; nothing fails (ADR 0016).
+func TestCollectRuntimeNotesAnAFTRThatDoesNotResolve(t *testing.T) {
 	cfg := load(t, uplinkFixture)
 	host, files, _ := testHost()
 	putSecrets(files)
 
-	_, err := CollectRuntime(context.Background(), cfg, host)
-	requireErrorContaining(t, err, "aftr.example.net")
+	rt, err := CollectRuntime(context.Background(), cfg, host)
+	if err != nil {
+		t.Fatalf("a name that does not resolve is not a failure, but: %v", err)
+	}
+	if _, ok := rt.Networkd.AFTRAddresses["dslite"]; ok {
+		t.Error("an address was invented for a name that did not resolve")
+	}
+	if !strings.Contains(strings.Join(rt.Notes, "\n"), "aftr.example.net") {
+		t.Errorf("the notes do not name the AFTR that could not be resolved: %v", rt.Notes)
+	}
 }
 
-func TestCollectRuntimeRefusesAnUnreadableSecret(t *testing.T) {
+// A credential that cannot be read still stops the turn: bringing a line up without
+// authentication is not a degraded success, and there is no smaller version of a
+// credentials file to write (ADR 0003, ADR 0016).
+func TestCollectRuntimeRefusesAnUnreadableCredential(t *testing.T) {
 	for _, missing := range []string{
-		"/etc/regied/secrets/dhcpv6-duid",
 		"/etc/regied/secrets/pppoe-user-id",
 		"/etc/regied/secrets/pppoe-password",
 	} {
@@ -148,6 +170,28 @@ func TestCollectRuntimeRefusesAnUnreadableSecret(t *testing.T) {
 	}
 }
 
+// The DUID is different. The file that names it is left out whole and waited for, so that
+// networkd never sends an identifier of its own in its place; the host says which file it
+// could not read (ADR 0016).
+func TestCollectRuntimeNotesAnUnreadableDUID(t *testing.T) {
+	cfg := load(t, uplinkFixture)
+	host, files, _ := testHost()
+	putSecrets(files)
+	delete(files.files, "/etc/regied/secrets/dhcpv6-duid")
+	host.Resolver = fakeResolver{"aftr.example.net": addrs(t, "2001:db8:53::1")}
+
+	rt, err := CollectRuntime(context.Background(), cfg, host)
+	if err != nil {
+		t.Fatalf("a DUID that cannot be read is not a failure, but: %v", err)
+	}
+	if _, ok := rt.Networkd.DUIDs["/etc/regied/secrets/dhcpv6-duid"]; ok {
+		t.Error("a DUID was invented for a file that could not be read")
+	}
+	if !strings.Contains(strings.Join(rt.Notes, "\n"), "/etc/regied/secrets/dhcpv6-duid") {
+		t.Errorf("the notes do not name the DUID file that could not be read: %v", rt.Notes)
+	}
+}
+
 func TestCollectRuntimeReportsEveryProblemAtOnce(t *testing.T) {
 	cfg := load(t, uplinkFixture)
 	host, _, _ := testHost()
@@ -155,9 +199,13 @@ func TestCollectRuntimeReportsEveryProblemAtOnce(t *testing.T) {
 	// the first time should be told all of it, not one thing per run.
 
 	_, err := CollectRuntime(context.Background(), cfg, host)
-	requireErrorContaining(t, err, "/etc/regied/secrets/dhcpv6-duid")
+	requireErrorContaining(t, err, "/etc/regied/secrets/pppoe-user-id")
 	requireErrorContaining(t, err, "/etc/regied/secrets/pppoe-password")
-	requireErrorContaining(t, err, "aftr.example.net")
+	// The DUID and the AFTR are waited for, not failed over, so they are not in the
+	// failure; the turn does not get as far as noting them.
+	if strings.Contains(err.Error(), "aftr.example.net") {
+		t.Errorf("a name that is waited for is reported as a failure:\n%v", err)
+	}
 }
 
 func TestCollectRuntimeDoesNotResolveATunnelWrittenWithAnAddress(t *testing.T) {
