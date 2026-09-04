@@ -119,6 +119,11 @@ the small set of failures that only running the command can reveal.
 | 5 | Processes | start or restart the sessions, then dnsmasq |
 | 6 | Firewall again | only if an uplink address appeared or changed |
 
+*Amended by [ADR 0015](0015-uplink-addresses-in-sets.md), which is built: there is no
+phase 6. The ruleset holds no uplink address, so there is nothing to render again. What
+the last phase was for happens in phase 1 instead: right after the table goes in, its
+uplink sets are seeded with what the links are holding.*
+
 **The firewall goes first because nothing should be able to move a packet before the
 rules that filter it exist.** Enabling forwarding and then installing the filter leaves a
 window with the opposite property, and on a host being brought up for the first time that
@@ -205,7 +210,9 @@ use it.
   Writing into it is exactly the case ADR 0009 rules out.
 - It would be stale in the one place that matters. The hairpin rules carry the address an
   uplink was holding when the file was written, and after a reboot the line has not been
-  dialled yet, so the address in the file is the previous boot's.
+  dialled yet, so the address in the file is the previous boot's. *(Amended by
+  [ADR 0015](0015-uplink-addresses-in-sets.md): the ruleset carries no address, so this
+  reason is gone. The two around it are not, and they are enough on their own.)*
 - It would run before regied and before the links exist, so nothing would ever correct
   it.
 
@@ -218,12 +225,12 @@ ahead of phase 2.
 
 ### A changed uplink address re-runs the firewall phase and nothing else
 
-*To be amended by [ADR 0015](0015-uplink-addresses-in-sets.md), which is decided and not
-yet built: once the ruleset carries no uplink address there will be nothing to re-render,
-phase 6 will become the seeding of the uplink sets in phase 1, and the rules below about
-when the re-render must not run will go with it. The rest of this record stands either
-way. **Until that is built, this section and phase 6 of the order above describe what an
-apply does.***
+*Amended by [ADR 0015](0015-uplink-addresses-in-sets.md), which is built: the ruleset
+carries no uplink address, so there is nothing to re-render. Phase 6 became the seeding of
+the uplink sets in phase 1, and the rule below about when the re-render must not run went
+with it — a link read mid-redial can no longer take anything away, because nothing in the
+text depends on what it answers. The rest of this record stands either way. **What this
+section describes is what an apply did before that record.***
 
 Of everything regied renders, **only the nftables table depends on the address an uplink
 is holding**. When a session redials with a different one, the hairpin rules are the one

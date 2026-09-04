@@ -98,8 +98,9 @@ type Resolver interface {
 var ErrLinkNotFound = errors.New("no such link")
 
 // Links reads the addresses a link is holding. It is the one piece of kernel state the
-// engine reads, and it is read because the hairpin half of a port forward has to match
-// on the address clients inside resolved (ADR 0013).
+// engine reads, and it is read because the hairpin half of a port forward has to match on
+// the address clients inside resolved: the ruleset names a set per uplink, and this is
+// what the apply seeds that set with (ADR 0015).
 type Links interface {
 	Addresses(ifname string) ([]netip.Addr, error)
 }

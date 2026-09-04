@@ -1,16 +1,6 @@
 # ADR 0015: Keep uplink addresses in nftables sets, not in the ruleset
 
-- Status: Accepted (2026-09-04). **Decided, not implemented.**
-
-> **What is on the host today is what [ADR 0013](0013-nftables-ruleset-shape.md) and
-> [ADR 0004](0004-apply-model.md) describe, unchanged.** The renderer still takes the
-> uplink address as an argument and writes it into the hairpin rules, the apply still has
-> the last phase that re-reads the links and renders the table again, and `regied render`
-> still accepts `-uplink-address`. None of what follows exists yet: there are no
-> per-uplink sets, nothing seeds them, and there are no pppd hooks.
->
-> The notes this record puts on ADR 0013, ADR 0004 and ADR 0005 say what is to change,
-> not what has changed. Read those records as written until this one is built.
+- Status: Accepted (2026-09-04). Built.
 
 ## Context
 

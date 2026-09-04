@@ -70,4 +70,8 @@ as the source of `user` and `password`.
   regied's own directory, so reclaiming them is the same directory walk as for everything
   else it owns.
 - Nothing under `/etc/ppp/` is touched. A host that already runs ppp for something else
-  keeps its secrets files and its peers untouched.
+  keeps its secrets files and its peers untouched. *(Amended by
+  [ADR 0015](0015-uplink-addresses-in-sets.md): regied does put two scripts in
+  `/etc/ppp/ip-up.d/` and `/etc/ppp/ip-down.d/`, under its own name and carrying its
+  ownership marker. What this record is about is untouched: the secrets files, the peers
+  directory, and every hook regied did not write.)*
