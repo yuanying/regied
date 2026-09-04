@@ -196,8 +196,7 @@ func (s SetElements) String() string {
 // the apply then runs (ADR 0006).
 //
 // The commit stage runs them as two steps rather than as this one file, so that a
-// seeding that nft refuses cannot take the table with it, and so that a rollback can put
-// the previous table back without the elements deciding whether that succeeds (ADR 0005).
+// seeding that nft refuses cannot take the table with it (ADR 0005).
 func (c FirewallChange) Text() string {
 	return c.Ruleset + seedingText(c.Elements)
 }
@@ -284,7 +283,8 @@ const (
 	// StepKeep does nothing on purpose. It is what an undo is when there is nothing
 	// safe to put back, and its Reason is what the rollback reports (ADR 0005). With no
 	// Reason it is a step that needs no undo at all, and the rollback says nothing about
-	// it: seeding the sets of a table the rollback removed is the one case.
+	// it: the seeding step is the one case, because the firewall step's undo already
+	// seeds whatever table it leaves.
 	StepKeep StepKind = "keep"
 )
 
@@ -793,7 +793,7 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 				Kind:    StepSeed,
 				Reason:  "seed the uplink sets: " + describeElements(plan.Firewall.Elements),
 				Command: seedCommand(plan.Firewall.Elements),
-				Undo:    seedUndo(plan.Firewall),
+				Undo:    seedUndo(),
 			})
 		}
 	}
@@ -849,7 +849,11 @@ func firewallReason(change FirewallChange) string {
 // firewallUndo puts the table back as it was.
 //
 // There are three answers, not two. With a recorded ruleset, that text goes back in — one
-// transaction, as ADR 0013 makes it. With no record and no table before this apply,
+// transaction, as ADR 0013 makes it — and the elements this apply read go back into the
+// sets it declares in the same transaction. Replacing a table empties its sets, and the
+// seeding step may never have run: a failure at the table itself is undone before it, so
+// the restore has to carry its own seeding or a rollback that reports success would leave
+// the hairpin rules matching nothing (ADR 0005, ADR 0015). With no record and no table before this apply,
 // taking ours off *is* putting the host back.
 //
 // With no record and a table that was already there, there is nothing to put back and
@@ -859,10 +863,11 @@ func firewallReason(change FirewallChange) string {
 func firewallUndo(change FirewallChange) *Step {
 	if change.Before != "" {
 		return &Step{
-			Phase:   PhaseFirewall,
-			Kind:    StepCommand,
-			Reason:  "put the ruleset the previous apply installed back",
-			Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: change.Before},
+			Phase:  PhaseFirewall,
+			Kind:   StepCommand,
+			Reason: "put the ruleset the previous apply installed back",
+			Command: Command{Name: "nft", Args: []string{"-f", "-"},
+				Stdin: change.Before + seedingText(declaredIn(change.Before, change.Elements))},
 		}
 	}
 	if change.Table == TableAbsent {
@@ -888,23 +893,25 @@ func seedCommand(elements []SetElements) Command {
 	return Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: seedingText(elements)}
 }
 
-// seedUndo puts the addresses back into the sets of whatever table the rollback leaves
-// behind. Both tables that survive a rollback need it: the one the previous apply
-// installed, which comes back as text and therefore with empty sets, and the one this
-// apply installed and the rollback could not remove.
-//
-// The one case with nothing to do is the table the rollback takes off, and there the undo
-// says nothing rather than reporting a seeding that was never wanted (ADR 0005).
-func seedUndo(change FirewallChange) *Step {
-	if change.Before == "" && change.Table == TableAbsent {
-		return &Step{Phase: PhaseFirewall, Kind: StepKeep}
+// seedUndo is deliberately nothing, and says nothing. Whatever table a rollback leaves
+// behind already holds the elements: the table it restores is seeded by the restore
+// itself, the table it could not remove was seeded by the forward step, and the table it
+// takes off has no sets to seed (ADR 0005).
+func seedUndo() *Step {
+	return &Step{Phase: PhaseFirewall, Kind: StepKeep}
+}
+
+// declaredIn is the elements whose set the given ruleset text declares. A recorded
+// ruleset from before the sets existed declares none, and one add for a set the text does
+// not declare would make the whole restore fail.
+func declaredIn(ruleset string, elements []SetElements) []SetElements {
+	var out []SetElements
+	for _, entry := range elements {
+		if strings.Contains(ruleset, "set "+entry.Set+" {") {
+			out = append(out, entry)
+		}
 	}
-	return &Step{
-		Phase:   PhaseFirewall,
-		Kind:    StepSeed,
-		Reason:  "seed the uplink sets of the table the rollback left: " + describeElements(change.Elements),
-		Command: seedCommand(change.Elements),
-	}
+	return out
 }
 
 // describeElements is the seeding as one line, for the dry-run and for the summary.

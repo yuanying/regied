@@ -231,6 +231,58 @@ func TestRollbackSeedsTheUplinkSetsAgain(t *testing.T) {
 	}
 }
 
+// The seeding is a step of its own, after the table. A failure at the table itself means
+// the seeding was never attempted and is not among the steps the rollback undoes — and
+// the rollback still replaces the table, which empties its sets. So putting the previous
+// text back has to bring its elements with it, or a rollback that says it succeeded
+// leaves the hairpin rules matching nothing (ADR 0005, ADR 0015).
+func TestRollbackSeedsEvenWhenTheTableItselfFailed(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+	mustApply(t, engine, load(t, hostFixture+forwardResource))
+	tablePresent(runner)
+
+	changed := load(t, hostFixture+forwardResource+secondForward)
+	runner.fail["nft -f -"] = errFake
+	before := len(runner.ran)
+
+	_, err := engine.Apply(context.Background(), changed)
+	requireErrorContaining(t, err, "firewall")
+
+	var restoredAndSeeded bool
+	for _, cmd := range runner.ran[before:] {
+		if cmd.Name != "nft" || strings.Contains(cmd.Stdin, "PortForward/ssh") {
+			continue
+		}
+		if strings.Contains(cmd.Stdin, "table inet regied {") &&
+			strings.Contains(cmd.Stdin, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
+			restoredAndSeeded = true
+		}
+	}
+	if !restoredAndSeeded {
+		t.Errorf("the restored table was not seeded in the same transaction:\n%s", strings.Join(runner.commands(), "\n"))
+	}
+}
+
+// A recorded ruleset from before the sets existed declares none, and telling nft to add
+// elements to a set the text does not declare would make the whole restore fail. Only the
+// sets the restored text declares are seeded.
+func TestRollbackSeedsOnlyTheSetsTheRestoredTextDeclares(t *testing.T) {
+	change := FirewallChange{
+		Before:   "table inet regied {\n\tset uplink4_pppoe0 {\n\t\ttype ipv4_addr\n\t}\n}\n",
+		Elements: []SetElements{{Set: "uplink4_pppoe0", Elements: []string{"192.0.2.10"}}, {Set: "uplink6_pppoe0", Elements: []string{"2001:db8::1"}}},
+	}
+
+	undo := firewallUndo(change)
+
+	if !strings.Contains(undo.Command.Stdin, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
+		t.Errorf("the set the restored text declares is not seeded:\n%s", undo.Command.Stdin)
+	}
+	if strings.Contains(undo.Command.Stdin, "uplink6_pppoe0") {
+		t.Errorf("a set the restored text does not declare is seeded, which would make the restore fail:\n%s", undo.Command.Stdin)
+	}
+}
+
 func TestApplyReportsARollbackThatFailedToo(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	// The reload fails, and the rollback re-runs it over the restored files, where it
