@@ -504,3 +504,30 @@ func TestALANLinkGoingQuietDoesNotStopTheSettle(t *testing.T) {
 		t.Errorf("the uplink's address appeared and was not installed; notes: %v", result.Notes)
 	}
 }
+
+// Round 3. Reverse-path filtering is the larger of `all` and the interface's own value,
+// so turning it off on `all` and `default` leaves it on for every link that already
+// existed with it on. The links the configuration names are set too; one that is not
+// there yet inherits `default` when it appears.
+func TestSourceValidationReachesTheLinksAlreadyThere(t *testing.T) {
+	engine, _, _, host := planFixture(t)
+	sysctl := host.Sysctl.(*fakeSysctl)
+	sysctl.values["net.ipv4.conf.eth0.rp_filter"] = "1"
+	sysctl.values["net.ipv4.conf.br-lan.rp_filter"] = "2"
+
+	plan := mustPlan(t, engine, load(t, hostFixture))
+
+	for _, key := range []string{"net.ipv4.conf.eth0.rp_filter", "net.ipv4.conf.br-lan.rp_filter"} {
+		change, ok := switchFor(plan, key)
+		if !ok {
+			t.Errorf("%s is not set although the link is there", key)
+			continue
+		}
+		if change.Value != "0" || !change.Changed {
+			t.Errorf("%s = %q (changed %v), want 0 and changed", key, change.Value, change.Changed)
+		}
+	}
+	if _, ok := switchFor(plan, "net.ipv4.conf.pppoe0.rp_filter"); ok {
+		t.Error("a link that is not on the host yet is given a switch that cannot be written")
+	}
+}

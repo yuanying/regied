@@ -2,6 +2,7 @@ package apply
 
 import (
 	"io/fs"
+	"strings"
 
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
@@ -192,4 +193,32 @@ func kernelSwitches(global v1alpha1.Global) []kernelSwitch {
 		{"net.ipv4.conf.all.rp_filter", reversePath},
 		{"net.ipv4.conf.default.rp_filter", reversePath},
 	}
+}
+
+// linkSwitches is the reverse-path switch of every link the configuration names.
+//
+// The kernel filters by the larger of `all` and the link's own value, so turning it off
+// on `all` and `default` leaves it on for every link that already existed with it on —
+// which, after a distribution's sysctl.d has run, is every link that was up before this
+// apply. A link that is not on the host yet has no switch to write; it takes `default`
+// when it appears, and the apply engine skips a key the kernel does not have.
+func linkSwitches(cfg *config.Config) []kernelSwitch {
+	reversePath := "0"
+	if cfg.Global().SourceValidationEnabled() {
+		reversePath = "1"
+	}
+	var out []kernelSwitch
+	for _, iface := range config.ResourcesOf[*v1alpha1.InterfaceSpec](cfg) {
+		out = append(out, kernelSwitch{"net.ipv4.conf." + sysctlName(iface.Spec.Ifname) + ".rp_filter", reversePath})
+	}
+	for _, uplink := range uplinkResources(cfg) {
+		out = append(out, kernelSwitch{"net.ipv4.conf." + sysctlName(uplink.ifname) + ".rp_filter", reversePath})
+	}
+	return out
+}
+
+// sysctlName is a link name as it appears in a dotted sysctl key: a dot in the name
+// would read as a path separator, so sysctl(8) writes it as a slash.
+func sysctlName(ifname string) string {
+	return strings.ReplaceAll(ifname, ".", "/")
 }

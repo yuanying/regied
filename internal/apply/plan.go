@@ -581,7 +581,7 @@ func hasOwnershipMarker(content []byte) bool {
 // dry-run can show that it was considered, and produces no step.
 func (e *Engine) switches(cfg *config.Config) ([]SwitchChange, error) {
 	var out []SwitchChange
-	for _, want := range kernelSwitches(cfg.Global()) {
+	for _, want := range append(kernelSwitches(cfg.Global()), linkSwitches(cfg)...) {
 		change := SwitchChange{Key: want.key, Value: want.value}
 		before, err := e.host.Sysctl.Get(want.key)
 		switch {

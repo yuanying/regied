@@ -268,6 +268,10 @@ afresh.
   configuration should expect to reboot or take the link down.
 - `spec.global` acquires a backend here, and it is the one place regied writes to
   `/proc/sys`. Values are read before being written, which is also what lets a failed
-  apply put them back ([ADR 0005](0005-apply-rollback.md)).
+  apply put them back ([ADR 0005](0005-apply-rollback.md)). Reverse-path validation is
+  written to every link the configuration names as well as to `all` and `default`,
+  because the kernel filters by the larger of `all` and the link's own value: turning it
+  off on `all` alone leaves it on for every link that was up before the apply. A link
+  that is not there yet has no key to write; it takes `default` when it appears.
 - Two more things become expressible for the state API: which phases ran on the last
   apply, and what each of them changed.
