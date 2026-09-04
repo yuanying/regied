@@ -3,6 +3,7 @@ package apply
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -163,9 +164,11 @@ type FirewallChange struct {
 	// Ruleset is the table, as text. It is a function of the configuration alone: it
 	// names a set per uplink where an address would be, and holds no address (ADR 0015).
 	Ruleset string
-	// Elements is what this apply would put into those sets: the addresses each uplink's
-	// link is holding now. Replacing a table empties its sets, so every apply that
-	// installs the table seeds them again from the kernel.
+	// Elements is the uplink sets this apply would write, and what it would write into
+	// each: the addresses the uplink's link is holding now. A set is in here when what
+	// the kernel holds is not that — which, for a table about to be replaced, is every
+	// set with something to hold, because replacing a table empties them. An apply that
+	// finds every set right writes none (ADR 0015).
 	//
 	// They are not part of Ruleset, which is what is recorded and compared, and they
 	// never decide whether the table has to be applied.
@@ -186,7 +189,8 @@ type SetElements struct {
 	Elements []string
 }
 
-// String is the elements as they are written in a rule or a set declaration.
+// String is the elements as they are written in a rule or a set declaration. A set with
+// nothing in it is written as such, because writing it empties it.
 func (s SetElements) String() string {
 	return fmt.Sprintf("%s { %s }", s.Set, strings.Join(s.Elements, ", "))
 }
@@ -201,8 +205,13 @@ func (c FirewallChange) Text() string {
 	return c.Ruleset + seedingText(c.Elements)
 }
 
-// seedingText is the nft statements that put the elements in, or nothing at all when
-// there is nothing to seed.
+// seedingText is the nft statements that make each set hold exactly its elements, or
+// nothing at all when there is nothing to write.
+//
+// Each set is flushed and refilled rather than having single elements added or deleted.
+// One transaction is what makes the write atomic against the pppd hook, which may be
+// adding to the same set at the same moment, and idempotent: a delete of an element the
+// hook already took out would fail, and a flush of an empty set does not.
 func seedingText(elements []SetElements) string {
 	if len(elements) == 0 {
 		return ""
@@ -211,14 +220,18 @@ func seedingText(elements []SetElements) string {
 	b.WriteString("\n# What each uplink is holding, read from the kernel by this apply. It is not part of\n")
 	b.WriteString("# the ruleset above: what a line holds is runtime state (ADR 0015).\n")
 	for _, entry := range elements {
-		fmt.Fprintf(&b, "add element %s %s %s\n", nftables.TableFamily, nftables.TableName, entry)
+		fmt.Fprintf(&b, "flush set %s %s %s\n", nftables.TableFamily, nftables.TableName, entry.Set)
+		if len(entry.Elements) > 0 {
+			fmt.Fprintf(&b, "add element %s %s %s\n", nftables.TableFamily, nftables.TableName, entry)
+		}
 	}
 	return b.String()
 }
 
-// uplinkElements is what the uplink sets would be seeded with: what each uplink's link is
-// holding, by set name, in a fixed order.
-func uplinkElements(cfg *config.Config, addresses map[string][]netip.Addr) []SetElements {
+// desiredUplinkSets is what every uplink set should hold: what its uplink's link is
+// holding in that family. Every set is here, the ones with nothing to hold included,
+// because a set that should be empty and is not is a set to write.
+func desiredUplinkSets(cfg *config.Config, addresses map[string][]netip.Addr) []SetElements {
 	var out []SetElements
 	for _, link := range uplinkResources(cfg) {
 		for _, family := range []v1alpha1.Family{v1alpha1.FamilyIPv4, v1alpha1.FamilyIPv6} {
@@ -228,14 +241,37 @@ func uplinkElements(cfg *config.Config, addresses map[string][]netip.Addr) []Set
 					values = append(values, address.String())
 				}
 			}
-			if len(values) == 0 {
-				continue
-			}
 			out = append(out, SetElements{Set: nftables.UplinkSetName(link.ifname, family), Elements: values})
 		}
 	}
 	slices.SortFunc(out, func(a, b SetElements) int { return cmp.Compare(a.Set, b.Set) })
 	return out
+}
+
+// setsToWrite is the desired sets that differ from what the kernel holds. A set the
+// kernel does not have is left out and named, because writing to it would fail the
+// apply, and putting it back is the table's business (ADR 0004).
+func setsToWrite(desired []SetElements, held map[string][]string) (write []SetElements, missing []string) {
+	for _, want := range desired {
+		have, ok := held[want.Set]
+		if !ok {
+			missing = append(missing, want.Set)
+			continue
+		}
+		if !slices.Equal(want.Elements, have) {
+			write = append(write, want)
+		}
+	}
+	return write, missing
+}
+
+// emptySets is what a table that is about to be replaced will hold: nothing in any set.
+func emptySets(desired []SetElements) map[string][]string {
+	held := make(map[string][]string, len(desired))
+	for _, set := range desired {
+		held[set.Set] = nil
+	}
+	return held
 }
 
 func addressFamily(address netip.Addr) v1alpha1.Family {
@@ -525,7 +561,7 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		return nil, err
 	}
 
-	plan.Firewall, err = e.firewall(ctx, rendered.ruleset, uplinkElements(cfg, runtime.UplinkAddresses))
+	plan.Firewall, err = e.firewall(ctx, rendered.ruleset, desiredUplinkSets(cfg, runtime.UplinkAddresses))
 	if err != nil {
 		return nil, err
 	}
@@ -703,13 +739,17 @@ func (e *Engine) switches(cfg *config.Config) ([]SwitchChange, error) {
 	return out, nil
 }
 
-// firewall reads what the last apply recorded and whether the table is in the kernel.
+// firewall reads what the last apply recorded, whether the table is in the kernel, and
+// what its uplink sets hold.
 //
-// The elements go in the change but not into the comparison: a line that came up since
-// the last apply is not a reason to replace the table, and one that went down is not a
-// reason either (ADR 0015).
-func (e *Engine) firewall(ctx context.Context, ruleset string, elements []SetElements) (FirewallChange, error) {
-	change := FirewallChange{Ruleset: ruleset, Elements: elements}
+// Whether the table is replaced and whether a set is written are two questions, answered
+// the same way: ask the kernel, compare, act only on a difference. What the links hold
+// never decides the first — a line that came up since the last apply is not a reason to
+// replace the table — and the ruleset's text never decides the second: a set that is
+// wrong is written whether or not the text changed, because an apply is the one general
+// way a host is put right (ADR 0015, ADR 0004).
+func (e *Engine) firewall(ctx context.Context, ruleset string, desired []SetElements) (FirewallChange, error) {
+	change := FirewallChange{Ruleset: ruleset}
 
 	recorded, _, err := e.host.Files.ReadFile(e.opts.rulesetRecord())
 	switch {
@@ -724,7 +764,93 @@ func (e *Engine) firewall(ctx context.Context, ruleset string, elements []SetEle
 	// somebody else did, put the ruleset back (ADR 0004).
 	change.Table, change.Note = e.probeTable(ctx)
 	change.Apply = change.Table == TableAbsent || change.Ruleset != change.Before
+
+	// A table about to be replaced will hold nothing in any set, so there is nothing to
+	// ask: every set with something to hold is written. Otherwise the sets are read, and
+	// only the ones that differ are.
+	var held map[string][]string
+	if change.Apply {
+		held = emptySets(desired)
+	} else {
+		var note string
+		held, note = e.probeUplinkSets(ctx)
+		if note != "" {
+			change.Note = strings.TrimSpace(change.Note + "\n" + note)
+			return change, nil
+		}
+	}
+	var missing []string
+	change.Elements, missing = setsToWrite(desired, held)
+	if len(missing) > 0 {
+		change.Note = strings.TrimSpace(change.Note + "\n" + fmt.Sprintf(
+			"the table does not hold %s; the set was removed outside regied and is put back when the ruleset next changes, so it was not written",
+			strings.Join(missing, ", ")))
+	}
 	return change, nil
+}
+
+// probeUplinkSets asks the kernel what regied's table holds in each set. The second
+// result says why it could not, when that is the answer.
+//
+// As with the table, "could not be asked" is an answer of its own and is never read as
+// "empty": a probe that merely failed must not have every set written on every apply
+// (ADR 0006). The sets are then left as they are, and the plan says so.
+func (e *Engine) probeUplinkSets(ctx context.Context) (map[string][]string, string) {
+	out, err := e.host.Runner.Run(ctx, listTableCommand())
+	switch {
+	case errors.Is(err, ErrCommandNotFound):
+		return nil, "nft is not installed here, so what the uplink sets hold could not be read; they were left as they are"
+	case err != nil:
+		return nil, fmt.Sprintf("what the uplink sets hold could not be read (%v); they were left as they are", err)
+	}
+	held, err := parseSets(out)
+	if err != nil {
+		return nil, fmt.Sprintf("what the uplink sets hold could not be read (%v); they were left as they are", err)
+	}
+	return held, ""
+}
+
+// parseSets is the sets of regied's table out of what `nft -j list table` printed, each
+// with its elements sorted. An element that is not a plain address — a prefix or a
+// range somebody put there — is kept as the text nft gave it, so that it compares as
+// different from anything a link holds and the set is written.
+func parseSets(output []byte) (map[string][]string, error) {
+	var listing struct {
+		Nftables []map[string]json.RawMessage `json:"nftables"`
+	}
+	if err := json.Unmarshal(output, &listing); err != nil {
+		return nil, fmt.Errorf("nft printed something that is not its JSON: %w", err)
+	}
+	held := make(map[string][]string)
+	for _, entry := range listing.Nftables {
+		raw, ok := entry["set"]
+		if !ok {
+			continue
+		}
+		var set struct {
+			Family string            `json:"family"`
+			Table  string            `json:"table"`
+			Name   string            `json:"name"`
+			Elem   []json.RawMessage `json:"elem"`
+		}
+		if err := json.Unmarshal(raw, &set); err != nil {
+			return nil, fmt.Errorf("nft printed a set regied cannot read: %w", err)
+		}
+		if set.Family != nftables.TableFamily || set.Table != nftables.TableName {
+			continue
+		}
+		elements := make([]string, 0, len(set.Elem))
+		for _, element := range set.Elem {
+			var address string
+			if err := json.Unmarshal(element, &address); err != nil {
+				address = string(element)
+			}
+			elements = append(elements, address)
+		}
+		slices.Sort(elements)
+		held[set.Name] = elements
+	}
+	return held, nil
 }
 
 // probeTable asks the kernel which tables it holds and looks for regied's among them.
@@ -772,6 +898,12 @@ func listTablesCommand() Command {
 	return Command{Name: "nft", Args: []string{"list", "tables"}}
 }
 
+// listTableCommand asks for regied's table as JSON, which is how what its sets hold is
+// read back without depending on the text nft prints for a person.
+func listTableCommand() Command {
+	return Command{Name: "nft", Args: []string{"-j", "list", "table", nftables.TableFamily, nftables.TableName}}
+}
+
 // steps is what the commit stage would run, in the order ADR 0004 fixes.
 func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 	var steps []Step
@@ -784,18 +916,18 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 			Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: plan.Firewall.Ruleset},
 			Undo:    firewallUndo(plan.Firewall),
 		})
-		// Right after the table, and only when the table went in: replacing it emptied
-		// its uplink sets, and what the links are holding has to go back in (ADR 0015).
-		// A table that was left alone kept the elements it had.
-		if len(plan.Firewall.Elements) > 0 {
-			steps = append(steps, Step{
-				Phase:   PhaseFirewall,
-				Kind:    StepSeed,
-				Reason:  "seed the uplink sets: " + describeElements(plan.Firewall.Elements),
-				Command: seedCommand(plan.Firewall.Elements),
-				Undo:    seedUndo(),
-			})
-		}
+	}
+	// Right after the table when the table went in, and on its own when it did not: the
+	// sets that do not hold what the links hold are written, and whether the ruleset
+	// changed has nothing to do with it (ADR 0015).
+	if len(plan.Firewall.Elements) > 0 {
+		steps = append(steps, Step{
+			Phase:   PhaseFirewall,
+			Kind:    StepSeed,
+			Reason:  "write the uplink sets: " + describeElements(plan.Firewall.Elements),
+			Command: seedCommand(plan.Firewall.Elements),
+			Undo:    seedUndo(),
+		})
 	}
 
 	for _, change := range plan.Switches {
@@ -896,7 +1028,9 @@ func seedCommand(elements []SetElements) Command {
 // seedUndo is deliberately nothing, and says nothing. Whatever table a rollback leaves
 // behind already holds the elements: the table it restores is seeded by the restore
 // itself, the table it could not remove was seeded by the forward step, and the table it
-// takes off has no sets to seed (ADR 0005).
+// takes off has no sets to seed. A table that was left alone and had a set written is
+// holding what the link holds, which is what it should hold whatever the configuration
+// says (ADR 0005).
 func seedUndo() *Step {
 	return &Step{Phase: PhaseFirewall, Kind: StepKeep}
 }

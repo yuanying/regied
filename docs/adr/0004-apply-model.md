@@ -121,8 +121,10 @@ the small set of failures that only running the command can reveal.
 
 *Amended by [ADR 0015](0015-uplink-addresses-in-sets.md), which is built: there is no
 phase 6. The ruleset holds no uplink address, so there is nothing to render again. What
-the last phase was for happens in phase 1 instead: right after the table goes in, its
-uplink sets are seeded with what the links are holding.*
+the last phase was for happens in phase 1 instead: right after the table goes in, the
+uplink sets that do not hold what the links are holding are written — and they are
+whether or not the table went in, because that is decided against the kernel and not
+against the text, the way everything else in this record is.*
 
 **The firewall goes first because nothing should be able to move a packet before the
 rules that filter it exist.** Enabling forwarding and then installing the filter leaves a

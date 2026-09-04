@@ -84,6 +84,26 @@ func TestReportShowsTheElementsTheApplyWouldSeed(t *testing.T) {
 	}
 }
 
+// A seeding with no ruleset change is the whole of what such a dry-run would do, so it
+// has to be visible on its own.
+func TestReportShowsASeedingWithoutARulesetChange(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+	cfg := load(t, hostFixture+forwardResource)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {}, "uplink6_pppoe0": {}})
+
+	report := reportOf(t, engine, cfg)
+
+	if !strings.Contains(report, "uplink4_pppoe0 { 192.0.2.10 }") {
+		t.Errorf("the dry-run does not show the set it would write:\n%s", report)
+	}
+	if strings.Contains(report, "Nothing to do") {
+		t.Errorf("the dry-run claims there is nothing to do:\n%s", report)
+	}
+}
+
 func TestReportShowsTheDiffOfAFileThatChanged(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))

@@ -142,23 +142,30 @@ func secretVerdict(change FileChange) string {
 }
 
 func reportFirewall(w io.Writer, plan *Plan) {
-	if !plan.Firewall.Apply {
+	if !plan.Firewall.Apply && len(plan.Firewall.Elements) == 0 {
 		return
 	}
 	fmt.Fprintln(w, "Firewall")
-	if plan.Firewall.Table == TableAbsent {
-		fmt.Fprintln(w, "  the table is not in the kernel, so the whole ruleset goes in")
+	if plan.Firewall.Apply {
+		if plan.Firewall.Table == TableAbsent {
+			fmt.Fprintln(w, "  the table is not in the kernel, so the whole ruleset goes in")
+		}
+		if plan.Firewall.Before == "" {
+			indent(w, plan.Firewall.Ruleset)
+		} else {
+			indent(w, unifiedDiff(plan.Firewall.Before, plan.Firewall.Ruleset))
+		}
 	}
-	if plan.Firewall.Before == "" {
-		indent(w, plan.Firewall.Ruleset)
-	} else {
-		indent(w, unifiedDiff(plan.Firewall.Before, plan.Firewall.Ruleset))
-	}
-	// The ruleset says which set the hairpin rules match on; what would go into it is
-	// what the links are holding, and it is shown beside the ruleset rather than in it
-	// (ADR 0015). Nothing here decided that the ruleset has to be installed.
+	// The ruleset says which set the hairpin rules match on; what goes into it is what
+	// the links are holding, and it is shown beside the ruleset rather than in it
+	// (ADR 0015). Which sets are written was decided against the kernel, not against the
+	// text, so this is shown whether or not the ruleset changed.
 	if len(plan.Firewall.Elements) > 0 {
-		fmt.Fprintln(w, "  and into the uplink sets")
+		if plan.Firewall.Apply {
+			fmt.Fprintln(w, "  and into the uplink sets")
+		} else {
+			fmt.Fprintln(w, "  the ruleset is unchanged, but these uplink sets do not hold what the links do")
+		}
 		for _, entry := range plan.Firewall.Elements {
 			fmt.Fprintf(w, "    %s\n", entry)
 		}
