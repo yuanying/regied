@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Host is everything the engine is allowed to touch outside itself. Every part of it is
@@ -25,6 +27,12 @@ type Host struct {
 	Resolver Resolver
 	Links    Links
 	Sysctl   Sysctl
+
+	// Clock and Locker are what a turn adds to the list (ADR 0016): the time a report
+	// records, and the lock a turn holds while it runs. Left nil, they are the ones this
+	// process is running on.
+	Clock  Clock
+	Locker Locker
 }
 
 // OSHost is the host this process is running on.
@@ -35,7 +43,65 @@ func OSHost() Host {
 		Resolver: OSResolver{},
 		Links:    OSLinks{},
 		Sysctl:   OSSysctl{},
+		Clock:    OSClock{},
+		Locker:   OSLocker{},
 	}
+}
+
+// Clock is what a report reads the time from. It is an interface so that a test can say
+// when a state was entered.
+type Clock interface {
+	Now() time.Time
+}
+
+// OSClock is this process's clock.
+type OSClock struct{}
+
+func (OSClock) Now() time.Time { return time.Now() }
+
+// Locker takes a lock across processes on a path, and blocks until it has it or the
+// context is done. What it returns releases the lock.
+type Locker interface {
+	Lock(ctx context.Context, path string) (release func() error, err error)
+}
+
+// OSLocker locks with flock(2), which the kernel releases when the holder dies, so a turn
+// that crashes cannot leave the next one waiting for ever.
+type OSLocker struct{}
+
+// Lock polls rather than blocks in flock, because a blocked flock cannot be given up when
+// the context is: the poll is what lets a caller stop waiting.
+func (OSLocker) Lock(ctx context.Context, path string) (func() error, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			file.Close()
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			file.Close()
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return func() error {
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_UN); err != nil {
+			file.Close()
+			return err
+		}
+		return file.Close()
+	}, nil
 }
 
 // FileSystem is the files the engine reads, writes and reclaims.
