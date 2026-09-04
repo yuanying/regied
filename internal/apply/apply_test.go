@@ -137,51 +137,97 @@ func TestApplyRefusesAConfigurationThatCannotBeRendered(t *testing.T) {
 	}
 }
 
-func TestApplyReappliesTheFirewallWhenTheLineComesUp(t *testing.T) {
+// The ruleset carries no uplink address, so something has to put the addresses where the
+// hairpin rules look for them. The firewall phase does it: right after the table, it
+// seeds each uplink's set with what the link is holding (ADR 0015).
+func TestTheFirewallPhaseSeedsTheUplinkSets(t *testing.T) {
+	engine, files, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+
+	mustApply(t, engine, load(t, hostFixture+forwardResource))
+
+	if !ranNFTWith(runner.ran, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
+		t.Errorf("nothing put the uplink's address into its set:\n%s", strings.Join(runner.commands(), "\n"))
+	}
+	// What is recorded is the text, and the text is a function of the configuration
+	// alone: the address is in the kernel, not in the ruleset.
+	recorded, _ := files.content("/var/lib/regied/applied/ruleset.nft")
+	if strings.Contains(recorded, "192.0.2.10") {
+		t.Errorf("the recorded ruleset carries the uplink's address:\n%s", recorded)
+	}
+	if !strings.Contains(recorded, "@uplink4_pppoe0") {
+		t.Errorf("the recorded ruleset does not match on the uplink's set:\n%s", recorded)
+	}
+}
+
+// A session started in the process phase dials seconds later, which used to mean a second
+// rendering and a second install. It means nothing to the ruleset now: the table went in
+// once, with the set the hook is about to fill (ADR 0015).
+func TestTheLineComingUpDuringAnApplyChangesNoRuleset(t *testing.T) {
 	engine, _, runner, host := planFixture(t)
 	links := host.Links.(fakeLinks)
 	cfg := load(t, hostFixture+forwardResource)
-
-	// The session dials while the apply is running, which is the ordinary case: the
-	// ruleset written in the first phase was rendered without an address.
 	runner.onRun = func(cmd Command) {
 		if strings.Contains(cmd.String(), "enable --now regied-pppoe@pppoe0") {
 			links["pppoe0"] = addrs(t, "192.0.2.10")
 		}
 	}
 
-	result := mustApply(t, engine, cfg)
+	mustApply(t, engine, cfg)
 
 	var applies int
 	for _, cmd := range runner.ran {
-		if cmd.String() == "nft -f -" {
-			applies++
-		}
-	}
-	if applies != 2 {
-		t.Errorf("the ruleset was applied %d times, want 2: once without the address and once with it", applies)
-	}
-	if !result.FirewallReapplied {
-		t.Error("the result does not say the firewall was re-applied")
-	}
-}
-
-func TestApplyDoesNotReapplyTheFirewallWhenNothingMoved(t *testing.T) {
-	engine, _, runner, _ := planFixture(t)
-
-	result := mustApply(t, engine, load(t, hostFixture))
-
-	var applies int
-	for _, cmd := range runner.ran {
-		if cmd.String() == "nft -f -" {
+		if cmd.String() == "nft -f -" && strings.Contains(cmd.Stdin, "table inet regied {") {
 			applies++
 		}
 	}
 	if applies != 1 {
-		t.Errorf("the ruleset was applied %d times, want 1", applies)
+		t.Errorf("the ruleset was installed %d times, want 1", applies)
 	}
-	if result.FirewallReapplied {
-		t.Error("the result claims the firewall was re-applied when no address moved")
+
+	// And the apply after the line came up has nothing to do at all.
+	tablePresent(runner)
+	if result := mustApply(t, engine, cfg); result.Changed {
+		t.Errorf("the apply after the line came up reports a change: %s", result.Plan.Summary())
+	}
+}
+
+// A rollback puts the previous table text back, and replacing a table empties its sets.
+// Leaving them empty would take the hairpin rules away as surely as rendering them out
+// would, so the rollback seeds them the way the apply does (ADR 0015).
+func TestRollbackSeedsTheUplinkSetsAgain(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+	mustApply(t, engine, load(t, hostFixture+forwardResource))
+	tablePresent(runner)
+
+	// A second apply that changes the ruleset and dnsmasq's file, and fails at the
+	// restart, after the firewall phase has already run.
+	changed := load(t, strings.Replace(hostFixture, "192.168.10.127", "192.168.10.200", 1)+forwardResource+secondForward)
+	runner.fail["systemctl restart regied-dnsmasq.service"] = errFake
+	before := len(runner.ran)
+
+	if _, err := engine.Apply(context.Background(), changed); err == nil {
+		t.Fatal("the failing restart was not reported")
+	}
+
+	var restored, seeded bool
+	for _, cmd := range runner.ran[before:] {
+		if cmd.Name != "nft" {
+			continue
+		}
+		if strings.Contains(cmd.Stdin, "table inet regied {") && !strings.Contains(cmd.Stdin, "PortForward/ssh") {
+			restored = true
+		}
+		if restored && strings.Contains(cmd.Stdin, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
+			seeded = true
+		}
+	}
+	if !restored {
+		t.Fatalf("the previous ruleset was not put back:\n%s", strings.Join(runner.commands(), "\n"))
+	}
+	if !seeded {
+		t.Error("the restored table's uplink sets were left empty, so the hairpin rules match nothing")
 	}
 }
 

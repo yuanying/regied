@@ -70,6 +70,20 @@ func TestReportNeverPrintsACredential(t *testing.T) {
 	}
 }
 
+// The ruleset says which set the hairpin rules match on and nothing about what is in it.
+// What this apply would put in is shown beside it, so the dry-run still answers "and what
+// will the hairpin rules match" (ADR 0015).
+func TestReportShowsTheElementsTheApplyWouldSeed(t *testing.T) {
+	engine, _, _, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+
+	report := reportOf(t, engine, load(t, hostFixture+forwardResource))
+
+	if !strings.Contains(report, "uplink4_pppoe0 { 192.0.2.10 }") {
+		t.Errorf("the dry-run does not say what would go into the uplink sets:\n%s", report)
+	}
+}
+
 func TestReportShowsTheDiffOfAFileThatChanged(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))

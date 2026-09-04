@@ -40,7 +40,10 @@ func TestRenderReadsNothing(t *testing.T) {
 	}
 }
 
-func TestRenderShowsWhatDependsOnAValueThatWasNotSupplied(t *testing.T) {
+// A rendering is complete without the host. Nothing is left out of it and nothing has to
+// be supplied on the command line for the ruleset to be whole, because the ruleset holds
+// no value only a running host knows (ADR 0015, ADR 0006).
+func TestRenderIsCompleteWithoutTheHost(t *testing.T) {
 	engine := New(Host{}, Options{})
 
 	plan, err := engine.Render(load(t, hostFixture+forwardResource), &Runtime{})
@@ -48,9 +51,12 @@ func TestRenderShowsWhatDependsOnAValueThatWasNotSupplied(t *testing.T) {
 		t.Fatalf("rendering failed: %v", err)
 	}
 
-	// Nothing said what the uplink is holding, so the hairpin translation cannot be
-	// written and the ruleset says where it would have been.
-	if !strings.Contains(plan.Firewall.Ruleset, "hairpin") {
-		t.Errorf("the ruleset says nothing about the hairpin rules it left out:\n%s", plan.Firewall.Ruleset)
+	if !strings.Contains(plan.Firewall.Ruleset, "ip daddr @uplink4_pppoe0") {
+		t.Errorf("the hairpin translation is not in the rendering:\n%s", plan.Firewall.Ruleset)
+	}
+	// There is no host to read, so there is nothing to seed either. What a rendering
+	// shows about the sets is that they are there and empty.
+	if len(plan.Firewall.Elements) != 0 {
+		t.Errorf("a rendering claims it would seed %v", plan.Firewall.Elements)
 	}
 }

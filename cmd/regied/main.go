@@ -107,30 +107,6 @@ func (p pairs) Set(argument string) error {
 	return nil
 }
 
-// multiPairs is the same flag for a name that may be given more than once. An uplink
-// holds an address in each family, and the engine takes all of them, so the flag that
-// stands in for reading the link has to be able to say so.
-type multiPairs map[string][]string
-
-func (p multiPairs) String() string {
-	var out []string
-	for name, values := range p {
-		for _, value := range values {
-			out = append(out, name+"="+value)
-		}
-	}
-	return strings.Join(out, ",")
-}
-
-func (p multiPairs) Set(argument string) error {
-	name, value, err := splitPair(argument)
-	if err != nil {
-		return err
-	}
-	p[name] = append(p[name], value)
-	return nil
-}
-
 func splitPair(argument string) (name, value string, err error) {
 	name, value, ok := strings.Cut(argument, "=")
 	if !ok || name == "" || value == "" {

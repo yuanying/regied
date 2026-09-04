@@ -1,10 +1,10 @@
 package nftables_test
 
 import (
-	"net/netip"
 	"strings"
 	"testing"
 
+	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
 	"github.com/yuanying/regied/internal/render/nftables"
 )
@@ -53,7 +53,7 @@ type anySecret struct{}
 func (anySecret) CheckSecretFile(string) error { return nil }
 
 // render is the whole pipeline a test needs: parse, validate, render.
-func render(t *testing.T, resources string, runtime nftables.Runtime) *nftables.Ruleset {
+func render(t *testing.T, resources string) *nftables.Ruleset {
 	t.Helper()
 	document, err := config.Parse(doc(resources))
 	if err != nil {
@@ -63,21 +63,11 @@ func render(t *testing.T, resources string, runtime nftables.Runtime) *nftables.
 	if err != nil {
 		t.Fatalf("the test document does not validate:\n%v", err)
 	}
-	ruleset, err := nftables.Render(cfg, runtime)
+	ruleset, err := nftables.Render(cfg)
 	if err != nil {
 		t.Fatalf("rendering failed: %v", err)
 	}
 	return ruleset
-}
-
-// noRuntime is what a dry-run before the uplink is up has: no addresses at all.
-var noRuntime = nftables.Runtime{}
-
-// pppoeUp is a running host whose PPPoE session holds a global address.
-var pppoeUp = nftables.Runtime{
-	UplinkAddresses: map[string][]netip.Addr{
-		"pppoe0": {netip.MustParseAddr("203.0.113.10")},
-	},
 }
 
 // rulesOf is the rules of one chain as text, or a fatal if the chain is not there.
@@ -128,6 +118,18 @@ func elementsOf(t *testing.T, ruleset *nftables.Ruleset, set string) []string {
 	return nil
 }
 
+// typeOf is one set's element type, or a fatal if the set is missing.
+func typeOf(t *testing.T, ruleset *nftables.Ruleset, set string) string {
+	t.Helper()
+	for _, s := range ruleset.Sets {
+		if s.Name == set {
+			return s.Type
+		}
+	}
+	t.Fatalf("no set %q", set)
+	return ""
+}
+
 func assertRules(t *testing.T, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -169,7 +171,7 @@ func TestZonesAndPolicies(t *testing.T) {
             action: accept
             protocol: tcp
             destinationPorts: [22]
-`, noRuntime)
+`)
 
 	// A zone is a set of kernel interface names. A PPPoE link is named after the
 	// resource, so the firewall sees a stable name across redials.
@@ -212,7 +214,7 @@ func TestNoPolicyMeansNoFilterChains(t *testing.T) {
       metadata: {name: masquerade}
       spec:
         egressRef: pppoe0
-`, noRuntime)
+`)
 
 	for _, chain := range []string{"input", "forward"} {
 		if hasChain(ruleset, chain) {
@@ -235,7 +237,7 @@ func TestStatefulOff(t *testing.T) {
         defaultAction: drop
         logDefault: false
         stateful: false
-`, noRuntime)
+`)
 
 	assertRules(t, rulesOf(t, ruleset, "policy_lan-to-wan"), []string{
 		`counter drop comment "lan-to-wan default"`,
@@ -255,7 +257,7 @@ func TestAddressSets(t *testing.T) {
         family: ipv6
         addresses: [2001:db8::1]
         networks: [2001:db8:1::/64]
-`, noRuntime)
+`)
 
 	assertEqual(t, "addrset_servers", elementsOf(t, ruleset, "addrset_servers"),
 		[]string{"192.0.2.5", "192.0.2.10"})
@@ -303,7 +305,7 @@ func TestRuleAddressSetReferences(t *testing.T) {
             family: ipv6
             sourceCIDRs: [2001:db8:2::/64]
             sourceAddressSetRefs: [published]
-`, noRuntime)
+`)
 
 	assertRules(t, rulesOf(t, ruleset, "policy_wan-to-lan"), []string{
 		`meta nfproto ipv6 meta l4proto tcp ip6 daddr @addrset_published tcp dport { 80, 443 } counter accept comment "published-web"`,
@@ -344,7 +346,7 @@ func TestRuleFamilies(t *testing.T) {
             family: ipv4
             sourceCIDRs: [192.0.2.0/24]
             log: true
-`, noRuntime)
+`)
 
 	assertRules(t, rulesOf(t, ruleset, "policy_wan-to-self"), []string{
 		`meta nfproto ipv4 meta l4proto icmp counter accept comment "icmp"`,
@@ -370,7 +372,7 @@ func TestSourceNAT(t *testing.T) {
       metadata: {name: everything}
       spec:
         egressRef: pppoe0
-`, noRuntime)
+`)
 
 	assertRules(t, rulesOf(t, ruleset, "postrouting_nat"), []string{
 		`oifname "pppoe0" masquerade comment "SourceNAT/everything"`,
@@ -410,11 +412,11 @@ func TestPortForward(t *testing.T) {
         target:
           address: 192.168.10.30
 `
-	ruleset := render(t, resources, pppoeUp)
+	ruleset := render(t, resources)
 
 	assertRules(t, rulesOf(t, ruleset, "prerouting_nat"), []string{
 		`iifname "pppoe0" meta nfproto ipv4 tcp dport 443 dnat ip to 192.168.10.20:8443 comment "PortForward/https"`,
-		`iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 tcp dport 443 dnat ip to 192.168.10.20:8443 comment "PortForward/https"`,
+		`iifname != "pppoe0" meta nfproto ipv4 ip daddr @uplink4_pppoe0 tcp dport 443 dnat ip to 192.168.10.20:8443 comment "PortForward/https"`,
 		`iifname "pppoe0" meta nfproto ipv4 udp dport 60000-60010 dnat ip to 192.168.10.30:60000-60010 comment "PortForward/mosh"`,
 	})
 	assertRules(t, rulesOf(t, ruleset, "postrouting_nat"), []string{
@@ -427,9 +429,10 @@ func TestPortForward(t *testing.T) {
 	})
 }
 
-// The hairpin rules need an address only the running host knows. Rendering before the
-// uplink is up leaves them out and says so, rather than failing or inventing one.
-func TestHairpinWithoutTheUplinkAddress(t *testing.T) {
+// The hairpin rule matches on the uplink's set, so it is written whether or not the line
+// is up and it says nothing about what the line is holding. The set is empty here, which
+// is exactly what a hairpin rule should match while the line is down (ADR 0015).
+func TestHairpinMatchesTheUplinkSet(t *testing.T) {
 	ruleset := render(t, links+`    - kind: PortForward
       metadata: {name: https}
       spec:
@@ -437,13 +440,47 @@ func TestHairpinWithoutTheUplinkAddress(t *testing.T) {
         protocol: tcp
         port: 443
         target: {address: 192.168.10.20}
-`, noRuntime)
+`)
 
 	assertRules(t, rulesOf(t, ruleset, "prerouting_nat"), []string{
 		`iifname "pppoe0" meta nfproto ipv4 tcp dport 443 dnat ip to 192.168.10.20:443 comment "PortForward/https"`,
+		`iifname != "pppoe0" meta nfproto ipv4 ip daddr @uplink4_pppoe0 tcp dport 443 dnat ip to 192.168.10.20:443 comment "PortForward/https"`,
 	})
-	if !strings.Contains(ruleset.String(), `no address is known for the uplink "pppoe0"`) {
-		t.Errorf("the missing address is not reported:\n%s", ruleset.String())
+	assertEqual(t, "uplink4_pppoe0", elementsOf(t, ruleset, "uplink4_pppoe0"), nil)
+
+	// Nothing that only a running host knows is anywhere in the text.
+	if strings.Contains(ruleset.String(), "203.0.113") {
+		t.Errorf("the ruleset carries an uplink address:\n%s", ruleset.String())
+	}
+}
+
+// Every uplink an egressRef may name gets a set per family, whether or not anything
+// hairpins through it. The name follows from the link's name alone, because that is all
+// pppd hands its hook (ADR 0015).
+func TestEveryUplinkHasASetPerFamily(t *testing.T) {
+	ruleset := render(t, links+`    - kind: DSLiteTunnel
+      metadata: {name: dslite}
+      spec:
+        underlayRef: wan
+        localAddressFrom: {interfaceRef: wan}
+        aftrHost: aftr.example.net
+`)
+
+	for _, set := range []string{"uplink4_pppoe0", "uplink6_pppoe0", "uplink4_dslite", "uplink6_dslite"} {
+		assertEqual(t, set, elementsOf(t, ruleset, set), nil)
+	}
+	if got := typeOf(t, ruleset, "uplink4_pppoe0"); got != "ipv4_addr" {
+		t.Errorf("uplink4_pppoe0 holds %s, want ipv4_addr", got)
+	}
+	if got := typeOf(t, ruleset, "uplink6_pppoe0"); got != "ipv6_addr" {
+		t.Errorf("uplink6_pppoe0 holds %s, want ipv6_addr", got)
+	}
+	// The name every writer of these sets has to agree on is derived, not guessed.
+	if got := nftables.UplinkSetName("pppoe0", v1alpha1.FamilyIPv4); got != "uplink4_pppoe0" {
+		t.Errorf("UplinkSetName says %q", got)
+	}
+	if got := nftables.UplinkSetName("pppoe0", v1alpha1.FamilyIPv6); got != "uplink6_pppoe0" {
+		t.Errorf("UplinkSetName says %q", got)
 	}
 }
 
@@ -466,7 +503,7 @@ func TestEgressRoutePolicyMarks(t *testing.T) {
         egressRef: pppoe0
         sourceRanges: [192.168.10.128-192.168.10.255]
         excludeDestinations: [192.168.10.0/24]
-`, noRuntime)
+`)
 
 	// In priority order, not document order, and with the numbers internal/config
 	// derived rather than any this package chose.
@@ -502,7 +539,7 @@ func TestEgressRoutePolicyIPv6AndAddressSets(t *testing.T) {
         priority: 10
         egressRef: pppoe0
         sourceAddressSetRefs: [upper-half]
-`, noRuntime)
+`)
 
 	assertRules(t, rulesOf(t, ruleset, "prerouting_mark"), []string{
 		`ip6 saddr @addrset_upper-half meta mark set 0x100 return comment "EgressRoutePolicy/v6-via-pppoe"`,
@@ -534,7 +571,7 @@ spec:
 		if err != nil {
 			t.Fatalf("mssClamp %s does not validate: %v", testCase.global, err)
 		}
-		ruleset, err := nftables.Render(cfg, noRuntime)
+		ruleset, err := nftables.Render(cfg)
 		if err != nil {
 			t.Fatalf("mssClamp %s does not render: %v", testCase.global, err)
 		}
@@ -555,7 +592,7 @@ spec:
 	if err != nil {
 		t.Fatalf("mssClamp off does not validate: %v", err)
 	}
-	ruleset, err := nftables.Render(cfg, noRuntime)
+	ruleset, err := nftables.Render(cfg)
 	if err != nil {
 		t.Fatalf("mssClamp off does not render: %v", err)
 	}
@@ -566,7 +603,7 @@ spec:
 
 // regied rebuilds its own table and never flushes the ruleset (ADR 0009).
 func TestOwnsOneTable(t *testing.T) {
-	ruleset := render(t, links+zones, noRuntime)
+	ruleset := render(t, links+zones)
 	text := ruleset.String()
 
 	if strings.Contains(text, "flush ruleset") {
@@ -626,12 +663,12 @@ func TestOrderIsStable(t *testing.T) {
       metadata: {name: wan}
       spec: {linkRefs: [wan, pppoe0]}
 `
-	one := render(t, links+first, pppoeUp).String()
-	two := render(t, links+reversed, pppoeUp).String()
+	one := render(t, links+first).String()
+	two := render(t, links+reversed).String()
 	if one != two {
 		t.Errorf("reordering the document changed the ruleset:\n%s\n---\n%s", one, two)
 	}
-	if again := render(t, links+first, pppoeUp).String(); again != one {
+	if again := render(t, links+first).String(); again != one {
 		t.Error("rendering the same configuration twice gave two rulesets")
 	}
 }
@@ -650,7 +687,7 @@ func TestUnusableName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the test document does not validate: %v", err)
 	}
-	if _, err := nftables.Render(cfg, noRuntime); err == nil {
+	if _, err := nftables.Render(cfg); err == nil {
 		t.Error("a zone whose name has a space in it rendered without complaint")
 	}
 }

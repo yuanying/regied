@@ -5,6 +5,11 @@
 # below add the table if it is not already there and then remove it, so that the one
 # that follows goes in whether or not a previous apply left anything behind. nft runs
 # the whole file as a single transaction, so the table is never half replaced.
+#
+# The uplink sets below are empty here on purpose. What a line is holding is runtime
+# state, so it is never rendered: the apply seeds these sets from the kernel and pppd's
+# hooks keep them, and the hairpin rules match on the set rather than on an address
+# (ADR 0015).
 
 table inet regied
 delete table inet regied
@@ -27,6 +32,26 @@ table inet regied {
 		type ipv6_addr
 		flags interval
 		elements = { 2001:db8:0:1::200, 2001:db8:0:1::210, 2001:db8:0:2::/64 }
+	}
+
+	# DSLiteTunnel "dslite", IPv4: what the link is holding
+	set uplink4_dslite {
+		type ipv4_addr
+	}
+
+	# DSLiteTunnel "dslite", IPv6: what the link is holding
+	set uplink6_dslite {
+		type ipv6_addr
+	}
+
+	# PPPoESession "pppoe0", IPv4: what the link is holding
+	set uplink4_pppoe0 {
+		type ipv4_addr
+	}
+
+	# PPPoESession "pppoe0", IPv6: what the link is holding
+	set uplink6_pppoe0 {
+		type ipv6_addr
 	}
 
 	# FirewallPolicy "lan-to-self": lan to self
@@ -78,11 +103,11 @@ table inet regied {
 	chain prerouting_nat {
 		type nat hook prerouting priority dstnat; policy accept;
 		iifname "pppoe0" meta nfproto ipv4 tcp dport 443 dnat ip to 192.168.10.200:443 comment "PortForward/https"
-		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 tcp dport 443 dnat ip to 192.168.10.200:443 comment "PortForward/https"
+		iifname != "pppoe0" meta nfproto ipv4 ip daddr @uplink4_pppoe0 tcp dport 443 dnat ip to 192.168.10.200:443 comment "PortForward/https"
 		iifname "pppoe0" meta nfproto ipv4 udp dport 60000-60010 dnat ip to 192.168.10.210:60000-60010 comment "PortForward/mosh"
-		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 udp dport 60000-60010 dnat ip to 192.168.10.210:60000-60010 comment "PortForward/mosh"
+		iifname != "pppoe0" meta nfproto ipv4 ip daddr @uplink4_pppoe0 udp dport 60000-60010 dnat ip to 192.168.10.210:60000-60010 comment "PortForward/mosh"
 		iifname "pppoe0" meta nfproto ipv4 tcp dport 10022 dnat ip to 192.168.10.200:22 comment "PortForward/ssh"
-		iifname != "pppoe0" meta nfproto ipv4 ip daddr 203.0.113.10 tcp dport 10022 dnat ip to 192.168.10.200:22 comment "PortForward/ssh"
+		iifname != "pppoe0" meta nfproto ipv4 ip daddr @uplink4_pppoe0 tcp dport 10022 dnat ip to 192.168.10.200:22 comment "PortForward/ssh"
 	}
 
 	# translation on the way out: the hairpin half of a port forward, then the

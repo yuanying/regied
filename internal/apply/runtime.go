@@ -10,21 +10,24 @@ import (
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
 	"github.com/yuanying/regied/internal/render/networkd"
-	"github.com/yuanying/regied/internal/render/nftables"
 	"github.com/yuanying/regied/internal/render/pppd"
 )
 
-// Runtime is everything a rendering needs that a configuration cannot hold, gathered
-// from the host an apply is running on: the address a provider's AFTR name resolves to,
-// the contents of a DUID file, the addresses each uplink is currently holding, and the
-// credentials behind a PPPoE session (ADR 0004).
+// Runtime is everything an apply needs that a configuration cannot hold, gathered from
+// the host it is running on: the address a provider's AFTR name resolves to, the contents
+// of a DUID file, the addresses each uplink is currently holding, and the credentials
+// behind a PPPoE session (ADR 0004).
 //
 // The credentials are the reason this type is not printed. They live here only until the
 // files that need them have been rendered, and nothing that reaches an operator's screen
 // walks this structure (ADR 0003).
 type Runtime struct {
 	Networkd networkd.Runtime
-	NFTables nftables.Runtime
+
+	// UplinkAddresses is what each uplink's link is holding, by the uplink's name. It is
+	// not rendered — the ruleset names a set per uplink and carries no address
+	// (ADR 0015) — it is what the firewall phase puts into those sets.
+	UplinkAddresses map[string][]netip.Addr
 
 	// Credentials is the values behind each PPPoESession's userIDFile and passwordFile,
 	// by the session's name.
@@ -32,7 +35,7 @@ type Runtime struct {
 
 	// Notes is what the host could not answer without that being a failure. The only
 	// case today is a link that is not up, which is ordinary before the line has dialled
-	// and is why the rules depending on its address are left out.
+	// and is why its uplink set has nothing to be seeded with.
 	Notes []string
 }
 
@@ -56,8 +59,8 @@ func CollectRuntime(ctx context.Context, cfg *config.Config, host Host) (*Runtim
 				AFTRAddresses: make(map[string]netip.Addr),
 				DUIDs:         make(map[string]string),
 			},
-			NFTables:    nftables.Runtime{UplinkAddresses: make(map[string][]netip.Addr)},
-			Credentials: make(map[string]pppd.Credentials),
+			UplinkAddresses: make(map[string][]netip.Addr),
+			Credentials:     make(map[string]pppd.Credentials),
 		},
 	}
 
@@ -168,40 +171,34 @@ func (c *collector) resolveAFTRs(ctx context.Context) {
 	}
 }
 
-// readLinkAddresses reads what each link resource is holding.
+// readLinkAddresses reads what each uplink's link is holding.
 //
-// A link that is not there is not an error: before the line has dialled there is no
-// PPPoE link, and the rules that depend on its address are left out and say so
-// (ADR 0013). Only the hairpin half of a port forward reads any of this, which is why a
-// changed address re-runs the firewall phase and nothing else (ADR 0004).
+// A link that is not there is not an error: before the line has dialled there is no PPPoE
+// link, and its set stays empty. An empty set matches nothing, which is what a hairpin
+// rule should do while the line is down (ADR 0015).
 func (c *collector) readLinkAddresses() {
-	runtime, missing := readUplinkAddresses(c.cfg, c.host)
-	c.runtime.NFTables = runtime
+	addresses, missing := readUplinkAddresses(c.cfg, c.host)
+	c.runtime.UplinkAddresses = addresses
 	if len(missing) > 0 {
-		c.notef("no address was read from %s; anything that matches on one is left out of the ruleset", strings.Join(missing, ", "))
+		c.notef("no address was read from %s; the uplink set stays empty, so anything matching on it matches nothing until the line is up", strings.Join(missing, ", "))
 	}
 }
 
 // readUplinkAddresses reads what each uplink is holding, and names the ones that answered
-// nothing. Only an uplink's address is anything the ruleset depends on — the hairpin
-// half of a port forward matches on it (ADR 0013) — so only the uplinks are asked. A LAN
-// link is neither reported as missing an address it never needed, nor able to stop the
-// settle by being without one for a moment.
-//
-// It is on its own because it is the whole of what the last phase of an apply re-reads.
-// In particular it does not call for the credentials to be read again (ADR 0003,
-// ADR 0004).
-func readUplinkAddresses(cfg *config.Config, host Host) (nftables.Runtime, []string) {
-	runtime := nftables.Runtime{UplinkAddresses: make(map[string][]netip.Addr)}
+// nothing. Only an uplink's address is anything the ruleset refers to — the hairpin half
+// of a port forward matches on the uplink's set (ADR 0015) — so only the uplinks are
+// asked, and a LAN link is not reported as missing an address it never needed.
+func readUplinkAddresses(cfg *config.Config, host Host) (map[string][]netip.Addr, []string) {
+	addresses := make(map[string][]netip.Addr)
 	var missing []string
 	for _, link := range uplinkResources(cfg) {
-		addresses, err := host.Links.Addresses(link.ifname)
+		held, err := host.Links.Addresses(link.ifname)
 		if err != nil {
 			missing = append(missing, fmt.Sprintf("%s (%s)", link.name, link.ifname))
 			continue
 		}
 		var usable []netip.Addr
-		for _, address := range addresses {
+		for _, address := range held {
 			if isReachableAddress(address) {
 				usable = append(usable, address)
 			}
@@ -211,9 +208,9 @@ func readUplinkAddresses(cfg *config.Config, host Host) (nftables.Runtime, []str
 			continue
 		}
 		slices.SortFunc(usable, func(a, b netip.Addr) int { return a.Compare(b) })
-		runtime.UplinkAddresses[link.name] = usable
+		addresses[link.name] = usable
 	}
-	return runtime, missing
+	return addresses, missing
 }
 
 // isReachableAddress is whether an address is one something outside could have resolved.

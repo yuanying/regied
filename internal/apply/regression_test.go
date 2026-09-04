@@ -129,9 +129,10 @@ func TestAUnitIsReclaimedOnlyAfterWhatRunsFromItIsStopped(t *testing.T) {
 }
 
 // B-2. Reading a link a few milliseconds after its session was restarted answers that it
-// is not there. Rendering that and installing it would take the hairpin rules away and
-// record the result as what is in effect.
-func TestSettlingNeverTakesTheHairpinRulesAway(t *testing.T) {
+// is not there. Rendering that used to be able to take the hairpin rules away; nothing in
+// the ruleset depends on the answer any more, so a redial in the middle of an apply
+// cannot (ADR 0015).
+func TestARedialDuringAnApplyKeepsTheHairpinRules(t *testing.T) {
 	engine, files, runner, host := planFixture(t)
 	links := host.Links.(fakeLinks)
 	links["pppoe0"] = addrs(t, "192.0.2.10")
@@ -140,7 +141,7 @@ func TestSettlingNeverTakesTheHairpinRulesAway(t *testing.T) {
 	mustApply(t, engine, cfg)
 	tablePresent(runner)
 	recorded, _ := files.content("/var/lib/regied/applied/ruleset.nft")
-	if !strings.Contains(recorded, "192.0.2.10") {
+	if !strings.Contains(recorded, "@uplink4_pppoe0") {
 		t.Fatalf("the first apply did not install the hairpin rules:\n%s", recorded)
 	}
 
@@ -152,18 +153,21 @@ func TestSettlingNeverTakesTheHairpinRulesAway(t *testing.T) {
 			delete(links, "pppoe0")
 		}
 	}
+	before := len(runner.ran)
 
-	result := mustApply(t, engine, changed)
+	mustApply(t, engine, changed)
 
-	if result.FirewallReapplied {
-		t.Error("a ruleset rendered while the line was down was installed over the one that had the address")
-	}
 	after, _ := files.content("/var/lib/regied/applied/ruleset.nft")
-	if !strings.Contains(after, "192.0.2.10") {
-		t.Errorf("the recorded ruleset lost the uplink address:\n%s", after)
+	if !strings.Contains(after, "@uplink4_pppoe0") {
+		t.Errorf("the recorded ruleset lost the hairpin rules:\n%s", after)
 	}
-	if len(result.Notes) == 0 {
-		t.Error("nothing says the ruleset could not be settled")
+	// The ruleset did not change, so the table was left alone and its sets kept what the
+	// first apply seeded. Replacing it here would have emptied them behind a link that
+	// cannot be read.
+	for _, cmd := range runner.ran[before:] {
+		if cmd.Name == "nft" && strings.Contains(cmd.Stdin, "table inet regied {") {
+			t.Error("the table was replaced by an apply that did not change the ruleset")
+		}
 	}
 }
 
@@ -192,7 +196,7 @@ func TestNoCredentialIsAnywhereInThePlan(t *testing.T) {
 	}
 
 	// It still has to be written, and correctly.
-	if _, err := engine.ApplyPlan(context.Background(), cfg, plan); err != nil {
+	if _, err := engine.ApplyPlan(context.Background(), plan); err != nil {
 		t.Fatalf("applying failed: %v", err)
 	}
 	written, _ := files.content("/etc/regied/ppp/credentials/pppoe0.conf")
@@ -273,7 +277,7 @@ func TestAReclaimedCredentialsFileIsNotInThePlan(t *testing.T) {
 
 	// It still has to come back if the apply is rolled back.
 	runner.fail["networkctl reload"] = errFake
-	if _, err := engine.ApplyPlan(context.Background(), load(t, hostFixture), plan); err == nil {
+	if _, err := engine.ApplyPlan(context.Background(), plan); err == nil {
 		t.Fatal("the failing reload was not reported")
 	}
 	restored, ok := files.content(stale)
@@ -463,9 +467,9 @@ func TestAProcessIsStoppedWhenOnlyItsUnitIsLeft(t *testing.T) {
 	}
 }
 
-// Round 3. Only an uplink's address is anything the ruleset depends on. Reading every
-// link makes a LAN interface that is momentarily without an address stop the settle,
-// and makes every pre-dial apply say a LAN link is missing an address it never needed.
+// Round 3. Only an uplink's address is anything the apply has to put anywhere. Reading
+// every link makes every pre-dial apply say a LAN link is missing an address it never
+// needed.
 func TestOnlyTheUplinksAreAskedForTheirAddresses(t *testing.T) {
 	engine, _, _, _ := planFixture(t)
 
@@ -482,26 +486,23 @@ func TestOnlyTheUplinksAreAskedForTheirAddresses(t *testing.T) {
 	}
 }
 
-func TestALANLinkGoingQuietDoesNotStopTheSettle(t *testing.T) {
+// Round 3, second half. A LAN link's address is nothing the ruleset depends on, so it is
+// neither read nor seeded into any set.
+func TestOnlyTheUplinksAreSeeded(t *testing.T) {
 	engine, _, runner, host := planFixture(t)
 	links := host.Links.(fakeLinks)
 	links["br-lan"] = addrs(t, "192.168.10.1")
-	cfg := load(t, hostFixture+forwardResource)
+	links["pppoe0"] = addrs(t, "192.0.2.10")
 
-	// The reload takes the LAN address away for a moment, and the line comes up.
-	runner.onRun = func(cmd Command) {
-		switch {
-		case cmd.String() == "networkctl reload":
-			delete(links, "br-lan")
-		case strings.Contains(cmd.String(), "enable --now regied-pppoe@pppoe0"):
-			links["pppoe0"] = addrs(t, "192.0.2.10")
-		}
+	mustApply(t, engine, load(t, hostFixture+forwardResource))
+
+	if !ranNFTWith(runner.ran, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
+		t.Errorf("the uplink's address was not seeded:\n%s", strings.Join(runner.commands(), "\n"))
 	}
-
-	result := mustApply(t, engine, cfg)
-
-	if !result.FirewallReapplied {
-		t.Errorf("the uplink's address appeared and was not installed; notes: %v", result.Notes)
+	for _, cmd := range runner.ran {
+		if cmd.Name == "nft" && strings.Contains(cmd.Stdin, "add element") && strings.Contains(cmd.Stdin, "192.168.10.1 ") {
+			t.Errorf("a LAN address was put into a set:\n%s", cmd.Stdin)
+		}
 	}
 }
 

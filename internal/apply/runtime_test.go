@@ -78,12 +78,12 @@ func TestCollectRuntimeReadsWhatOnlyTheHostKnows(t *testing.T) {
 	// A link-local address is not an address an uplink is reachable at, so it is not
 	// one a hairpin rule could ever match on.
 	want := addrs(t, "192.0.2.10")
-	if got := rt.NFTables.UplinkAddresses["pppoe0"]; !equalAddrs(got, want) {
+	if got := rt.UplinkAddresses["pppoe0"]; !equalAddrs(got, want) {
 		t.Errorf("the PPPoE uplink holds %v, want %v", got, want)
 	}
 	// An Interface is never an egressRef, so nothing in the ruleset can depend on its
 	// address, and it is not asked (ADR 0013).
-	if got, ok := rt.NFTables.UplinkAddresses["wan"]; ok {
+	if got, ok := rt.UplinkAddresses["wan"]; ok {
 		t.Errorf("the WAN interface was asked for its address and holds %v; only uplinks are asked", got)
 	}
 }
@@ -99,8 +99,8 @@ func TestCollectRuntimeAcceptsAnUplinkThatIsNotUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a line that is not up is not an error, but: %v", err)
 	}
-	if len(rt.NFTables.UplinkAddresses) != 0 {
-		t.Errorf("expected no uplink addresses, got %v", rt.NFTables.UplinkAddresses)
+	if len(rt.UplinkAddresses) != 0 {
+		t.Errorf("expected no uplink addresses, got %v", rt.UplinkAddresses)
 	}
 	if len(rt.Notes) == 0 {
 		t.Error("expected a note saying which links could not be read, got none")

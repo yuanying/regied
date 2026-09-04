@@ -2,7 +2,6 @@ package nftables_test
 
 import (
 	"flag"
-	"net/netip"
 	"os"
 	"testing"
 
@@ -24,15 +23,7 @@ func TestExampleGolden(t *testing.T) {
 		t.Fatalf("config/example.yaml does not validate:\n%v", err)
 	}
 
-	// The PPPoE session's address is the one thing here that only a running host knows.
-	// It is a documentation address (RFC 5737), as everything in the example is.
-	runtime := nftables.Runtime{
-		UplinkAddresses: map[string][]netip.Addr{
-			"pppoe0": {netip.MustParseAddr("203.0.113.10")},
-		},
-	}
-
-	ruleset, err := nftables.Render(cfg, runtime)
+	ruleset, err := nftables.Render(cfg)
 	if err != nil {
 		t.Fatalf("config/example.yaml does not render: %v", err)
 	}

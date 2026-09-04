@@ -47,7 +47,7 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 	// than only in front of a dry run (ADR 0006).
 	apply.ReportWarnings(stderr, plan)
 
-	result, err := engine.ApplyPlan(ctx, cfg, plan)
+	result, err := engine.ApplyPlan(ctx, plan)
 	if err != nil {
 		return reportError(stderr, err)
 	}
@@ -61,12 +61,6 @@ func reportResult(stdout io.Writer, result *apply.Result) {
 		return
 	}
 	fmt.Fprintln(stdout, result.Plan.Summary())
-	if result.FirewallReapplied {
-		// A line that came up on its own while the apply was running. A session the
-		// apply started has not dialled yet, so this is not the cold-start case; the
-		// note printed before the apply said what was left out of the ruleset.
-		fmt.Fprintln(stdout, "An uplink address appeared while applying; the ruleset was rendered again with it.")
-	}
 	fmt.Fprintln(stdout, "Applied.")
 	// What follows happened after the configuration was on the host. It is not a failed
 	// apply, and saying so would tell the operator the opposite of what happened

@@ -20,7 +20,30 @@ const (
 	zoneSetPrefix     = "zone_"
 	addressSetPrefix  = "addrset_"
 	policyChainPrefix = "policy_"
+
+	// The two prefixes of an uplink's address sets. The family is in the name rather
+	// than beside it because the name has to be derivable from the link's name and
+	// nothing else: pppd hands its hook an interface name, and the hook has to arrive
+	// at the same set this renderer declared (ADR 0015).
+	uplinkSetPrefixIPv4 = "uplink4_"
+	uplinkSetPrefixIPv6 = "uplink6_"
 )
+
+// UplinkSetName is the set holding what one uplink's link is holding, in one family.
+//
+// It is exported because three things put addresses into these sets and all of them have
+// to arrive at the same name: the apply engine, which seeds them from the kernel, the
+// pppd hook, which adds the address a session dialled with, and the daemon, when there is
+// one (ADR 0015).
+//
+// link is the kernel name of the uplink's link, which for a PPPoESession and a
+// DSLiteTunnel is the resource's own name (ADR 0012).
+func UplinkSetName(link string, family v1alpha1.Family) string {
+	if family == v1alpha1.FamilyIPv6 {
+		return uplinkSetPrefixIPv6 + link
+	}
+	return uplinkSetPrefixIPv4 + link
+}
 
 // The base chains.
 //
@@ -39,21 +62,6 @@ const (
 	logPrefixMarker = "regied "
 )
 
-// Runtime is what a ruleset needs and a configuration cannot hold: the addresses an
-// uplink is holding at the moment it is rendered.
-//
-// A masquerading uplink needs none of this — the address is taken from the link as the
-// packet leaves — but the hairpin half of a port forward has to match on the address the
-// clients inside resolved, and only the running host knows what that is. Keeping it in
-// an argument is what leaves this package a pure function: the apply engine reads the
-// link and fills this in, and a test fills it in with whatever it wants to render.
-type Runtime struct {
-	// UplinkAddresses is the global addresses each uplink holds, keyed by the uplink
-	// resource's name. An uplink that is not up yet is absent, which is not an error:
-	// what depends on the address is left out and says so.
-	UplinkAddresses map[string][]netip.Addr
-}
-
 // Error is what Render returns for a configuration it cannot turn into a ruleset. It
 // reports everything it found rather than the first thing, as validation does.
 type Error struct{ Problems []string }
@@ -63,8 +71,12 @@ func (e *Error) Error() string {
 }
 
 // Render builds the table regied owns out of a validated configuration.
-func Render(cfg *config.Config, runtime Runtime) (*Ruleset, error) {
-	r := &renderer{cfg: cfg, runtime: runtime}
+//
+// It is a function of the configuration alone. Nothing a running host knows reaches it,
+// which is what lets the apply record the text it installed and compare the next one
+// against it (ADR 0015).
+func Render(cfg *config.Config) (*Ruleset, error) {
+	r := &renderer{cfg: cfg}
 	ruleset := &Ruleset{Family: TableFamily, Table: TableName}
 
 	r.renderSets(ruleset)
@@ -82,7 +94,6 @@ func Render(cfg *config.Config, runtime Runtime) (*Ruleset, error) {
 
 type renderer struct {
 	cfg      *config.Config
-	runtime  Runtime
 	problems []string
 }
 
@@ -147,6 +158,65 @@ func (r *renderer) renderSets(ruleset *Ruleset) {
 			Comment:  fmt.Sprintf("IPAddressSet %q", set.Name),
 		})
 	}
+
+	r.renderUplinkSets(ruleset)
+}
+
+// renderUplinkSets declares the sets the hairpin rules match on: one per uplink and
+// family, and empty.
+//
+// What a line is holding is runtime state, so it is never rendered. The sets go in empty
+// and whoever learns an address puts it in (ADR 0015). Every uplink gets its two sets,
+// whether or not anything hairpins through it, so that the name is there for the hook
+// the moment the line comes up.
+func (r *renderer) renderUplinkSets(ruleset *Ruleset) {
+	for _, uplink := range r.uplinks() {
+		for _, family := range []v1alpha1.Family{v1alpha1.FamilyIPv4, v1alpha1.FamilyIPv6} {
+			ruleset.Sets = append(ruleset.Sets, Set{
+				Name: r.identifier(uplinkSetPrefix(family), string(uplink.kind), uplink.name),
+				Type: addressType(family),
+				Comment: fmt.Sprintf("%s %q, %s: what the link is holding",
+					uplink.kind, uplink.name, familyLabel(family)),
+			})
+		}
+	}
+}
+
+// uplink is one resource an egressRef may name, with the kind it was declared as. The
+// kernel name of its link is the resource's name (ADR 0012), which is what the set names
+// are built from.
+type uplink struct {
+	kind v1alpha1.ResourceKind
+	name string
+}
+
+// uplinks is every uplink the configuration declares, in one order whatever order the
+// document listed them in.
+func (r *renderer) uplinks() []uplink {
+	var out []uplink
+	for _, session := range config.ResourcesOf[*v1alpha1.PPPoESessionSpec](r.cfg) {
+		out = append(out, uplink{kind: v1alpha1.KindPPPoESession, name: session.Name})
+	}
+	for _, tunnel := range config.ResourcesOf[*v1alpha1.DSLiteTunnelSpec](r.cfg) {
+		out = append(out, uplink{kind: v1alpha1.KindDSLiteTunnel, name: tunnel.Name})
+	}
+	slices.SortFunc(out, func(a, b uplink) int { return cmp.Compare(a.name, b.name) })
+	return out
+}
+
+func uplinkSetPrefix(family v1alpha1.Family) string {
+	if family == v1alpha1.FamilyIPv6 {
+		return uplinkSetPrefixIPv6
+	}
+	return uplinkSetPrefixIPv4
+}
+
+// familyLabel is a family as it is written for a person reading the ruleset.
+func familyLabel(family v1alpha1.Family) string {
+	if family == v1alpha1.FamilyIPv6 {
+		return "IPv6"
+	}
+	return "IPv4"
 }
 
 // --- firewall policies -----------------------------------------------------------
@@ -396,25 +466,18 @@ func (r *renderer) forwardDNAT(forward config.Named[*v1alpha1.PortForwardSpec]) 
 	if !spec.HairpinEnabled() {
 		return rules
 	}
-	// The address is the uplink's, and only the running host knows it. Without it the
-	// external path still works; saying so is better than a rule built on a guess.
-	addresses := r.uplinkAddresses(spec.EgressRef, family)
-	if len(addresses) == 0 {
-		return append(rules, Rule{Comment: fmt.Sprintf(
-			"the hairpin translation for %s is not here: no address is known for the uplink %q",
-			comment, spec.EgressRef)})
-	}
-	for _, address := range addresses {
-		parts := newParts()
-		parts.addf("iifname != %q", link)
-		parts.addf("meta nfproto %s", family)
-		parts.addf("%s daddr %s", familyHeader(family), address)
-		parts.add(portMatch(&spec.Protocol, "dport", []v1alpha1.PortSpec{spec.Ports()}))
-		parts.add(translation)
-		parts.addf("comment %q", comment)
-		rules = append(rules, Rule{Text: parts.String()})
-	}
-	return rules
+	// The address the clients inside resolved is the uplink's, and only the running host
+	// knows it. The rule matches on the uplink's set instead of naming it, so the rule
+	// is here whether or not the line is up and matches nothing while it is down
+	// (ADR 0015).
+	parts := newParts()
+	parts.addf("iifname != %q", link)
+	parts.addf("meta nfproto %s", family)
+	parts.addf("%s daddr @%s", familyHeader(family), UplinkSetName(link, family))
+	parts.add(portMatch(&spec.Protocol, "dport", []v1alpha1.PortSpec{spec.Ports()}))
+	parts.add(translation)
+	parts.addf("comment %q", comment)
+	return append(rules, Rule{Text: parts.String()})
 }
 
 // forwardHairpinSNAT is the other half of hairpin. Without it the target answers the
@@ -641,17 +704,6 @@ func (r *renderer) linkName(ref string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func (r *renderer) uplinkAddresses(uplink string, family v1alpha1.Family) []netip.Addr {
-	var out []netip.Addr
-	for _, address := range r.runtime.UplinkAddresses[uplink] {
-		if familyOf(address) == family {
-			out = append(out, address)
-		}
-	}
-	slices.SortFunc(out, func(a, b netip.Addr) int { return a.Compare(b) })
-	return out
 }
 
 // --- matches ---------------------------------------------------------------------
