@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yuanying/regied/internal/config"
 )
@@ -250,6 +251,25 @@ func (l fakeLinks) Addresses(ifname string) ([]netip.Addr, error) {
 	return addrs, nil
 }
 
+// fakeClock is a clock a test moves by hand.
+type fakeClock struct{ now time.Time }
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+// fakeLocker records the locks it was asked for and never makes anybody wait.
+type fakeLocker struct {
+	held     []string
+	released int
+}
+
+func (l *fakeLocker) Lock(_ context.Context, path string) (func() error, error) {
+	l.held = append(l.held, path)
+	return func() error {
+		l.released++
+		return nil
+	}, nil
+}
+
 // testHost is a host every part of which is a fake.
 func testHost() (Host, *fakeFiles, *fakeRunner) {
 	files := newFakeFiles()
@@ -260,6 +280,8 @@ func testHost() (Host, *fakeFiles, *fakeRunner) {
 		Resolver: fakeResolver{},
 		Links:    fakeLinks{},
 		Sysctl:   newFakeSysctl(),
+		Clock:    &fakeClock{now: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)},
+		Locker:   &fakeLocker{},
 	}, files, runner
 }
 

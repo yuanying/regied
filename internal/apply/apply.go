@@ -22,6 +22,14 @@ type Result struct {
 	// configuration is on the host; something regied does around it is not, and saying
 	// so is not the same as saying the apply failed (ADR 0005).
 	Notes []string
+
+	// State is where the turn left the host: converged, or waiting for something the
+	// plan names. A turn that failed does not produce a Result (ADR 0016).
+	State State
+
+	// Revision is the digest of the declaration the turn converged toward, when the turn
+	// was a Submit or a Reconcile; ApplyPlan knows no declaration and leaves it empty.
+	Revision string
 }
 
 // Error is what Apply returns when the commit stage failed. It says what failed, and
@@ -33,6 +41,10 @@ type Error struct {
 	Step     string
 	Cause    error
 	Rollback []string
+
+	// Notes is what else went wrong around the failure: the report of the turn that could
+	// not be written. It is said after the failure, never instead of it.
+	Notes []string
 }
 
 func (e *Error) Error() string {
@@ -40,11 +52,14 @@ func (e *Error) Error() string {
 	fmt.Fprintf(&b, "the apply failed in the %s phase, at %q: %v", e.Phase, e.Step, e.Cause)
 	if len(e.Rollback) == 0 {
 		b.WriteString("\n  the host was rolled back to the configuration it was running")
-		return b.String()
+	} else {
+		b.WriteString("\n  the rollback also failed, so the host is running a mixture:")
+		for _, problem := range e.Rollback {
+			b.WriteString("\n    " + problem)
+		}
 	}
-	b.WriteString("\n  the rollback also failed, so the host is running a mixture:")
-	for _, problem := range e.Rollback {
-		b.WriteString("\n    " + problem)
+	for _, note := range e.Notes {
+		b.WriteString("\n  also: " + note)
 	}
 	return b.String()
 }
@@ -69,26 +84,41 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config) (*Result, error)
 
 // ApplyPlan commits a plan that has already been computed, which is what lets a dry-run
 // and an apply be the same code path up to the point where the commands run (ADR 0006).
+//
+// It is one turn over a plan and nothing more: it records no declaration and writes no
+// report. Submit and Reconcile do both around it (ADR 0016).
 func (e *Engine) ApplyPlan(ctx context.Context, plan *Plan) (*Result, error) {
-	result := &Result{Plan: plan, Changed: !plan.Empty()}
+	return e.turn(ctx, plan, nil)
+}
+
+// acceptingStep is what the staging failure is called when it is the record that could
+// not be written.
+const acceptingStep = "recording the declaration as accepted"
+
+// turn stages a plan, runs accept if there is one, and commits. accept is the moment a
+// submission is accepted: after the staging stage has passed and before the first command
+// runs, so that from then on the declaration is the spec whatever the commands do
+// (ADR 0016). A declaration that cannot be recorded is not applied either — a host running
+// a declaration its record does not hold is exactly the drift the record rules out — and
+// nothing has run yet, so refusing costs nothing.
+func (e *Engine) turn(ctx context.Context, plan *Plan, accept func() error) (*Result, error) {
+	result := &Result{Plan: plan, Changed: !plan.Empty(), State: stateOf(plan, nil)}
 	if plan.Empty() {
+		if accept != nil {
+			if err := accept(); err != nil {
+				return nil, &Error{Phase: PhaseStaging, Step: acceptingStep, Cause: err}
+			}
+		}
 		return result, nil
 	}
 
 	if err := e.stage(plan); err != nil {
-		// Nothing has run, so putting the files back is the whole of the rollback. What
-		// could not be put back is the first thing an operator needs, so it travels
-		// with the failure rather than being dropped (ADR 0005).
-		failure := &Error{Phase: PhaseStaging, Step: "writing what the configuration asks for", Cause: err}
-		failure.Rollback = e.restoreFiles(plan)
-		// systemd was never told about the units this apply created, so they are
-		// taken away without telling it they are gone.
-		for _, change := range deferredFiles(plan, ChangeCreate) {
-			if err := e.host.Files.Remove(change.Path); err != nil {
-				failure.Rollback = append(failure.Rollback, fmt.Sprintf("%s could not be taken back off: %v", change.Path, err))
-			}
+		return nil, e.stagingFailure(plan, "writing what the configuration asks for", err)
+	}
+	if accept != nil {
+		if err := accept(); err != nil {
+			return nil, e.stagingFailure(plan, acceptingStep, err)
 		}
-		return nil, failure
 	}
 
 	if attempted, failure := e.commit(ctx, plan); failure != nil {
@@ -104,6 +134,22 @@ func (e *Engine) ApplyPlan(ctx context.Context, plan *Plan) (*Result, error) {
 		result.Notes = append(result.Notes, fmt.Sprintf("%v; the next apply will install the ruleset again", err))
 	}
 	return result, nil
+}
+
+// stagingFailure is a failure before the first command. Nothing has run, so putting the
+// files back is the whole of the rollback. What could not be put back is the first thing
+// an operator needs, so it travels with the failure rather than being dropped (ADR 0005).
+func (e *Engine) stagingFailure(plan *Plan, step string, cause error) *Error {
+	failure := &Error{Phase: PhaseStaging, Step: step, Cause: cause}
+	failure.Rollback = e.restoreFiles(plan)
+	// systemd was never told about the units this apply created, so they are taken away
+	// without telling it they are gone.
+	for _, change := range deferredFiles(plan, ChangeCreate) {
+		if err := e.host.Files.Remove(change.Path); err != nil {
+			failure.Rollback = append(failure.Rollback, fmt.Sprintf("%s could not be taken back off: %v", change.Path, err))
+		}
+	}
+	return failure
 }
 
 // stage writes every file and takes away what was reclaimed. None of it is an effect

@@ -74,6 +74,12 @@ type Engine struct {
 }
 
 func New(host Host, opts Options) *Engine {
+	if host.Clock == nil {
+		host.Clock = OSClock{}
+	}
+	if host.Locker == nil {
+		host.Locker = OSLocker{}
+	}
 	return &Engine{host: host, opts: opts.withDefaults()}
 }
 
@@ -385,6 +391,11 @@ type Plan struct {
 	// read, so every file is shown as it would be written and nothing is compared.
 	Rendered bool
 
+	// validation is what validation warned about, for the report of the turn. The console
+	// prints it from the configuration itself, before the plan is made, so it is not in
+	// Warnings (ADR 0006).
+	validation []string
+
 	// secrets is the content of the files marked Secret, which is why they are not in
 	// the FileChanges above. Nothing that prints can reach this field, so printing a
 	// plan cannot print a credential — which is what ADR 0003 asks for, and what a rule
@@ -539,6 +550,9 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 	}
 
 	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Waiting: rendered.waiting}
+	for _, warning := range cfg.Warnings() {
+		plan.validation = append(plan.validation, warning.String())
+	}
 
 	desired := make(map[string]bool, len(rendered.artifacts))
 	// A file that waits for a value is left exactly as it is. Reclaiming it would spell

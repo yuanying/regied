@@ -1,0 +1,396 @@
+package apply
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+// declarationOf is the bytes a test submits: the same document load builds its Config
+// from, so that the record can be compared with what was validated.
+func declarationOf(body string) []byte { return []byte(documentHeader + body) }
+
+// mustSubmit plans and submits a declaration the way `regied apply` does.
+func mustSubmit(t *testing.T, engine *Engine, body, source string) *Result {
+	t.Helper()
+	cfg := load(t, body)
+	plan := mustPlan(t, engine, cfg)
+	result, err := engine.Submit(context.Background(), plan, Declaration{Bytes: declarationOf(body), Source: source})
+	if err != nil {
+		t.Fatalf("submitting failed: %v", err)
+	}
+	return result
+}
+
+// --- The record is the declaration, written at submission ---------------------------
+
+// The record is written once the declaration has validated and staged, before the first
+// command runs: from that moment the declaration is the spec, whether or not the commands
+// that follow succeed (ADR 0016).
+func TestSubmitRecordsTheDeclarationBeforeTheFirstCommand(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	var recordedAtFirstCommand string
+	var seen bool
+	runner.onRun = func(cmd Command) {
+		if seen || cmd.String() == "nft list tables" || cmd.String() == "nft --check -f -" {
+			return
+		}
+		seen = true
+		recordedAtFirstCommand, _ = files.content("/var/lib/regied/accepted/declaration.yaml")
+	}
+
+	result := mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+
+	if !seen {
+		t.Fatal("the fixture ran no command, so the test proves nothing")
+	}
+	if recordedAtFirstCommand != string(declarationOf(hostFixture)) {
+		t.Errorf("at the first command the record held:\n%q\nwant the declaration as submitted", recordedAtFirstCommand)
+	}
+	if result.Revision != Revision(declarationOf(hostFixture)) {
+		t.Errorf("the result reports revision %q, want the digest of the declaration", result.Revision)
+	}
+}
+
+// The revision is the digest of the bytes and nothing else, so anyone holding a copy of
+// the file can compute it without regied (ADR 0007).
+func TestRevisionIsTheDigestOfTheBytes(t *testing.T) {
+	if got, want := Revision([]byte("abc")), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; got != want {
+		t.Errorf("Revision(abc) = %q, want %q", got, want)
+	}
+}
+
+// A submission whose commands fail leaves the declaration in the record. The record
+// holds what was asked for, not what last worked; the host is wherever the failure left
+// it, and the report says so (ADR 0016).
+//
+// Until the loop exists, the failed commands are still rolled back (ADR 0005 is
+// superseded but its code stays), so the host runs the previous declaration while the
+// record holds the new one. A reconcile then tries the new one again. That is the
+// transitional state unit A accepts, and this test pins both halves of it.
+func TestAFailedSubmissionKeepsTheDeclarationItWasAsked(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	tablePresent(runner)
+
+	changed := strings.Replace(hostFixture, "192.168.10.127", "192.168.10.200", 1)
+	runner.fail["systemctl restart regied-dnsmasq.service"] = errFake
+	plan := mustPlan(t, engine, load(t, changed))
+	_, err := engine.Submit(context.Background(), plan, Declaration{Bytes: declarationOf(changed), Source: "/etc/regied/config.yaml"})
+	requireErrorContaining(t, err, "regied-dnsmasq.service")
+
+	recorded, _ := files.content("/var/lib/regied/accepted/declaration.yaml")
+	if recorded != string(declarationOf(changed)) {
+		t.Error("the record does not hold the declaration that was submitted")
+	}
+	report := mustLastTurn(t, engine)
+	if report.State != StateFailing {
+		t.Errorf("the report says %q, want failing", report.State)
+	}
+	if !strings.Contains(strings.Join(report.Failing, "\n"), "regied-dnsmasq.service") {
+		t.Errorf("the report does not name what failed: %v", report.Failing)
+	}
+	if report.Revision != Revision(declarationOf(changed)) {
+		t.Error("the report is about a different revision from the one recorded")
+	}
+
+	// The next turn goes toward the record, so it tries the same thing again.
+	delete(runner.fail, "systemctl restart regied-dnsmasq.service")
+	before := len(runner.ran)
+	result, err := engine.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("the reconcile failed: %v", err)
+	}
+	if !result.Changed || !slices.Contains(commandsSince(runner, before), "systemctl restart regied-dnsmasq.service") {
+		t.Errorf("the reconcile did not finish what the submission started:\n%s", strings.Join(commandsSince(runner, before), "\n"))
+	}
+	if got, _ := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); !strings.Contains(got, "192.168.10.200") {
+		t.Error("the host does not hold the recorded declaration after the reconcile")
+	}
+}
+
+// A declaration that does not stage is not accepted, and nothing records it.
+func TestASubmissionThatFailsStagingIsNotRecorded(t *testing.T) {
+	engine, files, _, _ := planFixture(t)
+	files.writeErr["/etc/regied/dnsmasq/dnsmasq.conf"] = errFake
+
+	plan := mustPlan(t, engine, load(t, hostFixture))
+	_, err := engine.Submit(context.Background(), plan, Declaration{Bytes: declarationOf(hostFixture)})
+	if err == nil {
+		t.Fatal("the failing write was not reported")
+	}
+	if _, ok := files.content("/var/lib/regied/accepted/declaration.yaml"); ok {
+		t.Error("a declaration that did not stage was recorded as accepted")
+	}
+}
+
+// A declaration that cannot be recorded is not applied either. A host running a
+// declaration its record does not hold is exactly the drift the record exists to rule
+// out, and nothing has run yet, so refusing costs nothing (ADR 0016).
+func TestASubmissionRunsNothingWhenTheDeclarationCannotBeRecorded(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	files.writeErr["/var/lib/regied/accepted/declaration.yaml"] = errFake
+
+	plan := mustPlan(t, engine, load(t, hostFixture))
+	_, err := engine.Submit(context.Background(), plan, Declaration{Bytes: declarationOf(hostFixture)})
+	requireErrorContaining(t, err, "/var/lib/regied/accepted/declaration.yaml")
+
+	for _, command := range runner.commands() {
+		if command != "nft list tables" && command != "nft --check -f -" {
+			t.Errorf("a submission that could not be recorded still ran %q", command)
+		}
+	}
+	if _, ok := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); ok {
+		t.Error("the staged files were left on the host")
+	}
+}
+
+// --- The report says where the turn left the host ----------------------------------
+
+func TestASubmissionThatDidEverythingReportsConverged(t *testing.T) {
+	engine, _, _, _ := planFixture(t)
+
+	result := mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+
+	if result.State != StateConverged {
+		t.Errorf("the result says %q, want converged", result.State)
+	}
+	report := mustLastTurn(t, engine)
+	if report.State != StateConverged {
+		t.Errorf("the report says %q, want converged", report.State)
+	}
+	if report.Revision != Revision(declarationOf(hostFixture)) {
+		t.Errorf("the report is about %q, want the submitted revision", report.Revision)
+	}
+	if report.Source != "/etc/regied/config.yaml" {
+		t.Errorf("the report names %q as the source, want the file that was submitted", report.Source)
+	}
+	if report.Since.IsZero() {
+		t.Error("the report does not say when the state was entered")
+	}
+}
+
+// A turn that left something out for want of a value has not converged, and the report
+// names what it waits for. It is not a failure: the apply exits 0 (ADR 0016).
+func TestASubmissionThatWaitsReportsWhatItWaitsFor(t *testing.T) {
+	engine, files, _, _ := planFixture(t)
+	putSecrets(files)
+	// No resolver entry: the AFTR name does not resolve.
+
+	result := mustSubmit(t, engine, uplinkFixture, "/etc/regied/config.yaml")
+
+	if result.State != StateWaiting {
+		t.Errorf("the result says %q, want waiting", result.State)
+	}
+	report := mustLastTurn(t, engine)
+	if report.State != StateWaiting {
+		t.Errorf("the report says %q, want waiting", report.State)
+	}
+	if !strings.Contains(strings.Join(report.Waiting, "\n"), "aftr.example.net") {
+		t.Errorf("the report does not name what is waited for: %v", report.Waiting)
+	}
+}
+
+// The report is rewritten only when what it says changes, the rule ADR 0004 gives every
+// file regied writes. A turn that confirms the same state writes nothing (ADR 0016).
+func TestTheReportIsWrittenOnlyWhenItChanges(t *testing.T) {
+	engine, files, runner, host := planFixture(t)
+	clock := host.Clock.(*fakeClock)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	// The kernel now answers both probes the way it would after the apply, so that the
+	// second turn has nothing new to note.
+	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {}, "uplink6_pppoe0": {}})
+	report := "/var/lib/regied/turn/report.yaml"
+	writes := countOf(files.writes, report)
+
+	clock.now = clock.now.Add(time.Minute)
+	if _, err := engine.Reconcile(context.Background()); err != nil {
+		t.Fatalf("the reconcile failed: %v", err)
+	}
+
+	if got := countOf(files.writes, report); got != writes {
+		t.Errorf("a turn that changed nothing rewrote the report (%d writes, then %d)", writes, got)
+	}
+}
+
+// What the report records is when the state was entered, not when it was last confirmed.
+// A report carrying the time of the last turn would be rewritten every minute to say
+// nothing new (ADR 0016).
+func TestTheReportKeepsTheTimeTheStateWasEntered(t *testing.T) {
+	engine, files, runner, host := planFixture(t)
+	putSecrets(files)
+	clock := host.Clock.(*fakeClock)
+	resolver := host.Resolver.(fakeResolver)
+	resolver["aftr.example.net"] = addrs(t, "2001:db8:53::1")
+
+	entered := clock.now
+	mustSubmit(t, engine, uplinkFixture, "/etc/regied/config.yaml")
+	tablePresent(runner)
+	if got := mustLastTurn(t, engine); got.State != StateConverged || !got.Since.Equal(entered) {
+		t.Fatalf("after the submission the report says %s since %v, want converged since %v", got.State, got.Since, entered)
+	}
+
+	// A later turn that finds the same state leaves the time alone.
+	clock.now = entered.Add(time.Minute)
+	if _, err := engine.Reconcile(context.Background()); err != nil {
+		t.Fatalf("the reconcile failed: %v", err)
+	}
+	if got := mustLastTurn(t, engine); !got.Since.Equal(entered) {
+		t.Errorf("a turn that confirmed the state moved the time to %v", got.Since)
+	}
+
+	// The resolver goes away: the host is waiting from now.
+	delete(resolver, "aftr.example.net")
+	waitingFrom := entered.Add(2 * time.Minute)
+	clock.now = waitingFrom
+	if _, err := engine.Reconcile(context.Background()); err != nil {
+		t.Fatalf("the reconcile failed: %v", err)
+	}
+	if got := mustLastTurn(t, engine); got.State != StateWaiting || !got.Since.Equal(waitingFrom) {
+		t.Errorf("the report says %s since %v, want waiting since %v", got.State, got.Since, waitingFrom)
+	}
+	// And the source, which no reconcile knows, is carried with the revision.
+	if got := mustLastTurn(t, engine); got.Source != "/etc/regied/config.yaml" {
+		t.Errorf("the reconcile lost the source: %q", got.Source)
+	}
+}
+
+// --- Reconcile: one turn toward the record, reading nothing else ---------------------
+
+// A reconcile takes no file. It reads the record, runs one turn toward it and stops,
+// which is what a boot unit runs and what an operator types to put a host back where it
+// should be without submitting anything (ADR 0016).
+func TestReconcileConvergesToTheRecord(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	tablePresent(runner)
+
+	// Somebody deleted a file regied wrote.
+	network := "/etc/systemd/network/50-regied-wan.network"
+	delete(files.files, network)
+	before := len(runner.ran)
+
+	result, err := engine.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("the reconcile failed: %v", err)
+	}
+	if !result.Changed {
+		t.Error("the reconcile found nothing to do while a file was missing")
+	}
+	if _, ok := files.content(network); !ok {
+		t.Error("the reconcile did not put the file back")
+	}
+	if !slices.Contains(commandsSince(runner, before), "networkctl reload") {
+		t.Errorf("the reconcile did not reload networkd after putting its file back:\n%s", strings.Join(commandsSince(runner, before), "\n"))
+	}
+	if result.State != StateConverged {
+		t.Errorf("the reconcile says %q, want converged", result.State)
+	}
+}
+
+// A host with no record is left alone and told so. Converging on nothing would take the
+// firewall off a running router over a missing file (ADR 0016).
+func TestReconcileWithNoRecordDoesNothingAndSaysSo(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+
+	_, err := engine.Reconcile(context.Background())
+
+	if !errors.Is(err, ErrNoRecord) {
+		t.Fatalf("a host with no record reports %v, want ErrNoRecord", err)
+	}
+	if len(files.writes) != 0 || len(files.removes) != 0 {
+		t.Errorf("a reconcile with no record touched the host: wrote %v, removed %v", files.writes, files.removes)
+	}
+	if len(runner.ran) != 0 {
+		t.Errorf("a reconcile with no record ran %v", runner.commands())
+	}
+}
+
+// A record this version of regied no longer accepts is left alone too. Converging on a
+// declaration half understood is worse than not converging, and the operator is left with
+// a running router and a message (ADR 0016).
+func TestReconcileWithARecordThatDoesNotValidateDoesNothingAndSaysSo(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	// An egressRef naming nothing: the document parses and does not validate.
+	invalid := declarationOf(hostFixture + `    - kind: SourceNAT
+      metadata: {name: masquerade}
+      spec:
+        type: masquerade
+        egressRef: nowhere
+        sourceRanges: [192.168.10.0/24]
+`)
+	files.put("/var/lib/regied/accepted/declaration.yaml", string(invalid), 0o644)
+
+	_, err := engine.Reconcile(context.Background())
+
+	var invalidRecord *RecordError
+	if !errors.As(err, &invalidRecord) {
+		t.Fatalf("an invalid record reports %v, want a RecordError", err)
+	}
+	requireErrorContaining(t, err, "nowhere")
+	for _, path := range files.writes {
+		if path != "/var/lib/regied/turn/report.yaml" {
+			t.Errorf("a reconcile over an invalid record wrote %s", path)
+		}
+	}
+	if len(runner.ran) != 0 {
+		t.Errorf("a reconcile over an invalid record ran %v", runner.commands())
+	}
+	report := mustLastTurn(t, engine)
+	if report.State != StateFailing || !strings.Contains(strings.Join(report.Failing, "\n"), "nowhere") {
+		t.Errorf("the report does not say the record failed validation and why: %+v", report)
+	}
+	if report.Revision != Revision(invalid) {
+		t.Error("the report is not about the record it could not accept")
+	}
+}
+
+// A credential that cannot be read fails the turn before anything runs, on every turn
+// that needs it: the rule does not change under the loop (ADR 0003, ADR 0016).
+func TestReconcileFailsBeforeTheFirstCommandWhenACredentialCannotBeRead(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	tablePresent(runner)
+	delete(files.files, "/etc/regied/secrets/pppoe-password")
+	before := len(runner.ran)
+
+	_, err := engine.Reconcile(context.Background())
+
+	requireErrorContaining(t, err, "/etc/regied/secrets/pppoe-password")
+	if len(commandsSince(runner, before)) != 0 {
+		t.Errorf("a turn that could not read a credential ran %v", commandsSince(runner, before))
+	}
+	report := mustLastTurn(t, engine)
+	if report.State != StateFailing || !strings.Contains(strings.Join(report.Failing, "\n"), "pppoe-password") {
+		t.Errorf("the report does not say what failed: %+v", report)
+	}
+}
+
+// --- helpers -----------------------------------------------------------------------
+
+func mustLastTurn(t *testing.T, engine *Engine) *TurnReport {
+	t.Helper()
+	report, err := engine.LastTurn()
+	if err != nil {
+		t.Fatalf("reading the report of the last turn failed: %v", err)
+	}
+	return report
+}
+
+func commandsSince(runner *fakeRunner, n int) []string {
+	return runner.commands()[n:]
+}
+
+func countOf(paths []string, path string) int {
+	var n int
+	for _, p := range paths {
+		if p == path {
+			n++
+		}
+	}
+	return n
+}
