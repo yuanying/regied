@@ -18,7 +18,7 @@ func TestRollbackLeavesATableItCannotRestore(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	cfg := load(t, hostFixture)
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	// The state the previous round made reachable: the ruleset is in the kernel, and
 	// the note saying what it is could not be written.

@@ -57,7 +57,7 @@ func TestTheExampleCanBeApplied(t *testing.T) {
 		files.put(path, "00:03:00:01:00:00:5e:00:53:01\n", 0o600)
 	}
 	host.Resolver = fakeResolver{"aftr.example.net": addrs(t, "2001:db8:53::1")}
-	runner.fail["nft list table inet regied"] = errFake
+	tableAbsent(runner)
 
 	cfg, err := config.Load("../../config/example.yaml", config.WithSecretFiles(everyFile{}))
 	if err != nil {

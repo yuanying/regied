@@ -11,7 +11,7 @@ func TestReportSaysSoUnmistakablyWhenThereIsNothingToDo(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	cfg := load(t, hostFixture)
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	report := reportOf(t, engine, cfg)
 
@@ -73,7 +73,7 @@ func TestReportNeverPrintsACredential(t *testing.T) {
 func TestReportShowsTheDiffOfAFileThatChanged(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	changed := load(t, strings.Replace(hostFixture, "192.168.10.127", "192.168.10.200", 1))
 	report := reportOf(t, engine, changed)
@@ -123,7 +123,7 @@ func TestReportSaysWhatChangedWhenOnlyTheModeDid(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	cfg := load(t, hostFixture)
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	peer := "/etc/regied/ppp/peers/pppoe0.conf"
 	content, _ := files.content(peer)
@@ -161,14 +161,14 @@ func TestWarningsCanBeReportedWithoutTheWholePlan(t *testing.T) {
 	}
 }
 
-// 差し戻し 2. A trailing newline is a difference a line diff cannot show, and compare
+// Round 2. A trailing newline is a difference a line diff cannot show, and compare
 // calls it a change: the file is rewritten and whatever reads it is restarted. Saying
 // "the content would not change" hides the one thing a dry run is for.
 func TestReportSaysAFileIsRewrittenWhenTheDiffShowsNothing(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	cfg := load(t, hostFixture)
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	conf := "/etc/regied/dnsmasq/dnsmasq.conf"
 	content, _ := files.content(conf)

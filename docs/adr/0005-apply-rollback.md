@@ -38,8 +38,10 @@ order, over the previous configuration.
 ### What that promises
 
 **Fully reversible.** The nftables table: one transaction, replaced by the previous text,
-or deleted if there was none. The files regied owns, including the ones it had reclaimed.
-The kernel switches, because each was read before it was written.
+or deleted if there was none and the kernel said, before the apply, that it held no table.
+A probe that could not be asked is not that answer, and is read as "present" here: a
+failed question never licenses the deletion. The files regied owns, including the ones it
+had reclaimed. The kernel switches, because each was read before it was written.
 
 **With one exception, and it is the one that decides what "reversible" means here.** If
 regied has no record of the ruleset it installed last time and the table *is* in the

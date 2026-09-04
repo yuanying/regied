@@ -59,14 +59,14 @@ const forwardResource = `    - kind: PortForward
 `
 
 // planFixture is an engine over a host holding nothing, with the fixture's secrets in
-// place. The runner answers `nft list table` with a failure, which is how a host that
-// has never been applied to says the table is not there.
+// place. The runner answers `nft list tables` with nothing, which is how a host that has
+// never been applied to says the table is not there.
 func planFixture(t *testing.T) (*Engine, *fakeFiles, *fakeRunner, Host) {
 	t.Helper()
 	host, files, runner := testHost()
 	files.put("/etc/regied/secrets/pppoe-user-id", "account@example.net\n", 0o600)
 	files.put("/etc/regied/secrets/pppoe-password", "hunter2\n", 0o600)
-	runner.fail["nft list table inet regied"] = errFake
+	tableAbsent(runner)
 	// A kernel that answers every switch, all of them off. A key this kernel does not
 	// have is skipped rather than written, so a fake with nothing in it would leave the
 	// kernel phase out of every plan.
@@ -202,7 +202,7 @@ func TestPlanIsEmptyTheSecondTime(t *testing.T) {
 	mustApply(t, engine, cfg)
 	// The table is in the kernel now, so the probe that says it is missing must stop
 	// saying so.
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	second := mustPlan(t, engine, cfg)
 	if !second.Empty() {
@@ -286,7 +286,7 @@ func TestPlanStartsANewSessionAndStopsOneThatWentAway(t *testing.T) {
 func TestPlanLeavesTheLineAloneWhenOnlyTheFirewallChanged(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	// The same host, with one address set added. Nothing pppd or dnsmasq reads changes.
 	changed := load(t, hostFixture+forwardResource)

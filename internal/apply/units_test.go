@@ -22,7 +22,7 @@ func TestTheDNSMasqUnitOffersNoReload(t *testing.T) {
 func TestAChangedDNSMasqConfigurationRestartsIt(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	changed := load(t, strings.Replace(hostFixture, "192.168.10.127", "192.168.10.200", 1))
 	plan := mustPlan(t, engine, changed)
