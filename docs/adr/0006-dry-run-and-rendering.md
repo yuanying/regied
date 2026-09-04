@@ -102,7 +102,14 @@ re-applies, made visible.
   `config/example.yaml`: the nftables ruleset, the dnsmasq configuration, and the routing
   the policies produce are all in the output.
 - The diff is regied's own, computed between text it rendered and text it read. There is
-  no dependency on an external diff program, and none is needed at apply time either.
+  no dependency on an external diff program, and none is needed at apply time either. Two
+  things it cannot show are said in words instead: a change that is only a trailing
+  newline, which is still a rewrite and still restarts whatever reads the file, and a
+  change that is only a file's mode.
+- The same honesty the skipped `nft --check` gets is owed to the probe beside it. A
+  machine with no nft cannot say whether regied's table is in the kernel either, and
+  answering "it is not" would make every preview taken away from the host report that the
+  whole ruleset goes in.
 - `regied render` gives the netns testbed a way to inspect a rendering without a host, and
   gives a reviewer a way to see the effect of a schema change in a pull request.
 - Printing "nothing to do" correctly requires the idempotence rule in ADR 0004 to hold at
