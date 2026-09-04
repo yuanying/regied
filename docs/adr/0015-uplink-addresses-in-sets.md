@@ -62,10 +62,15 @@ times, and it is what the apply records and compares.
 depend on one another.
 
 - **The apply**, in the firewall phase, right after the table: it reads what each
-  uplink's link is holding and adds those elements. Replacing the table empties its sets,
-  so every apply seeds them again from the kernel. The elements are not part of the
-  recorded text and never decide whether the table has to be applied; the dry-run shows
-  them as what would be added, beside the ruleset.
+  uplink's link is holding and what each set holds, and writes the sets that differ, each
+  in one transaction that empties it and refills it. Replacing the table empties its
+  sets, so an apply that replaces the table writes every set with something to hold; an
+  apply that does not asks the kernel, and writes only what is wrong. An apply that finds
+  every set right runs nothing, which is what keeps an apply safe to run from a timer
+  ([ADR 0004](0004-apply-model.md)). A set that could not be read is left as it is and
+  said to be, never taken for empty. The elements are not part of the recorded text and
+  never decide whether the table has to be applied — and the text never decides whether
+  a set is written; the dry-run shows the sets it would write, beside the ruleset.
 - **pppd**, through a hook regied renders into `/etc/ppp/ip-up.d/` and
   `/etc/ppp/ip-down.d/`: on ip-up it adds the local address pppd was given to the set of
   the link that came up, on ip-down it deletes it. The link is named after the session
@@ -83,8 +88,8 @@ regied's name prefix and the ownership marker, the way its units do in
 no session is declared.
 
 **The last phase of the apply goes away.** There is nothing to re-render. A rollback
-restores the previous table text and seeds its sets from the kernel the same way the
-apply does.
+restores the previous table text and, in the same transaction, seeds the sets that text
+declares with what the apply read from the links.
 
 **`regied render` no longer takes an uplink address.** Nothing renders from it. The
 rendering is complete without the host, which is what
@@ -98,16 +103,18 @@ rendering is complete without the host, which is what
   validation, because the AFTR translates — so this is the case that exists.
 - **An IPv6 hairpin on a PPPoE link is not covered by the hook.** pppd's `ipv6-up` hands
   the script a link-local address; a global one arrives through networkd, which has no
-  hook. The apply's seeding covers it whenever the address is there at apply time, and
-  the daemon covers the rest. This is where things stood before this record, narrowed to
-  one family.
+  hook. The next apply covers it, whether or not the ruleset changed, because the apply
+  writes a set that does not hold what the link holds; a daemon, when there is one,
+  covers the interval. This is where things stood before this record, narrowed to one
+  family.
 - **A redial with a new address is handled by pppd, not by regied.** ip-down removes the
   old element and ip-up adds the new one. The guard ADR 0004 needed against reading a
   link mid-redial, and the note the apply printed when it left the ruleset alone, both
   go, along with the code that carried them.
 - **What the apply records is simpler.** The text is a function of the configuration
-  again. A table somebody flushed is still noticed by the probe; the elements are
-  reseeded with it.
+  again. A table somebody flushed is still noticed by the probe and the elements go back
+  in with it; a set somebody emptied or left stale is noticed by the second probe and
+  written on its own. The apply is the general repair, with or without a daemon.
 - **The hooks are a fourth artefact regied puts on the host**, and the third shared
   directory it puts one in. The ownership rules are the ones already stated.
 - **`nft list ruleset` shows the address, the dry-run does not have to.** The dry-run

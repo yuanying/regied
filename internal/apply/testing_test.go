@@ -167,6 +167,30 @@ func tableAbsent(runner *fakeRunner) {
 	runner.output["nft list tables"] = "table inet filter\n"
 }
 
+// setsHold makes the kernel answer that regied's table holds these uplink sets with these
+// elements, in the JSON nft prints. A set not named is not in the table.
+func setsHold(runner *fakeRunner, sets map[string][]string) {
+	entries := []string{`{"metainfo":{"version":"1.1.1","release_name":"x","json_schema_version":1}}`,
+		`{"table":{"family":"inet","name":"regied","handle":1}}`}
+	names := make([]string, 0, len(sets))
+	for name := range sets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		kind := "ipv4_addr"
+		if strings.HasPrefix(name, "uplink6_") {
+			kind = "ipv6_addr"
+		}
+		elements := ""
+		if len(sets[name]) > 0 {
+			elements = `,"elem":["` + strings.Join(sets[name], `","`) + `"]`
+		}
+		entries = append(entries, fmt.Sprintf(`{"set":{"family":"inet","name":"%s","table":"regied","type":"%s","handle":2%s}}`, name, kind, elements))
+	}
+	runner.output[listTableCommand().String()] = `{"nftables":[` + strings.Join(entries, ",") + `]}`
+}
+
 // commands is what was run, in order, as text.
 func (r *fakeRunner) commands() []string {
 	out := make([]string, len(r.ran))

@@ -185,8 +185,10 @@ func TestTheLineComingUpDuringAnApplyChangesNoRuleset(t *testing.T) {
 		t.Errorf("the ruleset was installed %d times, want 1", applies)
 	}
 
-	// And the apply after the line came up has nothing to do at all.
+	// And the apply after the line came up — its hook having filled the set — has nothing
+	// to do at all.
 	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {"192.0.2.10"}, "uplink6_pppoe0": {}})
 	if result := mustApply(t, engine, cfg); result.Changed {
 		t.Errorf("the apply after the line came up reports a change: %s", result.Plan.Summary())
 	}
@@ -283,6 +285,158 @@ func TestRollbackSeedsOnlyTheSetsTheRestoredTextDeclares(t *testing.T) {
 	}
 }
 
+// --- 差し戻し 1. The seeding is not tied to the table being replaced -------------------
+//
+// An apply is the one general way a host is put right, and the sets are kernel state
+// like the table is. So the apply asks the kernel what they hold, compares that with what
+// the links hold, and writes the sets that differ — whether or not the ruleset changed.
+// Everything that follows is that rule from a different side (ADR 0015, ADR 0004).
+
+// The motivating case: an IPv6 address that arrived through networkd after the apply.
+// No hook covers it, the ruleset did not change, and the next apply is what puts it in.
+func TestAnApplyThatChangesNoRulesetStillSeedsASetThatIsWrong(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	links := host.Links.(fakeLinks)
+	links["pppoe0"] = addrs(t, "192.0.2.10")
+	cfg := load(t, hostFixture+forwardResource)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+
+	// The line has a global IPv6 address now, and the kernel's set does not.
+	links["pppoe0"] = addrs(t, "192.0.2.10", "2001:db8::1")
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {"192.0.2.10"}, "uplink6_pppoe0": {}})
+	before := len(runner.ran)
+
+	result := mustApply(t, engine, cfg)
+
+	if !result.Changed {
+		t.Fatal("the apply says there was nothing to do while a set is wrong")
+	}
+	var seeded, replaced bool
+	for _, cmd := range runner.ran[before:] {
+		if cmd.Name != "nft" || cmd.Args[0] != "-f" {
+			continue
+		}
+		if strings.Contains(cmd.Stdin, "table inet regied {") {
+			replaced = true
+		}
+		if strings.Contains(cmd.Stdin, "uplink6_pppoe0 { 2001:db8::1 }") {
+			seeded = true
+		}
+	}
+	if !seeded {
+		t.Errorf("the IPv6 address was not put into its set:\n%s", strings.Join(runner.commands(), "\n"))
+	}
+	if replaced {
+		t.Error("the table was replaced to fix a set, which an unchanged ruleset must never do")
+	}
+	// Only the set that was wrong is written. The one that was right is left alone.
+	for _, cmd := range runner.ran[before:] {
+		if cmd.Name == "nft" && cmd.Args[0] == "-f" && strings.Contains(cmd.Stdin, "uplink4_pppoe0") {
+			t.Errorf("a set that already held what the link holds was written again:\n%s", cmd.Stdin)
+		}
+	}
+}
+
+// The guard on the other side: an apply that finds everything right runs nothing that
+// changes anything, so it is safe to run from a timer (ADR 0004).
+func TestAnApplyThatFindsTheSetsRightRunsNothing(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+	cfg := load(t, hostFixture+forwardResource)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {"192.0.2.10"}, "uplink6_pppoe0": {}})
+	before := len(runner.ran)
+
+	result := mustApply(t, engine, cfg)
+
+	if result.Changed {
+		t.Errorf("an apply that found the sets right reports a change: %s", result.Plan.Summary())
+	}
+	for _, cmd := range runner.ran[before:] {
+		if cmd.Args[0] == "-f" {
+			t.Errorf("an apply with nothing to fix ran %q", cmd)
+		}
+	}
+}
+
+// What a set could not be read from is not what an empty set says. Reading a failed
+// probe as "empty" would seed on every apply on which nft misbehaved, which is the trap
+// the table probe already avoids (ADR 0006).
+func TestASetThatCannotBeReadIsNotTakenForEmpty(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+	cfg := load(t, hostFixture+forwardResource)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+	runner.fail[listTableCommand().String()] = errFake
+
+	plan := mustPlan(t, engine, cfg)
+
+	if !plan.Empty() {
+		t.Errorf("a set that could not be read is being seeded: %s", plan.Summary())
+	}
+	if !strings.Contains(strings.Join(plan.Notes, "\n"), "uplink sets") {
+		t.Errorf("nothing says the sets could not be read: %v", plan.Notes)
+	}
+}
+
+// A set holding an address the link no longer holds claims something false, and a hook
+// that missed its ip-down is how it happens. The apply puts the set right in one
+// transaction, so that an element the hook adds in between is neither lost nor doubled
+// and a delete of something already gone cannot fail the apply.
+func TestAStaleElementIsTakenOutWithTheRightOnePutIn(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+	cfg := load(t, hostFixture+forwardResource)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {"192.0.2.99"}, "uplink6_pppoe0": {}})
+	before := len(runner.ran)
+
+	mustApply(t, engine, cfg)
+
+	var written bool
+	for _, cmd := range runner.ran[before:] {
+		if cmd.Name != "nft" || cmd.Args[0] != "-f" {
+			continue
+		}
+		written = true
+		if !strings.Contains(cmd.Stdin, "flush set inet regied uplink4_pppoe0\n") ||
+			!strings.Contains(cmd.Stdin, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
+			t.Errorf("the set was not emptied and refilled in one transaction:\n%s", cmd.Stdin)
+		}
+		if strings.Contains(cmd.Stdin, "delete element") {
+			t.Errorf("a delete of one element races the hook and fails when it is already gone:\n%s", cmd.Stdin)
+		}
+	}
+	if !written {
+		t.Errorf("the stale set was left as it was:\n%s", strings.Join(runner.commands(), "\n"))
+	}
+}
+
+// A set nobody should have removed. The table is regied's and it is only put back when
+// the ruleset changes (ADR 0004), so the apply cannot fix this one; it has to say so
+// rather than fail on an add to a set that is not there.
+func TestASetMissingFromTheTableIsReportedNotSeeded(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
+	cfg := load(t, hostFixture+forwardResource)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink6_pppoe0": {}})
+
+	plan := mustPlan(t, engine, cfg)
+
+	if !plan.Empty() {
+		t.Errorf("a set that is not in the table is being written to: %s", plan.Summary())
+	}
+	if !strings.Contains(strings.Join(plan.Notes, "\n"), "uplink4_pppoe0") {
+		t.Errorf("nothing names the set that is missing: %v", plan.Notes)
+	}
+}
+
 func TestApplyReportsARollbackThatFailedToo(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	// The reload fails, and the rollback re-runs it over the restored files, where it
@@ -316,10 +470,10 @@ func TestApplyChangesNothingTheSecondTime(t *testing.T) {
 	if result.Changed {
 		t.Error("applying the same configuration twice reports a change")
 	}
-	// The only command the second apply is allowed is the probe that asks whether the
-	// table is in the kernel.
+	// The only commands the second apply is allowed are the two probes, both of which
+	// change nothing: whether the table is in the kernel, and what its sets hold.
 	for _, cmd := range runner.ran[before:] {
-		if cmd.String() != "nft list tables" {
+		if cmd.String() != "nft list tables" && cmd.String() != listTableCommand().String() {
 			t.Errorf("an apply that changes nothing ran %q", cmd)
 		}
 	}
