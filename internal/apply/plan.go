@@ -15,6 +15,7 @@ import (
 	"github.com/yuanying/regied/internal/config"
 	"github.com/yuanying/regied/internal/render/networkd"
 	"github.com/yuanying/regied/internal/render/nftables"
+	"github.com/yuanying/regied/internal/render/pppd"
 )
 
 // Options is where on the host the engine puts what it owns. The defaults are the paths
@@ -24,6 +25,10 @@ type Options struct {
 	Root        string
 	StateDir    string
 	UnitDir     string
+	// PPPDir is pppd's own directory, the one holding its hook directories. It is not
+	// under Root: it belongs to whoever installed ppp, and regied writes two files in it
+	// (ADR 0009, ADR 0015).
+	PPPDir string
 }
 
 // DefaultUnitDir is where regied puts the systemd units that supervise the processes it
@@ -44,11 +49,15 @@ func (o Options) withDefaults() Options {
 	if o.UnitDir == "" {
 		o.UnitDir = DefaultUnitDir
 	}
+	if o.PPPDir == "" {
+		o.PPPDir = pppd.DefaultPPPDir
+	}
 	// The rules a directory carries are found by comparing paths, and a path with a
 	// slash too many is not the same string. Where a caller puts a slash must not decide
 	// whether a credential is hidden.
-	o.NetworkdDir, o.Root, o.StateDir, o.UnitDir =
-		path.Clean(o.NetworkdDir), path.Clean(o.Root), path.Clean(o.StateDir), path.Clean(o.UnitDir)
+	o.NetworkdDir, o.Root, o.StateDir, o.UnitDir, o.PPPDir =
+		path.Clean(o.NetworkdDir), path.Clean(o.Root), path.Clean(o.StateDir),
+		path.Clean(o.UnitDir), path.Clean(o.PPPDir)
 	return o
 }
 
@@ -638,6 +647,10 @@ func (e *Engine) ownedDirs() []ownedDir {
 		// /etc/systemd/system holds everybody's units and the symlinks systemctl
 		// enable makes, so both the name and the marker have to say it is ours.
 		{path: e.opts.UnitDir, prefix: unitPrefix, marked: true, deferred: true},
+		// pppd's hook directories hold the distribution's own scripts, so a hook is
+		// ours only if both its name and its marker say so (ADR 0015).
+		{path: pppd.UpHookDir(e.opts.PPPDir), prefix: pppd.HookPrefix, marked: true},
+		{path: pppd.DownHookDir(e.opts.PPPDir), prefix: pppd.HookPrefix, marked: true},
 	}
 }
 
@@ -654,8 +667,17 @@ func (e *Engine) applyPolicy(change *FileChange) {
 	}
 }
 
+// hasOwnershipMarker is whether regied wrote a file it found in a shared directory.
+//
+// The marker is the first line of everything regied writes, with one exception: a script
+// has to begin with its interpreter line, so the marker is the line after it. Reading
+// only the first line would leave the pppd hooks unreclaimable for ever (ADR 0015).
 func hasOwnershipMarker(content []byte) bool {
-	return strings.HasPrefix(string(content), ownershipMarker)
+	lines := strings.SplitN(string(content), "\n", 3)
+	if lines[0] == ownershipMarker {
+		return true
+	}
+	return len(lines) > 1 && strings.HasPrefix(lines[0], "#!") && lines[1] == ownershipMarker
 }
 
 // switches works out what spec.global asks of the kernel and what the kernel currently

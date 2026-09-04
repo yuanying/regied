@@ -122,6 +122,8 @@ func TestPlanOnAnUntouchedHostCreatesEveryFile(t *testing.T) {
 		"/etc/regied/dnsmasq/dnsmasq.conf",
 		"/etc/systemd/system/regied-pppoe@.service",
 		"/etc/systemd/system/regied-dnsmasq.service",
+		"/etc/ppp/ip-up.d/regied-uplink-set",
+		"/etc/ppp/ip-down.d/regied-uplink-set",
 	} {
 		change, ok := fileChangeFor(plan, path)
 		if !ok {
@@ -312,6 +314,52 @@ func TestPlanLeavesTheLineAloneWhenOnlyTheFirewallChanged(t *testing.T) {
 	}
 	if plan.Empty() {
 		t.Fatal("the changed ruleset is not applied at all")
+	}
+}
+
+// The hook directories are pppd's and are shared with the distribution. A hook is
+// reclaimed when the last session goes, like every other file regied stops needing, and
+// nothing there that regied did not write is touched (ADR 0009).
+func TestTheHooksAreReclaimedWhenTheLastSessionGoes(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustApply(t, engine, load(t, hostFixture))
+	tablePresent(runner)
+	// Somebody else's hook, in the same directory.
+	files.put("/etc/ppp/ip-up.d/0000usepeerdns", "#!/bin/sh\nexit 0\n", 0o755)
+
+	// The same host with no PPPoE session, and so nothing to hook.
+	withoutSession := strings.Replace(hostFixture, `    - kind: PPPoESession
+      metadata: {name: pppoe0}
+      spec:
+        interfaceRef: wan
+        userIDFile: /etc/regied/secrets/pppoe-user-id
+        passwordFile: /etc/regied/secrets/pppoe-password
+`, "", 1)
+	plan := mustPlan(t, engine, load(t, withoutSession))
+
+	for _, path := range []string{"/etc/ppp/ip-up.d/regied-uplink-set", "/etc/ppp/ip-down.d/regied-uplink-set"} {
+		change, ok := fileChangeFor(plan, path)
+		if !ok || change.Kind != ChangeRemove {
+			t.Errorf("%s is not reclaimed: %+v", path, change)
+		}
+	}
+	if _, ok := fileChangeFor(plan, "/etc/ppp/ip-up.d/0000usepeerdns"); ok {
+		t.Error("a hook regied did not write is in the plan")
+	}
+}
+
+// The marker is the first line of every file regied writes, except in a script, where the
+// interpreter line has to come first. Reclaiming has to recognise both, or a hook would
+// be left behind forever.
+func TestAHookIsRecognisedAsOurs(t *testing.T) {
+	if !hasOwnershipMarker([]byte("#!/bin/sh\n" + ownershipMarker + "\nexit 0\n")) {
+		t.Error("a script regied wrote is not recognised as its own")
+	}
+	if hasOwnershipMarker([]byte("#!/bin/sh\n# somebody else's\n" + ownershipMarker + "\n")) {
+		t.Error("a file that merely mentions the marker further down is claimed as ours")
+	}
+	if hasOwnershipMarker([]byte("#!/bin/sh\nexit 0\n")) {
+		t.Error("a hook the distribution installed is claimed as ours")
 	}
 }
 
