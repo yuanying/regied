@@ -124,6 +124,74 @@ regied puts there carries its name and its ownership marker; it never flushes th
 and never rewrites a file it did not create
 ([ADR 0009](../adr/0009-ownership-boundary.md)).
 
+Three more files are regied's own, under its state directory. Nothing outside regied reads
+them, and none of them is configuration anybody writes.
+
+| File | What it is |
+|---|---|
+| The accepted declaration | The declaration this host converges toward, as submitted. It is the one thing that has to survive a reboot |
+| The report of the last turn | Where the last turn left the host. Diagnosis, not a second declaration: nothing converges toward it |
+| The installed ruleset | The nftables text last installed, which is what the next turn compares against |
+
+The accepted declaration holds no credential, and cannot: no field in this schema can hold
+one ([ADR 0003](../adr/0003-secrets-out-of-configuration.md)). Its revision is the digest
+of its bytes, so anyone holding a copy of the file can compute the same value without
+regied.
+
+## How a declaration reaches the host
+
+**The file on disk is not what the host converges toward.** `regied apply` reads it and
+validates it, and once it has validated and staged, writes it down as the declaration this
+host accepted. From that moment the record is the declaration in effect, and everything
+that converges reads the record rather than the file
+([ADR 0016](../adr/0016-converging-on-the-accepted-declaration.md)).
+
+| Command | Reads | Does |
+|---|---|---|
+| `regied render` | the configuration file, and nothing of any host | prints what the configuration means |
+| `regied apply` | the configuration file and this host | records the declaration, then converges this host on it |
+| `regied apply --dry-run` | the configuration file and this host | prints what that would change, and changes nothing |
+| `regied reconcile` | the record and this host | converges this host on the recorded declaration |
+
+`regied apply` is the only thing that reads the configuration file. That is what keeps an
+unfinished edit from becoming the host's configuration: nothing that runs on its own can
+reach the file at all.
+
+The record is what was **asked for**, not what last worked. A submission whose commands
+fail leaves the new declaration in the record; the host is wherever the failure left it,
+and the report says so. Going back to an earlier declaration is applying an earlier file,
+which is an ordinary submission.
+
+## Where a turn ends
+
+Every turn ends in one of three states and says which.
+
+| State | Meaning |
+|---|---|
+| `converged` | The host holds the whole declaration. Nothing was left out and nothing is being retried |
+| `waiting` | Everything that could be done was done, and something was left out for want of a value that exists only at apply time. What it waits for is named |
+| `failing` | Something was tried and did not work, or the record is not one this version of regied accepts. What failed is named |
+
+Exit status follows the state: `failing` is non-zero, `waiting` and `converged` are zero.
+Waiting is the ordinary state of a host that has just booted, not a defect of the
+submission.
+
+**What a turn leaves out is the whole artifact that depends on the missing value**, never a
+smaller version of it, and what an earlier turn wrote is left alone rather than reclaimed.
+A `DSLiteTunnel` whose `aftrHost` has not resolved yet gets neither of its files; an
+`Interface` whose `duidFile` could not be read gets none of its own. A prefix delegation
+written without its DUID is not a smaller version of the one declared — it is one under
+which the delegated prefix silently changes — so it is not written at all.
+
+A credential is the exception and stops the turn before anything runs. Bringing an uplink
+up without authentication is not a degraded success, and there is no smaller version of a
+credentials file to write.
+
+Two hosts are left exactly as they are, and told so: one that has never accepted a
+declaration, and one whose record this version of regied no longer accepts. Converging on
+nothing would take the firewall off a running router over a missing file, and converging
+on a declaration only half understood is worse than not converging.
+
 ## Secrets
 
 No field in this schema holds a secret. Credentials are named by the path of a file that
@@ -176,6 +244,11 @@ locally. The uplink's global address never has to be written down, which is why 
 in this schema accepts one — `PortForward` and `SourceNAT` take an `egressRef`.
 
 ## Validation
+
+This is what a submission checks, before anything is recorded or run. A turn over the
+record checks the same things except for the files the declaration names: those are read
+by the turn itself, and what happens when one cannot be read is above. A file that has
+gone missing since must not look like a declaration this version of regied refuses.
 
 Beyond references resolving and required fields being present, regied rejects:
 

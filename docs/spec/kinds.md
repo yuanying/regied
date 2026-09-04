@@ -248,8 +248,11 @@ reachable only over IPv4 cannot be asked anything until the tunnel is up, and a 
 no other resolver would need the tunnel in order to look up the name the tunnel is built
 from. Whether a resolver is reachable over IPv6 is a property of the deployment and not
 something the configuration states, so regied does not try to reject that loop statically.
-It resolves at apply time, and the failure it reports names an IPv6-reachable resolver as
-the thing to check.
+It resolves at apply time, and a name that does not resolve — or resolves to no IPv6
+address — leaves the tunnel out of that turn rather than failing it. The turn says it is
+waiting for the name, and a later one builds the tunnel once the name answers
+([ADR 0016](../adr/0016-converging-on-the-accepted-declaration.md)). On a host that has
+just booted, the resolver is often the thing that is not up yet.
 
 There is no field for learning the AFTR from DHCPv6, and that is a decision rather than an
 oversight. RFC 6334's option 64 carries an AFTR name, so what arrives is the same FQDN
