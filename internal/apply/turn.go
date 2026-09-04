@@ -41,6 +41,30 @@ const (
 	StateFailing State = "failing"
 )
 
+// Outcome is what a turn did to the host. It is not the same statement as the state: the
+// state is about the host against the declaration, the outcome is about what this one turn
+// managed. A host can be failing after a turn that changed nothing, and converged after a
+// turn that changed everything (ADR 0007, ADR 0016).
+type Outcome string
+
+const (
+	// OutcomeApplied says the turn moved something on the host.
+	OutcomeApplied Outcome = "applied"
+	// OutcomeUnchanged says it found nothing to change and ran no command. On an
+	// idempotent engine this is the ordinary answer (ADR 0004).
+	OutcomeUnchanged Outcome = "unchanged"
+	// OutcomeRolledBack says the turn stopped part-way and the host was put back.
+	//
+	// It exists while the rollback does. The record it belongs to takes the rollback away
+	// and leaves the loop to finish what a turn started (ADR 0016), and this outcome goes
+	// with it.
+	OutcomeRolledBack Outcome = "rolled back"
+	// OutcomeNothingRun says the turn stopped before its first command: the declaration
+	// could not be staged, or something it had to read could not be read. The host was
+	// never touched.
+	OutcomeNothingRun Outcome = "nothing run"
+)
+
 // Declaration is a declaration as it is submitted: the bytes that were validated, exactly
 // as they were read, and where they were read from. The bytes are what the record holds;
 // the source is provenance, and the digest of the bytes is identity (ADR 0007).
@@ -167,6 +191,12 @@ type TurnReport struct {
 	// not know it and carries it forward from the previous report of the same revision.
 	Source string `yaml:"source,omitempty"`
 	State  State  `yaml:"state"`
+	// Outcome is what this turn did to the host, which is a different question from the
+	// state beside it (ADR 0007).
+	Outcome Outcome `yaml:"outcome"`
+	// Phases is the phases that ran and what each of them changed. A turn that changed
+	// nothing names none (ADR 0004's last consequence, ADR 0007).
+	Phases []string `yaml:"phases,omitempty"`
 	// Since is when the host entered this state for this revision.
 	Since time.Time `yaml:"since"`
 	// Waiting names what the turn waits for, when it is waiting.
@@ -208,7 +238,13 @@ func (e *Engine) readTurnReport() (*TurnReport, []byte, error) {
 // what it says changed, the rule ADR 0004 gives every file regied writes, and the time it
 // carries is the time the state was entered (ADR 0016).
 func (e *Engine) ReportTurn(revision, source string, plan *Plan, failure error) (*TurnReport, error) {
-	report := &TurnReport{Revision: revision, Source: source, State: stateOf(plan, failure)}
+	report := &TurnReport{
+		Revision: revision,
+		Source:   source,
+		State:    stateOf(plan, failure),
+		Outcome:  outcomeOf(plan, failure),
+		Phases:   phasesOf(plan, failure),
+	}
 	if plan != nil {
 		report.Waiting = plan.Waiting
 		report.Warnings = append(append([]string(nil), plan.validation...), plan.Warnings...)
@@ -258,6 +294,97 @@ func stateOf(plan *Plan, failure error) State {
 		return StateWaiting
 	}
 	return StateConverged
+}
+
+// outcomeOf is what the turn did to the host.
+//
+// A failure before the first command left the host untouched, and every other failure was
+// followed by the rollback putting it back — which is true while the rollback exists, and
+// goes when it does (ADR 0016).
+func outcomeOf(plan *Plan, failure error) Outcome {
+	switch {
+	case failure != nil && stoppedInStaging(failure):
+		return OutcomeNothingRun
+	case failure != nil:
+		return OutcomeRolledBack
+	case plan == nil || plan.Empty():
+		return OutcomeUnchanged
+	}
+	return OutcomeApplied
+}
+
+// phasesOf is the phases this turn ran and what each of them changed.
+//
+// It never names a phase the turn did not reach, or a step it did not attempt: a report
+// that did would be a claim with nothing behind it, and the whole point of the report is
+// to be read by somebody who was not watching. So the steps are cut at the one that
+// failed, and a turn that was put back reports no files — they went back with it.
+func phasesOf(plan *Plan, failure error) []string {
+	if plan == nil {
+		return nil
+	}
+	var out []string
+	if failure == nil {
+		if line := stagedLine(plan); line != "" {
+			out = append(out, line)
+		}
+	}
+
+	var applyErr *Error
+	stopped := errors.As(failure, &applyErr)
+	if stopped && applyErr.Phase == PhaseStaging {
+		return out
+	}
+
+	byPhase := make(map[Phase][]string)
+	var order []Phase
+	for _, step := range plan.Steps {
+		if _, seen := byPhase[step.Phase]; !seen {
+			order = append(order, step.Phase)
+		}
+		byPhase[step.Phase] = append(byPhase[step.Phase], step.describe())
+		if stopped && step.Phase == applyErr.Phase && step.describe() == applyErr.Step {
+			break
+		}
+	}
+	for _, phase := range order {
+		out = append(out, fmt.Sprintf("%s: %s", phase, strings.Join(byPhase[phase], "; ")))
+	}
+	return out
+}
+
+// stagedLine is what the staging stage put on the host, as one line.
+func stagedLine(plan *Plan) string {
+	var written, reclaimed int
+	for _, change := range plan.Files {
+		switch {
+		case wasWritten(change):
+			written++
+		case change.Kind == ChangeRemove:
+			reclaimed++
+		}
+	}
+	switch {
+	case written == 0 && reclaimed == 0:
+		return ""
+	case reclaimed == 0:
+		return fmt.Sprintf("%s: wrote %d files", PhaseStaging, written)
+	case written == 0:
+		return fmt.Sprintf("%s: reclaimed %d files", PhaseStaging, reclaimed)
+	}
+	return fmt.Sprintf("%s: wrote %d files, reclaimed %d", PhaseStaging, written, reclaimed)
+}
+
+// stoppedInStaging is whether a failure happened before the first command ran, which is
+// the one class of failure that leaves the host untouched (ADR 0004).
+func stoppedInStaging(failure error) bool {
+	var applyErr *Error
+	if errors.As(failure, &applyErr) {
+		return applyErr.Phase == PhaseStaging
+	}
+	// Anything that is not an *Error came from before the plan existed: a declaration
+	// that would not validate, a value the host could not answer. Nothing has run.
+	return true
 }
 
 // linesOf is a failure as the lines of a report: what every error in this package already
