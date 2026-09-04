@@ -462,3 +462,45 @@ func TestAProcessIsStoppedWhenOnlyItsUnitIsLeft(t *testing.T) {
 		}
 	}
 }
+
+// Round 3. Only an uplink's address is anything the ruleset depends on. Reading every
+// link makes a LAN interface that is momentarily without an address stop the settle,
+// and makes every pre-dial apply say a LAN link is missing an address it never needed.
+func TestOnlyTheUplinksAreAskedForTheirAddresses(t *testing.T) {
+	engine, _, _, _ := planFixture(t)
+
+	plan := mustPlan(t, engine, load(t, hostFixture+forwardResource))
+
+	notes := strings.Join(plan.Notes, "\n")
+	for _, ifname := range []string{"eth0", "br-lan"} {
+		if strings.Contains(notes, ifname) {
+			t.Errorf("a link that is not an uplink is reported as missing an address: %v", plan.Notes)
+		}
+	}
+	if !strings.Contains(notes, "pppoe0") {
+		t.Errorf("the uplink that has not dialled is not named: %v", plan.Notes)
+	}
+}
+
+func TestALANLinkGoingQuietDoesNotStopTheSettle(t *testing.T) {
+	engine, _, runner, host := planFixture(t)
+	links := host.Links.(fakeLinks)
+	links["br-lan"] = addrs(t, "192.168.10.1")
+	cfg := load(t, hostFixture+forwardResource)
+
+	// The reload takes the LAN address away for a moment, and the line comes up.
+	runner.onRun = func(cmd Command) {
+		switch {
+		case cmd.String() == "networkctl reload":
+			delete(links, "br-lan")
+		case strings.Contains(cmd.String(), "enable --now regied-pppoe@pppoe0"):
+			links["pppoe0"] = addrs(t, "192.0.2.10")
+		}
+	}
+
+	result := mustApply(t, engine, cfg)
+
+	if !result.FirewallReapplied {
+		t.Errorf("the uplink's address appeared and was not installed; notes: %v", result.Notes)
+	}
+}

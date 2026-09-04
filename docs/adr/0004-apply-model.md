@@ -224,9 +224,11 @@ thing that has gone stale.
 
 So the answer is not to re-apply. It is to re-render the table with the new address and
 hand it to `nft` — one transaction, no reload, no process touched, nothing else on the
-host disturbed. Phase 6 above is that step inside a normal apply, for the ordinary case
-where the line came up during phase 5 and the table written in phase 1 was rendered
-without an address.
+host disturbed. Phase 6 above is that step inside a normal apply, for an address that
+appeared or changed while the apply was running. It is not how a cold start gets its
+hairpin rules: a session phase 5 started has not dialled by the time phase 6 reads its
+link, so on a host coming up the rules that depend on the address wait for the daemon,
+or for the next apply. The apply says so.
 
 **The re-render only ever adds.** Phase 5 may have restarted a session, and a link read a
 few milliseconds after that answers that it is not there. Rendering *that* produces a
