@@ -188,8 +188,11 @@ EncapsulationLimit=none
 `)
 }
 
-// A tunnel built from a name cannot be rendered before the name has been resolved.
-func TestDSLiteTunnelMissingAFTRAddress(t *testing.T) {
+// A tunnel built from a name cannot be rendered before the name has been resolved, so it
+// is not: neither the netdev nor the link's file, because half a tunnel is not a smaller
+// tunnel. The rendering says what the tunnel waits for, and a later turn renders it once
+// the name resolves (ADR 0016).
+func TestDSLiteTunnelWithAnUnresolvedAFTRIsLeftOut(t *testing.T) {
 	cfg := load(t, `
     - kind: Interface
       metadata: {name: wan}
@@ -202,13 +205,44 @@ func TestDSLiteTunnelMissingAFTRAddress(t *testing.T) {
         localAddress: "2001:db8:0:ff::2"
         aftrHost: aftr.example.net
 `)
-	_, err := Render(cfg, Runtime{})
-	if err == nil {
-		t.Fatal("rendered a tunnel whose AFTR name had not been resolved")
+	out := render(t, cfg, Runtime{})
+
+	for _, file := range out.Files {
+		if strings.HasPrefix(file.Name, "50-regied-dslite") {
+			t.Errorf("%s was rendered without the AFTR's address:\n%s", file.Name, file.Content)
+		}
 	}
-	if !strings.Contains(err.Error(), "aftr.example.net") {
-		t.Errorf("the error does not name the host: %v", err)
+	if len(out.Omitted) != 1 {
+		t.Fatalf("omitted %v, want exactly the tunnel", out.Omitted)
 	}
+	omitted := out.Omitted[0]
+	if omitted.Resource != "DSLiteTunnel/dslite" {
+		t.Errorf("the omission is attributed to %q, want DSLiteTunnel/dslite", omitted.Resource)
+	}
+	if len(omitted.Files) != 2 || omitted.Files[0] != "50-regied-dslite.netdev" || omitted.Files[1] != "50-regied-dslite.network" {
+		t.Errorf("the omission names %v, want the tunnel's netdev and network files", omitted.Files)
+	}
+	if !strings.Contains(omitted.Waiting, "aftr.example.net") {
+		t.Errorf("the omission does not name the host it waits for: %q", omitted.Waiting)
+	}
+	// The underlay still says the tunnel is stacked on it: that follows from the
+	// declaration, not from the address, so it is not what changes when the name resolves.
+	wan := fileNamed(t, out, "50-regied-wan.network")
+	if !strings.Contains(wan, "Tunnel=dslite") {
+		t.Errorf("the underlay lost its tunnel while the tunnel waits:\n%s", wan)
+	}
+}
+
+// fileNamed is the content of one rendered file, or a failed test.
+func fileNamed(t *testing.T, out *Output, name string) string {
+	t.Helper()
+	for _, file := range out.Files {
+		if file.Name == name {
+			return file.Content
+		}
+	}
+	t.Fatalf("%s was not rendered", name)
+	return ""
 }
 
 // A policy becomes a default route in a table of its own and a rule selecting that table

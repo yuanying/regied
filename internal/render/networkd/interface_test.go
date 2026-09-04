@@ -358,8 +358,11 @@ EmitDNS=no
 }
 
 // The DUID is not a secret and it is not read here either: the apply engine reads the
-// file and hands the contents over. Without it there is nothing to render.
-func TestInterfaceMissingDUID(t *testing.T) {
+// file and hands the contents over. Without it the link's file is not rendered at all —
+// a prefix delegation written without the DUID is not a smaller version of the one
+// declared, it is a different configuration, under which the delegated prefix changes
+// — and the rendering says what the file waits for (ADR 0016).
+func TestInterfaceWithAnUnreadDUIDIsLeftOut(t *testing.T) {
 	cfg := load(t, `
     - kind: Interface
       metadata: {name: wan}
@@ -369,13 +372,37 @@ func TestInterfaceMissingDUID(t *testing.T) {
           prefixDelegation:
             prefixLength: 56
             duidFile: /etc/regied/secrets/dhcpv6-duid
+    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        bridge:
+          members: [eth1]
+        addresses: [192.168.10.1/24]
 `)
-	_, err := Render(cfg, Runtime{})
-	if err == nil {
-		t.Fatal("rendered a prefix-delegation client with no DUID to send")
+	out := render(t, cfg, Runtime{})
+
+	for _, file := range out.Files {
+		if file.Name == "50-regied-wan.network" {
+			t.Fatalf("the link's file was rendered without the DUID:\n%s", file.Content)
+		}
 	}
-	if !strings.Contains(err.Error(), "/etc/regied/secrets/dhcpv6-duid") {
-		t.Errorf("the error does not name the file: %v", err)
+	if len(out.Omitted) != 1 {
+		t.Fatalf("omitted %v, want exactly the link's file", out.Omitted)
+	}
+	omitted := out.Omitted[0]
+	if omitted.Resource != "Interface/wan" {
+		t.Errorf("the omission is attributed to %q, want Interface/wan", omitted.Resource)
+	}
+	if len(omitted.Files) != 1 || omitted.Files[0] != "50-regied-wan.network" {
+		t.Errorf("the omission names %v, want the link's .network file", omitted.Files)
+	}
+	if !strings.Contains(omitted.Waiting, "/etc/regied/secrets/dhcpv6-duid") {
+		t.Errorf("the omission does not name the file it waits for: %q", omitted.Waiting)
+	}
+	// Everything that does not depend on the DUID is rendered as usual.
+	if len(out.Files) != 3 {
+		t.Errorf("the rest of the rendering is missing; got %d files, want the bridge's netdev, its network and its member's", len(out.Files))
 	}
 }
 

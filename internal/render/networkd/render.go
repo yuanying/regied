@@ -54,6 +54,23 @@ func (f File) Path() string { return Dir + "/" + f.Name }
 type Output struct {
 	Files    []File
 	Warnings []string
+
+	// Omitted is what was not rendered because a value it depends on was not supplied:
+	// a tunnel whose AFTR name has not been resolved, a link whose DUID file has not
+	// been read. What is left out is the whole artifact, never a smaller version of it,
+	// and the caller is told so that it can wait for the value and leave what an earlier
+	// rendering put on the host as it is (ADR 0016).
+	Omitted []Omission
+}
+
+// Omission is one artifact left out for want of a value that exists only at apply time.
+type Omission struct {
+	// Resource is the declaration the files belong to, as "DSLiteTunnel/dslite".
+	Resource string
+	// Files is the name of every file that would have been rendered for it.
+	Files []string
+	// Waiting names the value the files wait for.
+	Waiting string
 }
 
 // Runtime carries the values a rendering needs that exist only at apply time. The
@@ -100,7 +117,7 @@ func Render(cfg *config.Config, rt Runtime) (*Output, error) {
 	if len(r.errors) > 0 {
 		return nil, &Error{Messages: r.errors}
 	}
-	return &Output{Files: r.files, Warnings: r.warnings}, nil
+	return &Output{Files: r.files, Warnings: r.warnings, Omitted: r.omitted}, nil
 }
 
 type renderer struct {
@@ -110,6 +127,7 @@ type renderer struct {
 	files    []File
 	warnings []string
 	errors   []string
+	omitted  []Omission
 
 	// interfaces is every Interface by resource name, for the references that name one.
 	interfaces map[string]config.Named[*v1alpha1.InterfaceSpec]
@@ -195,6 +213,18 @@ func (r *renderer) errorf(format string, args ...any) {
 
 func (r *renderer) warnf(format string, args ...any) {
 	r.warnings = append(r.warnings, fmt.Sprintf(format, args...))
+}
+
+// omit leaves out everything that would have been rendered for one resource, and says
+// what it waits for. It is the renderer's side of the rule that a turn renders what it
+// can and leaves the rest to a later turn: the files are named so that whatever an
+// earlier turn wrote under those names is left alone rather than reclaimed (ADR 0016).
+func (r *renderer) omit(kind v1alpha1.ResourceKind, name string, waiting string, files ...string) {
+	r.omitted = append(r.omitted, Omission{
+		Resource: string(kind) + "/" + name,
+		Files:    files,
+		Waiting:  waiting,
+	})
 }
 
 // checkNameCollisions catches two resources that would render into the same file. File
