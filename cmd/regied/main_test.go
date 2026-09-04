@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -80,5 +82,54 @@ func TestPairsWantsNameEqualsValue(t *testing.T) {
 	}
 	if values["name"] != "value" {
 		t.Errorf("the flag parsed to %v", values)
+	}
+}
+
+// 差し戻し 2. An uplink may hold an address in each family, and the engine takes them
+// all. A flag that keeps only the last one cannot say so.
+func TestUplinkAddressesAccumulate(t *testing.T) {
+	values := multiPairs{}
+	for _, argument := range []string{"pppoe0=192.0.2.10", "pppoe0=2001:db8::1", "dslite=192.0.2.20"} {
+		if err := values.Set(argument); err != nil {
+			t.Fatalf("%s was refused: %v", argument, err)
+		}
+	}
+	if got := values["pppoe0"]; len(got) != 2 {
+		t.Errorf("the uplink holds %v, want both addresses", got)
+	}
+	if got := values["dslite"]; len(got) != 1 {
+		t.Errorf("the other uplink holds %v", got)
+	}
+}
+
+// 差し戻し 2. A configuration warning is about the configuration, not about the host, so
+// it belongs in the one command that is only about the configuration.
+func TestRenderReportsTheConfigurationsOwnWarnings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	// Prefix delegation with no DUID file: networkd sends one of its own, and a host
+	// replacing one that already holds a delegation silently changes its prefix.
+	if err := os.WriteFile(path, []byte(`apiVersion: net.unstable.cloud/v1alpha1
+kind: NetworkConfig
+metadata:
+  name: warns
+spec:
+  resources:
+    - kind: Interface
+      metadata: {name: wan}
+      spec:
+        ifname: eth0
+        dhcpv6:
+          prefixDelegation:
+            prefixLength: 56
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"render", "-config", path}, &stdout, &stderr); code != 0 {
+		t.Fatalf("rendering exits %d:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "duidFile") {
+		t.Errorf("render says nothing about what validation warned of:\n%s", stderr.String())
 	}
 }

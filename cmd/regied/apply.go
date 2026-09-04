@@ -28,9 +28,7 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return reportError(stderr, err)
 	}
-	for _, warning := range cfg.Warnings() {
-		fmt.Fprintf(stderr, "regied: %s\n", warning)
-	}
+	reportConfigWarnings(stderr, cfg)
 
 	ctx := context.Background()
 	engine := apply.New(apply.OSHost(), apply.Options{})
