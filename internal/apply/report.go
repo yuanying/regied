@@ -47,7 +47,7 @@ func Report(w io.Writer, plan *Plan) {
 func ReportWarnings(w io.Writer, plan *Plan) {
 	section(w, "Warnings", plan.Warnings)
 	section(w, "What this host could not answer", plan.Notes)
-	section(w, "What this turn waits for", plan.Waiting)
+	section(w, "Left out for want of a value", plan.Waiting)
 }
 
 func section(w io.Writer, title string, lines []string) {
