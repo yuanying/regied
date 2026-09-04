@@ -1,9 +1,13 @@
-// Command regied puts a declared network configuration on one Linux host.
+// Command regied puts a declared network configuration on one Linux host, and keeps it
+// there.
 //
-// It has two commands and the difference between them is whether the host is read.
-// `render` answers what a configuration means, anywhere, about any host. `apply` reads
-// this host and puts the configuration on it, and `apply --dry-run` shows what that
-// would change without doing any of it (ADR 0006).
+// It has three commands, split by what they read. `render` reads nothing: it answers what
+// a configuration means, anywhere, about any host. `apply` reads a configuration file and
+// this host, and submits the configuration: it is written down as the declaration this
+// host converges toward, and a turn runs toward it. `apply --dry-run` shows what that turn
+// would change without doing any of it (ADR 0006). `reconcile` reads the record and this
+// host, and runs one turn toward the record — it is the only way to ask for a turn that
+// reads no configuration file, which is what a boot unit runs (ADR 0016).
 package main
 
 import (
@@ -21,10 +25,13 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// commands is what regied can be asked to do. The HTTP API is not here yet.
+// commands is what regied can be asked to do. The resident process that turns the loop
+// (ADR 0016) is not here yet; there is no HTTP API, and none is planned (ADR 0007 is
+// deferred on that point).
 var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
-	"render": renderCommand,
-	"apply":  applyCommand,
+	"render":    renderCommand,
+	"apply":     applyCommand,
+	"reconcile": reconcileCommand,
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -50,8 +57,9 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `regied manages one host's network configuration from a declaration.
 
 Usage:
-  regied render [flags]   Render a configuration and print it. Reads nothing.
-  regied apply  [flags]   Put a configuration on this host.
+  regied render    [flags]   Render a configuration and print it. Reads nothing.
+  regied apply     [flags]   Submit a configuration: record it and converge this host on it.
+  regied reconcile           Converge this host on the recorded declaration. Reads no file.
 
 Run a command with -h for its flags.
 `)

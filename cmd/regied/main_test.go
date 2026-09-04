@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yuanying/regied/internal/apply"
 )
 
 func TestNoCommandPrintsUsage(t *testing.T) {
@@ -144,5 +146,58 @@ func TestHelpIsNotAnError(t *testing.T) {
 		if !strings.Contains(stderr.String(), "-config") {
 			t.Errorf("regied %s -h does not print the flags:\n%s", command, stderr.String())
 		}
+	}
+}
+
+// ADR 0016. Three verbs, split by what they read: render reads nothing, apply reads a
+// file and submits it, reconcile reads the record and nothing else.
+func TestUsageNamesTheThreeVerbs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	run([]string{"help"}, &stdout, &stderr)
+	for _, verb := range []string{"regied render", "regied apply", "regied reconcile"} {
+		if !strings.Contains(stdout.String(), verb) {
+			t.Errorf("the usage does not name %q:\n%s", verb, stdout.String())
+		}
+	}
+}
+
+// reconcile takes no configuration file. That is the whole point of it: the one way to
+// ask for a turn that reads nothing but the record (ADR 0016).
+func TestReconcileTakesNoConfigurationFile(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"reconcile", "-config", "/etc/regied/config.yaml"}, &stdout, &stderr); code != 2 {
+		t.Errorf("regied reconcile -config exits %d, want 2 (usage)", code)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"reconcile", "-h"}, &stdout, &stderr); code != 0 {
+		t.Errorf("regied reconcile -h exits %d, want 0", code)
+	}
+}
+
+// The state a turn ended in is what the console says and what the exit status follows:
+// failing is non-zero, waiting and converged are zero (ADR 0016).
+func TestReportResultSaysTheStateAndWhatIsWaitedFor(t *testing.T) {
+	var stdout bytes.Buffer
+	reportResult(&stdout, &apply.Result{
+		Plan:     &apply.Plan{Waiting: []string{"DSLiteTunnel/dslite: waiting for the AFTR aftr.example.net to resolve to an IPv6 address"}},
+		Changed:  false,
+		State:    apply.StateWaiting,
+		Revision: "sha256:0000",
+	})
+	out := stdout.String()
+	for _, want := range []string{"waiting", "aftr.example.net", "sha256:0000"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the result does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "already holds this configuration") {
+		t.Errorf("a host that waits is told it holds the whole configuration:\n%s", out)
+	}
+
+	stdout.Reset()
+	reportResult(&stdout, &apply.Result{Plan: &apply.Plan{}, State: apply.StateConverged, Revision: "sha256:0000"})
+	if !strings.Contains(stdout.String(), "converged") {
+		t.Errorf("the result does not say the host converged:\n%s", stdout.String())
 	}
 }
