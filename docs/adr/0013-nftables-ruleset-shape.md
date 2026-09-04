@@ -95,10 +95,10 @@ target should go on seeing.
 
 ### What only the running host knows arrives as an argument
 
-*Amended by [ADR 0015](0015-uplink-addresses-in-sets.md): the uplink address is no longer
-an argument to the renderer. The hairpin rules match on a named set per uplink and
-family, and the address reaches the set at run time. The renderer takes nothing from the
-host.*
+*To be amended by [ADR 0015](0015-uplink-addresses-in-sets.md), which is decided and not
+yet built: the uplink address is to stop being an argument to the renderer. The hairpin
+rules will match on a named set per uplink and family, and the address will reach the set
+at run time. **Until that is built, this section describes what the code does.***
 
 Rendering reads no kernel, runs no command, and looks at no interface. The one value it
 needs that a configuration cannot hold — the address an uplink is holding, which the
