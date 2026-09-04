@@ -20,10 +20,10 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 	path := flags.String("config", DefaultConfigPath, "the configuration to render")
 	aftr := pairs{}
 	duid := pairs{}
-	uplink := pairs{}
+	uplink := multiPairs{}
 	flags.Var(aftr, "aftr", "a DS-Lite tunnel's resolved AFTR address, as name=address (repeatable)")
 	flags.Var(duid, "duid", "the contents of a DUID file, as path=value (repeatable)")
-	flags.Var(uplink, "uplink-address", "an address an uplink is holding, as name=address (repeatable)")
+	flags.Var(uplink, "uplink-address", "an address an uplink is holding, as name=address (repeatable, and repeatable per uplink)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -32,6 +32,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return reportError(stderr, err)
 	}
+	reportConfigWarnings(stderr, cfg)
 
 	runtime, err := runtimeFromFlags(aftr, duid, uplink)
 	if err != nil {
@@ -48,7 +49,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 
 // runtimeFromFlags builds the apply-time values out of what was written on the command
 // line. Credentials are deliberately not among them.
-func runtimeFromFlags(aftr, duid, uplink pairs) (*apply.Runtime, error) {
+func runtimeFromFlags(aftr, duid pairs, uplink multiPairs) (*apply.Runtime, error) {
 	runtime := &apply.Runtime{}
 	runtime.Networkd.AFTRAddresses = map[string]netip.Addr{}
 	runtime.Networkd.DUIDs = map[string]string{}
@@ -64,12 +65,14 @@ func runtimeFromFlags(aftr, duid, uplink pairs) (*apply.Runtime, error) {
 	for path, value := range duid {
 		runtime.Networkd.DUIDs[path] = value
 	}
-	for name, value := range uplink {
-		address, err := netip.ParseAddr(value)
-		if err != nil {
-			return nil, fmt.Errorf("-uplink-address %s=%s: %w", name, value, err)
+	for name, values := range uplink {
+		for _, value := range values {
+			address, err := netip.ParseAddr(value)
+			if err != nil {
+				return nil, fmt.Errorf("-uplink-address %s=%s: %w", name, value, err)
+			}
+			runtime.NFTables.UplinkAddresses[name] = append(runtime.NFTables.UplinkAddresses[name], address)
 		}
-		runtime.NFTables.UplinkAddresses[name] = append(runtime.NFTables.UplinkAddresses[name], address)
 	}
 	return runtime, nil
 }
