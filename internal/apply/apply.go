@@ -22,8 +22,9 @@ type Result struct {
 
 	// FirewallReapplied is whether the ruleset had to be rendered and installed a
 	// second time because an uplink's address appeared or changed while the apply was
-	// running. That is the ordinary case on a cold start: the table written first was
-	// rendered before the line had dialled.
+	// running. It is not the ordinary case: a session started in the process phase has
+	// not dialled by the time the firewall is settled, so on a cold start the rules that
+	// depend on its address wait for the next apply, or for the daemon (ADR 0004).
 	FirewallReapplied bool
 
 	// Notes is what went wrong after the commit stage had already succeeded. The
@@ -295,6 +296,11 @@ func (e *Engine) record(plan *Plan) error {
 // result as what is in effect. So an uplink that had an address and no longer answers
 // stops the settle, and the ruleset already installed stays. Noticing the redial that
 // follows belongs to the daemon.
+//
+// **It does not wait.** A session started a moment ago has not dialled yet either, and
+// the settle reads it the same way: nothing to add. The hairpin rules of a cold start
+// wait for the daemon, or for the next apply. Blocking here on a provider's dial time
+// was considered and rejected (ADR 0004).
 func (e *Engine) settleFirewall(ctx context.Context, cfg *config.Config, plan *Plan, result *Result) {
 	addresses, _ := readUplinkAddresses(cfg, e.host)
 

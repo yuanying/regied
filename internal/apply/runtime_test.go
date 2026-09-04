@@ -81,8 +81,10 @@ func TestCollectRuntimeReadsWhatOnlyTheHostKnows(t *testing.T) {
 	if got := rt.NFTables.UplinkAddresses["pppoe0"]; !equalAddrs(got, want) {
 		t.Errorf("the PPPoE uplink holds %v, want %v", got, want)
 	}
-	if got, want := rt.NFTables.UplinkAddresses["wan"], addrs(t, "2001:db8:1::1"); !equalAddrs(got, want) {
-		t.Errorf("the WAN interface holds %v, want %v", got, want)
+	// An Interface is never an egressRef, so nothing in the ruleset can depend on its
+	// address, and it is not asked (ADR 0013).
+	if got, ok := rt.NFTables.UplinkAddresses["wan"]; ok {
+		t.Errorf("the WAN interface was asked for its address and holds %v; only uplinks are asked", got)
 	}
 }
 

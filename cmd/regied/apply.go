@@ -62,8 +62,9 @@ func reportResult(stdout io.Writer, result *apply.Result) {
 	}
 	fmt.Fprintln(stdout, result.Plan.Summary())
 	if result.FirewallReapplied {
-		// The ordinary case on a cold start: the line dialled while the apply was
-		// running, and the ruleset written first had been rendered without its address.
+		// A line that came up on its own while the apply was running. A session the
+		// apply started has not dialled yet, so this is not the cold-start case; the
+		// note printed before the apply said what was left out of the ruleset.
 		fmt.Fprintln(stdout, "An uplink address appeared while applying; the ruleset was rendered again with it.")
 	}
 	fmt.Fprintln(stdout, "Applied.")

@@ -182,17 +182,19 @@ func (c *collector) readLinkAddresses() {
 	}
 }
 
-// readUplinkAddresses reads what each link resource is holding, and names the ones that
-// answered nothing.
+// readUplinkAddresses reads what each uplink is holding, and names the ones that answered
+// nothing. Only an uplink's address is anything the ruleset depends on — the hairpin
+// half of a port forward matches on it (ADR 0013) — so only the uplinks are asked. A LAN
+// link is neither reported as missing an address it never needed, nor able to stop the
+// settle by being without one for a moment.
 //
-// It is on its own because it is the whole of what the last phase of an apply re-reads:
-// only the nftables table depends on an uplink's address, so a session that dialled
-// while the apply was running calls for this and for nothing else. In particular it does
-// not call for the credentials to be read again (ADR 0003, ADR 0004).
+// It is on its own because it is the whole of what the last phase of an apply re-reads.
+// In particular it does not call for the credentials to be read again (ADR 0003,
+// ADR 0004).
 func readUplinkAddresses(cfg *config.Config, host Host) (nftables.Runtime, []string) {
 	runtime := nftables.Runtime{UplinkAddresses: make(map[string][]netip.Addr)}
 	var missing []string
-	for _, link := range linkResources(cfg) {
+	for _, link := range uplinkResources(cfg) {
 		addresses, err := host.Links.Addresses(link.ifname)
 		if err != nil {
 			missing = append(missing, fmt.Sprintf("%s (%s)", link.name, link.ifname))
@@ -226,14 +228,10 @@ type link struct {
 	ifname string
 }
 
-// linkResources is every resource that becomes a link, with its kernel name. The kinds
-// and the naming rule are the ones the nftables renderer resolves a link reference in:
-// an Interface says its name, and a session or a tunnel is named after the resource.
-func linkResources(cfg *config.Config) []link {
+// uplinkResources is every resource that leads outward, with its kernel name. A PPPoE
+// session and a DS-Lite tunnel are named after the resource (ADR 0012).
+func uplinkResources(cfg *config.Config) []link {
 	var out []link
-	for _, iface := range config.ResourcesOf[*v1alpha1.InterfaceSpec](cfg) {
-		out = append(out, link{name: iface.Name, ifname: iface.Spec.Ifname})
-	}
 	for _, session := range config.ResourcesOf[*v1alpha1.PPPoESessionSpec](cfg) {
 		out = append(out, link{name: session.Name, ifname: session.Name})
 	}
