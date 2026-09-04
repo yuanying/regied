@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
+	"path"
 	"slices"
 	"strings"
 
@@ -148,12 +149,27 @@ type FirewallChange struct {
 	Ruleset string
 	// Before is the text the last apply recorded having installed.
 	Before string
-	// Present is whether the table is in the kernel. After a reboot it is not, and the
-	// ruleset has to go in again even though nothing about it changed (ADR 0004).
-	Present bool
+	// Table is what the probe could establish about the kernel.
+	Table TableState
 	// Apply is whether the ruleset has to be installed.
 	Apply bool
 }
+
+// TableState is what asking the kernel about regied's table answered.
+//
+// "Not there" and "could not be asked" are different answers, and reading the second as
+// the first makes a dry-run on a machine without nft report that it would install a
+// ruleset the host already has. ADR 0006 asks for the same honesty of the check that
+// runs beside this probe.
+type TableState int
+
+const (
+	// TableUnknown is what a machine with no nft can say. It is treated as present:
+	// a run that cannot ask cannot have anything useful to install either.
+	TableUnknown TableState = iota
+	TablePresent
+	TableAbsent
+)
 
 // StepKind tells the two things a step can be apart. Both are effects and both belong to
 // the commit stage; they differ in that one runs a command and one writes /proc/sys.
@@ -166,6 +182,9 @@ const (
 	// are being written, because something is still running from the file.
 	StepRemove StepKind = "remove"
 	StepWrite  StepKind = "write"
+	// StepKeep does nothing on purpose. It is what an undo is when there is nothing
+	// safe to put back, and its Reason is what the rollback reports (ADR 0005).
+	StepKeep StepKind = "keep"
 )
 
 // Step is one thing the commit stage does.
@@ -191,6 +210,8 @@ func (s Step) describe() string {
 		return "reclaim " + s.File.Path
 	case StepWrite:
 		return "put back " + s.File.Path
+	case StepKeep:
+		return s.Reason
 	}
 	return s.Command.String()
 }
@@ -330,6 +351,9 @@ func (p *Plan) Summary() string {
 // It is what answers "what does this configuration mean", for a host other than this one
 // and for a host that does not exist yet (ADR 0006).
 func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
+	if runtime == nil {
+		runtime = &Runtime{}
+	}
 	rendered, err := e.render(cfg, runtime)
 	if err != nil {
 		return nil, err
@@ -392,7 +416,11 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 	if err != nil {
 		return nil, err
 	}
-	plan.Files = append(plan.Files, reclaimed...)
+	for _, change := range reclaimed {
+		// A credential being taken away is a credential (ADR 0003).
+		plan.hide(&change)
+		plan.Files = append(plan.Files, change)
+	}
 	slices.SortFunc(plan.Files, func(a, b FileChange) int { return cmp.Compare(a.Path, b.Path) })
 
 	plan.Switches, err = e.switches(cfg)
@@ -403,6 +431,10 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 	plan.Firewall, err = e.firewall(ctx, rendered.ruleset)
 	if err != nil {
 		return nil, err
+	}
+	if plan.Firewall.Table == TableUnknown {
+		plan.Notes = append(plan.Notes,
+			"nft is not installed here, so whether the table is already in the kernel could not be asked; this assumes it is")
 	}
 	if plan.Firewall.Apply {
 		if err := e.checkRuleset(ctx, plan); err != nil {
@@ -424,6 +456,8 @@ func (e *Engine) compare(item artifact) (FileChange, error) {
 		Secret:   item.Secret,
 		Withheld: item.Withheld,
 	}
+	e.applyPolicy(&change)
+
 	before, mode, err := e.host.Files.ReadFile(item.Path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -454,38 +488,42 @@ func (e *Engine) reclaim(desired map[string]bool) ([]FileChange, error) {
 			return nil, fmt.Errorf("cannot read %s: %w", dir.path, err)
 		}
 		for _, name := range names {
-			path := dir.path + "/" + name
-			if desired[path] {
+			file := dir.path + "/" + name
+			if desired[file] {
 				continue
 			}
 			if dir.prefix != "" && !strings.HasPrefix(name, dir.prefix) {
 				continue
 			}
-			before, mode, err := e.host.Files.ReadFile(path)
+			before, mode, err := e.host.Files.ReadFile(file)
 			if err != nil {
-				return nil, fmt.Errorf("cannot read %s: %w", path, err)
+				return nil, fmt.Errorf("cannot read %s: %w", file, err)
 			}
 			if dir.marked && !hasOwnershipMarker(before) {
 				continue
 			}
-			out = append(out, FileChange{
-				Path:       path,
+			change := FileChange{
+				Path:       file,
 				Kind:       ChangeRemove,
 				Before:     string(before),
 				HadBefore:  true,
 				BeforeMode: mode,
-				// A unit file is what systemctl resolves an instance through, so it
-				// cannot be taken away until whatever runs from it has been stopped
-				// (ADR 0004).
-				Deferred: dir.deferred,
-			})
+			}
+			e.applyPolicy(&change)
+			out = append(out, change)
 		}
 	}
 	return out, nil
 }
 
-// ownedDir is one directory regied reclaims from, and how it tells its own files apart
-// from everybody else's in it.
+// ownedDir is one directory regied owns files in, and everything that is true of every
+// file in it.
+//
+// It is the one place these properties are decided. Both the writing path and the
+// reclaiming path ask it, so a directory cannot acquire half its rules: the first round
+// of this engine marked credentials secret where the files were written and forgot to
+// where they were taken away, and deferred the reclaim of a unit on the way forward and
+// not on the way back.
 type ownedDir struct {
 	path string
 	// prefix is on the name of every file regied puts here.
@@ -493,9 +531,13 @@ type ownedDir struct {
 	// marked says the first line of every file regied puts here carries the ownership
 	// marker.
 	marked bool
-	// deferred says a file here is reclaimed by a step rather than while the files are
-	// being written, because something may still be running from it.
+	// deferred says a file here is written and taken away out of step with the rest,
+	// because something may still be running from it — see the unit ordering in
+	// ADR 0004.
 	deferred bool
+	// secret says every file here holds a credential, whichever direction it is being
+	// moved in (ADR 0003).
+	secret bool
 }
 
 func (e *Engine) ownedDirs() []ownedDir {
@@ -504,11 +546,24 @@ func (e *Engine) ownedDirs() []ownedDir {
 		// renderers, and the file name is the mark (ADR 0012).
 		{path: e.opts.NetworkdDir, prefix: networkd.FilePrefix},
 		{path: e.opts.Root + "/ppp/peers", marked: true},
-		{path: e.opts.Root + "/ppp/credentials", marked: true},
+		{path: e.opts.Root + "/ppp/credentials", marked: true, secret: true},
 		{path: e.opts.Root + "/dnsmasq", marked: true},
 		// /etc/systemd/system holds everybody's units and the symlinks systemctl
 		// enable makes, so both the name and the marker have to say it is ours.
 		{path: e.opts.UnitDir, prefix: unitPrefix, marked: true, deferred: true},
+	}
+}
+
+// applyPolicy puts on a change everything that follows from where the file is. It is
+// called on every FileChange this package builds, in either direction.
+func (e *Engine) applyPolicy(change *FileChange) {
+	for _, dir := range e.ownedDirs() {
+		if path.Dir(change.Path) != dir.path {
+			continue
+		}
+		change.Secret = change.Secret || dir.secret
+		change.Deferred = dir.deferred
+		return
 	}
 }
 
@@ -554,10 +609,30 @@ func (e *Engine) firewall(ctx context.Context, ruleset string) (FirewallChange, 
 
 	// The probe changes nothing. Its answer is what makes a reboot, and a flush
 	// somebody else did, put the ruleset back (ADR 0004).
-	_, err = e.host.Runner.Run(ctx, listTableCommand())
-	change.Present = err == nil
-	change.Apply = !change.Present || change.Ruleset != change.Before
+	change.Table, err = e.probeTable(ctx)
+	if err != nil {
+		return change, err
+	}
+	change.Apply = change.Table == TableAbsent || change.Ruleset != change.Before
 	return change, nil
+}
+
+// probeTable asks whether regied's table is in the kernel.
+//
+// Only one failure is distinguishable without reading nft's error text, and it is the
+// one that matters: nft not being installed, which is a dry-run somewhere other than the
+// host it is about. Every other failure is read as the table being absent, which costs
+// one redundant transaction on a host and never leaves a firewall uninstalled.
+func (e *Engine) probeTable(ctx context.Context) (TableState, error) {
+	_, err := e.host.Runner.Run(ctx, listTableCommand())
+	switch {
+	case err == nil:
+		return TablePresent, nil
+	case errors.Is(err, ErrCommandNotFound):
+		return TableUnknown, nil
+	default:
+		return TableAbsent, nil
+	}
 }
 
 func (e *Engine) checkRuleset(ctx context.Context, plan *Plan) error {
@@ -680,27 +755,47 @@ func (e *Engine) reclaimUnitSteps(plan *Plan) []Step {
 }
 
 func firewallReason(change FirewallChange) string {
-	if !change.Present {
+	if change.Table == TableAbsent {
 		return "the table is not in the kernel"
 	}
 	return "the ruleset changed"
 }
 
-// firewallUndo puts the table back as it was: the text the last apply installed, or, if
-// there was none, no table at all. Both are one nft transaction (ADR 0005).
+// firewallUndo puts the table back as it was.
+//
+// There are three answers, not two. With a recorded ruleset, that text goes back in — one
+// transaction, as ADR 0013 makes it. With no record and no table before this apply,
+// taking ours off *is* putting the host back.
+//
+// With no record and a table that was already there, there is nothing to put back and
+// deleting is not the same thing: it would take the firewall off a host that was running
+// one, to recover from a missing note. The table this apply installed is left, and the
+// rollback says so (ADR 0005).
 func firewallUndo(change FirewallChange) *Step {
-	ruleset := change.Before
-	reason := "put the ruleset the previous apply installed back"
-	if ruleset == "" {
-		ruleset = fmt.Sprintf("table %s %s\ndelete table %s %s\n",
-			nftables.TableFamily, nftables.TableName, nftables.TableFamily, nftables.TableName)
-		reason = "take the table back off, because there was none before"
+	if change.Before != "" {
+		return &Step{
+			Phase:   PhaseFirewall,
+			Kind:    StepCommand,
+			Reason:  "put the ruleset the previous apply installed back",
+			Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: change.Before},
+		}
+	}
+	if change.Table == TableAbsent {
+		return &Step{
+			Phase:  PhaseFirewall,
+			Kind:   StepCommand,
+			Reason: "take the table back off, because there was none before",
+			Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: fmt.Sprintf(
+				"table %s %s\ndelete table %s %s\n",
+				nftables.TableFamily, nftables.TableName, nftables.TableFamily, nftables.TableName)},
+		}
 	}
 	return &Step{
-		Phase:   PhaseFirewall,
-		Kind:    StepCommand,
-		Reason:  reason,
-		Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: ruleset},
+		Phase: PhaseFirewall,
+		Kind:  StepKeep,
+		Reason: fmt.Sprintf(
+			"the %s %s table this apply installed was left in place: there is no record of what was there before it, and taking it off would leave the host with no firewall",
+			nftables.TableFamily, nftables.TableName),
 	}
 }
 
@@ -722,8 +817,10 @@ func (e *Engine) sessionSteps(plan *Plan) []Step {
 	var steps []Step
 	// The one unit a session runs from. Any other unit changing has nothing to do with
 	// it, and restarting a line over an unrelated change is exactly what ADR 0005 says
-	// must not happen.
-	templateChanged := changeFor(plan, e.opts.UnitDir+"/"+pppoeTemplateUnit).Kind == ChangeUpdate
+	// must not happen. But a template that had to be *written back* — because somebody
+	// deleted it — leaves the sessions stopped and not enabled, and that needs starting
+	// rather than restarting.
+	template := changeFor(plan, e.opts.UnitDir+"/"+pppoeTemplateUnit)
 
 	for _, session := range sessionsIn(plan, e.opts.Root+"/ppp/peers/") {
 		peer := changeFor(plan, e.opts.Root+"/ppp/peers/"+session+".conf")
@@ -731,15 +828,15 @@ func (e *Engine) sessionSteps(plan *Plan) []Step {
 		unit := pppoeUnit(session)
 
 		switch {
-		case peer.Kind == ChangeCreate:
+		case peer.Kind == ChangeCreate || template.Kind == ChangeCreate:
 			steps = append(steps, Step{
 				Phase:   PhaseProcesses,
 				Kind:    StepCommand,
-				Reason:  "the session is new",
+				Reason:  "the session, or the unit it runs from, is not on the host yet",
 				Command: systemctl("enable", "--now", unit),
 				Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("disable", "--now", unit)},
 			})
-		case peer.Kind == ChangeUpdate || credentials.Kind != ChangeNone || templateChanged:
+		case wasWritten(peer) || wasWritten(credentials) || wasWritten(template):
 			restart := systemctl("restart", unit)
 			steps = append(steps, Step{
 				Phase:   PhaseProcesses,
@@ -763,23 +860,23 @@ func (e *Engine) sessionSteps(plan *Plan) []Step {
 	return steps
 }
 
-// dnsmasqSteps starts, reloads or stops regied's own dnsmasq. It comes after the links,
+// dnsmasqSteps starts, restarts or stops regied's own dnsmasq. It comes after the links,
 // because it binds to the addresses they hold.
 func (e *Engine) dnsmasqSteps(plan *Plan, rendered *rendering) []Step {
-	path := e.opts.Root + "/dnsmasq/dnsmasq.conf"
-	change := changeFor(plan, path)
-	unitChanged := changeFor(plan, e.opts.UnitDir+"/"+dnsmasqUnit).Kind == ChangeUpdate
+	conf := e.opts.Root + "/dnsmasq/dnsmasq.conf"
+	change := changeFor(plan, conf)
+	unit := changeFor(plan, e.opts.UnitDir+"/"+dnsmasqUnit)
 
 	switch {
-	case rendered.dnsmasq && change.Kind == ChangeCreate:
+	case rendered.dnsmasq && (change.Kind == ChangeCreate || unit.Kind == ChangeCreate):
 		return []Step{{
 			Phase:   PhaseProcesses,
 			Kind:    StepCommand,
-			Reason:  "a host that had no dnsmasq now declares one",
+			Reason:  "dnsmasq, or the unit it runs from, is not on the host yet",
 			Command: systemctl("enable", "--now", dnsmasqUnit),
 			Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: systemctl("disable", "--now", dnsmasqUnit)},
 		}}
-	case rendered.dnsmasq && (change.Kind == ChangeUpdate || unitChanged):
+	case rendered.dnsmasq && (wasWritten(change) || wasWritten(unit)):
 		// Restart, not reload. dnsmasq re-reads /etc/hosts, its lease file and
 		// resolv.conf on SIGHUP, and nothing else: a reload would leave the
 		// configuration that was just written unapplied.
@@ -818,6 +915,13 @@ func changeFor(plan *Plan, path string) FileChange {
 	return FileChange{Path: path, Kind: ChangeNone}
 }
 
+// wasWritten is whether a change puts a file on the host, whether or not one was there
+// before. Several questions in this package are that question, and asking it by name
+// keeps a caller from testing for one of the two kinds and forgetting the other.
+func wasWritten(change FileChange) bool {
+	return change.Kind == ChangeCreate || change.Kind == ChangeUpdate
+}
+
 func changedIn(plan *Plan, prefix string) bool {
 	for _, change := range plan.Files {
 		if strings.HasPrefix(change.Path, prefix) && change.Kind != ChangeNone {
@@ -835,7 +939,7 @@ func writtenIn(plan *Plan, prefix string) bool {
 		if !strings.HasPrefix(change.Path, prefix) {
 			continue
 		}
-		if change.Kind == ChangeCreate || change.Kind == ChangeUpdate {
+		if wasWritten(change) {
 			return true
 		}
 	}

@@ -161,6 +161,29 @@ func TestWarningsCanBeReportedWithoutTheWholePlan(t *testing.T) {
 	}
 }
 
+// 差し戻し 2. A trailing newline is a difference a line diff cannot show, and compare
+// calls it a change: the file is rewritten and whatever reads it is restarted. Saying
+// "the content would not change" hides the one thing a dry run is for.
+func TestReportSaysAFileIsRewrittenWhenTheDiffShowsNothing(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	cfg := load(t, hostFixture)
+	mustApply(t, engine, cfg)
+	delete(runner.fail, "nft list table inet regied")
+
+	conf := "/etc/regied/dnsmasq/dnsmasq.conf"
+	content, _ := files.content(conf)
+	files.put(conf, strings.TrimSuffix(content, "\n"), 0o644)
+
+	report := reportOf(t, engine, cfg)
+
+	if strings.Contains(report, "the content would not change") {
+		t.Errorf("a file that would be rewritten is reported as unchanged:\n%s", report)
+	}
+	if !strings.Contains(report, "rewritten") {
+		t.Errorf("nothing says the file would be rewritten:\n%s", report)
+	}
+}
+
 func reportOf(t *testing.T, engine *Engine, cfg *config.Config) string {
 	t.Helper()
 	return renderReport(mustPlan(t, engine, cfg))

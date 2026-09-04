@@ -115,11 +115,16 @@ func reportFile(w io.Writer, change FileChange) {
 		return
 	}
 	diff := unifiedDiff(change.Before, change.Content)
-	if diff == "" {
+	switch {
+	case diff != "":
+		indent(w, diff)
+	case change.Before != change.Content:
+		// A trailing newline is a difference no line diff can show, and it is still a
+		// rewrite: whatever reads the file is restarted for it.
+		fmt.Fprintln(w, "    the content differs only in a trailing newline; the file is rewritten anyway")
+	default:
 		fmt.Fprintln(w, "    the content would not change")
-		return
 	}
-	indent(w, diff)
 }
 
 // secretVerdict says what would happen to a credentials file without saying anything
@@ -141,7 +146,7 @@ func reportFirewall(w io.Writer, plan *Plan) {
 		return
 	}
 	fmt.Fprintln(w, "Firewall")
-	if !plan.Firewall.Present {
+	if plan.Firewall.Table == TableAbsent {
 		fmt.Fprintln(w, "  the table is not in the kernel, so the whole ruleset goes in")
 	}
 	if plan.Firewall.Before == "" {
