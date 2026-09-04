@@ -370,6 +370,12 @@ type Plan struct {
 	// is not up, a check that could not be made.
 	Notes []string
 
+	// Waiting is what this turn left out for want of a value the host could not answer
+	// yet, naming the value. A turn that finds nothing to do and something in here has
+	// not converged: it has done what it can, and a later turn does the rest. A turn
+	// with nothing in here that finds nothing to do has (ADR 0016).
+	Waiting []string
+
 	Files    []FileChange
 	Switches []SwitchChange
 	Firewall FirewallChange
@@ -495,7 +501,7 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Rendered: true}
+	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Waiting: rendered.waiting, Rendered: true}
 	for _, item := range rendered.artifacts {
 		change := FileChange{
 			Path:     item.Path,
@@ -532,9 +538,15 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		return nil, err
 	}
 
-	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes}
+	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Waiting: rendered.waiting}
 
 	desired := make(map[string]bool, len(rendered.artifacts))
+	// A file that waits for a value is left exactly as it is. Reclaiming it would spell
+	// "incomplete" with a missing file, and the host would lose a tunnel that was working
+	// because a resolver blinked (ADR 0016).
+	for _, path := range rendered.withheld {
+		desired[path] = true
+	}
 	for _, item := range rendered.artifacts {
 		desired[item.Path] = true
 		change, err := e.compare(item)

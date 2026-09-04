@@ -1,6 +1,7 @@
 package apply
 
 import (
+	"fmt"
 	"io/fs"
 	"strings"
 
@@ -48,6 +49,13 @@ type rendering struct {
 	artifacts []artifact
 	warnings  []string
 
+	// waiting is what was left out for want of a value that exists only at apply time,
+	// one line per artifact, naming the value it waits for (ADR 0016).
+	waiting []string
+	// withheld is the path of every file that was left out. Whatever an earlier turn
+	// wrote there is left alone: not compared, not rewritten, not reclaimed.
+	withheld []string
+
 	// ruleset is the text to hand to nft.
 	ruleset string
 	// sessions is every PPPoESession's name, in the order the document lists them.
@@ -67,6 +75,13 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 		return nil, err
 	}
 	out.warnings = append(out.warnings, links.Warnings...)
+	for _, omission := range links.Omitted {
+		for _, name := range omission.Files {
+			out.withheld = append(out.withheld, e.opts.NetworkdDir+"/"+name)
+		}
+		out.waiting = append(out.waiting, fmt.Sprintf("%s: waiting for %s; not rendered this turn: %s",
+			omission.Resource, omission.Waiting, strings.Join(omission.Files, ", ")))
+	}
 	for _, file := range links.Files {
 		out.artifacts = append(out.artifacts, artifact{
 			Path:    e.opts.NetworkdDir + "/" + file.Name,

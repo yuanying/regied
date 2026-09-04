@@ -403,3 +403,87 @@ func stepCommands(plan *Plan) []string {
 	}
 	return out
 }
+
+// --- ADR 0016. A turn renders what it can and waits for the rest --------------------
+
+// A tunnel whose AFTR name does not resolve yet is not a failed plan. It is a plan that
+// leaves the tunnel out, says so, and is otherwise whole: the firewall, the other links,
+// the processes all go on. The next turn asks the name again.
+func TestAPlanWaitsForWhatTheHostCannotAnswerYet(t *testing.T) {
+	engine, files, _, _ := planFixture(t)
+	putSecrets(files)
+	// The resolver knows nothing: the host has just booted and DNS is not up.
+
+	plan := mustPlan(t, engine, load(t, uplinkFixture))
+
+	for _, path := range []string{"/etc/systemd/network/50-regied-dslite.netdev", "/etc/systemd/network/50-regied-dslite.network"} {
+		if _, ok := fileChangeFor(plan, path); ok {
+			t.Errorf("%s is in the plan although the AFTR has not resolved", path)
+		}
+	}
+	waiting := strings.Join(plan.Waiting, "\n")
+	if !strings.Contains(waiting, "DSLiteTunnel/dslite") || !strings.Contains(waiting, "aftr.example.net") {
+		t.Errorf("the plan does not say what it waits for: %v", plan.Waiting)
+	}
+	// Everything that does not depend on the name is there.
+	if _, ok := fileChangeFor(plan, "/etc/systemd/network/50-regied-wan.network"); !ok {
+		t.Error("the link the tunnel is stacked on was left out with it")
+	}
+	if !plan.Firewall.Apply {
+		t.Error("the firewall waits for a name it does not depend on")
+	}
+}
+
+// What a previous turn wrote for an artifact that now waits is left as it is. Reclaiming
+// it would spell "incomplete" with a missing file, and the host would lose a tunnel that
+// was working because a resolver blinked (ADR 0016).
+func TestAnArtifactThatWaitsIsNotReclaimed(t *testing.T) {
+	engine, files, runner, host := planFixture(t)
+	putSecrets(files)
+	resolver := host.Resolver.(fakeResolver)
+	resolver["aftr.example.net"] = addrs(t, "2001:db8:53::1")
+	cfg := load(t, uplinkFixture)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+	netdev := "/etc/systemd/network/50-regied-dslite.netdev"
+	if _, ok := files.content(netdev); !ok {
+		t.Fatal("the first apply did not write the tunnel")
+	}
+
+	// The resolver stops answering.
+	delete(resolver, "aftr.example.net")
+	plan := mustPlan(t, engine, cfg)
+
+	if change, ok := fileChangeFor(plan, netdev); ok && change.Kind != ChangeNone {
+		t.Errorf("the tunnel's netdev is %s while the tunnel waits; it should be left alone", change.Kind)
+	}
+	if !plan.Empty() {
+		t.Errorf("a host that holds everything that can be rendered has something to do: %s", plan.Summary())
+	}
+	if len(plan.Waiting) == 0 {
+		t.Error("nothing says the turn is waiting")
+	}
+	mustApply(t, engine, cfg)
+	if _, ok := files.content(netdev); !ok {
+		t.Error("the tunnel was reclaimed while its name was being waited for")
+	}
+}
+
+// A plan with nothing to do and something to wait for is not the same answer as a plan
+// with nothing to do at all, and the two must not read the same (ADR 0016).
+func TestAPlanThatWaitsIsNotCalledConverged(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	putSecrets(files)
+	cfg := load(t, uplinkFixture)
+	mustApply(t, engine, cfg)
+	tablePresent(runner)
+
+	report := reportOf(t, engine, cfg)
+
+	if !strings.Contains(report, "aftr.example.net") {
+		t.Errorf("the report does not name what is waited for:\n%s", report)
+	}
+	if strings.Contains(report, "already holds this configuration") {
+		t.Errorf("a host that waits for a tunnel is told it holds the whole configuration:\n%s", report)
+	}
+}
