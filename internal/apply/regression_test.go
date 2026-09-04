@@ -37,7 +37,7 @@ const hostFixtureNoDNS = `  global:
 func TestAnUnrelatedUnitDoesNotRestartTheLine(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixtureNoDNS))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	// Declaring an address handout writes a dnsmasq unit. Nothing pppd reads changes.
 	plan := mustPlan(t, engine, load(t, hostFixture))
@@ -57,7 +57,7 @@ func TestAnUnrelatedUnitDoesNotRestartTheLine(t *testing.T) {
 func TestASessionIsRestartedWhenItsOwnConfigurationChanges(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	changed := load(t, strings.Replace(hostFixture, "passwordFile: /etc/regied/secrets/pppoe-password",
 		"passwordFile: /etc/regied/secrets/pppoe-password\n        mtu: 1454", 1))
@@ -81,7 +81,7 @@ func TestASessionIsRestartedWhenItsOwnConfigurationChanges(t *testing.T) {
 func TestAUnitIsReclaimedOnlyAfterWhatRunsFromItIsStopped(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	template := "/etc/systemd/system/regied-pppoe@.service"
 	unit := "/etc/systemd/system/regied-dnsmasq.service"
@@ -138,7 +138,7 @@ func TestSettlingNeverTakesTheHairpinRulesAway(t *testing.T) {
 	cfg := load(t, hostFixture+forwardResource)
 
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 	recorded, _ := files.content("/var/lib/regied/applied/ruleset.nft")
 	if !strings.Contains(recorded, "192.0.2.10") {
 		t.Fatalf("the first apply did not install the hairpin rules:\n%s", recorded)
@@ -173,7 +173,7 @@ func TestNoCredentialIsAnywhereInThePlan(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	cfg := load(t, hostFixture)
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	// Rotate the credential: the file changes, so its content and its previous content
 	// are both in play.
@@ -210,7 +210,7 @@ func TestNoCredentialIsAnywhereInThePlan(t *testing.T) {
 func TestAStagingFailureNamesWhatCouldNotBePutBack(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	// The disk stops taking this file. The apply cannot replace it, and cannot put back
 	// what it half wrote either.
@@ -244,7 +244,7 @@ func TestAFailureAfterTheCommitIsReportedRatherThanCalledAFailedApply(t *testing
 	}
 }
 
-// 差し戻し 2. The credential a reclaim reads is a credential like any other. Marking a
+// Round 2. The credential a reclaim reads is a credential like any other. Marking a
 // path secret is a property of the directory it is in, so that neither the writing path
 // nor the reclaiming path can forget it (ADR 0003).
 func TestAReclaimedCredentialsFileIsNotInThePlan(t *testing.T) {
@@ -282,14 +282,14 @@ func TestAReclaimedCredentialsFileIsNotInThePlan(t *testing.T) {
 	}
 }
 
-// 差し戻し 2. Narrowing what counts as "a unit that affects this process" must not
+// Round 2. Narrowing what counts as "a unit that affects this process" must not
 // narrow it past a unit that was written back after somebody deleted it: the apply then
 // reports success while nothing is running.
 func TestAUnitWrittenBackStartsWhatRunsFromIt(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	cfg := load(t, hostFixture)
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	delete(files.files, "/etc/systemd/system/regied-pppoe@.service")
 	delete(files.files, "/etc/systemd/system/regied-dnsmasq.service")
@@ -308,7 +308,7 @@ func TestAUnitWrittenBackStartsWhatRunsFromIt(t *testing.T) {
 	}
 }
 
-// 差し戻し 2. nft not being installed is not the same answer as the table not being
+// Round 2. nft not being installed is not the same answer as the table not being
 // there, and reading one as the other makes a dry-run away from the host claim it would
 // install a ruleset the host already has (ADR 0006).
 func TestNFTBeingAbsentIsNotTheSameAsTheTableBeingAbsent(t *testing.T) {
@@ -317,7 +317,7 @@ func TestNFTBeingAbsentIsNotTheSameAsTheTableBeingAbsent(t *testing.T) {
 	mustApply(t, engine, cfg)
 
 	// A machine with no nft at all: neither the probe nor the check can be run.
-	runner.fail["nft list table inet regied"] = ErrCommandNotFound
+	runner.fail["nft list tables"] = ErrCommandNotFound
 	runner.fail["nft --check -f -"] = ErrCommandNotFound
 	_ = files
 
@@ -334,7 +334,7 @@ func TestNFTBeingAbsentIsNotTheSameAsTheTableBeingAbsent(t *testing.T) {
 	}
 }
 
-// 差し戻し 2. Render says the apply-time values may all be absent. Absent has to include
+// Round 2. Render says the apply-time values may all be absent. Absent has to include
 // the whole of them.
 func TestRenderAcceptsNoRuntimeAtAll(t *testing.T) {
 	plan, err := New(Host{}, Options{}).Render(load(t, hostFixture), nil)
@@ -343,5 +343,38 @@ func TestRenderAcceptsNoRuntimeAtAll(t *testing.T) {
 	}
 	if len(plan.Files) == 0 {
 		t.Error("nothing was rendered")
+	}
+}
+
+// Round 3. A probe that could not be asked is not an answer, and "the table is not
+// there" is the one answer that lets a rollback delete the table. Reading a failure as
+// that answer takes the firewall off a host over a question nobody could answer
+// (ADR 0005).
+func TestAProbeThatCouldNotBeAskedNeverLetsARollbackDeleteTheTable(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustApply(t, engine, load(t, hostFixture))
+
+	// The record is gone, and the kernel cannot be asked — not because nft is missing,
+	// but because asking failed: a netlink error, a capability this process lacks.
+	delete(files.files, "/var/lib/regied/applied/ruleset.nft")
+	runner.fail["nft list tables"] = errFake
+
+	cfg := load(t, hostFixture+forwardResource)
+	plan := mustPlan(t, engine, cfg)
+	if !strings.Contains(strings.Join(plan.Notes, "\n"), "could not be asked") {
+		t.Errorf("nothing says the kernel could not be asked about the table: %v", plan.Notes)
+	}
+
+	// The install fails, so the firewall step is the one undone.
+	runner.fail["nft -f -"] = errFake
+	if _, err := engine.Apply(context.Background(), cfg); err == nil {
+		t.Fatal("the failing install was not reported")
+	}
+	// A ruleset opens by deleting the table it then declares, which is the atomic
+	// replacement (ADR 0013); what the undo must not hand nft is a deletion alone.
+	for _, cmd := range runner.ran {
+		if cmd.Stdin == "table inet regied\ndelete table inet regied\n" {
+			t.Fatal("the rollback deleted the table over a probe that had no answer")
+		}
 	}
 }

@@ -75,10 +75,14 @@ not up, and the rules that depend on it are left out and say so.
   same operation again. It is handed to `nft` when the text differs from what regied
   recorded at its last apply, **or when the table is not in the kernel at all** — which
   is the case after a reboot, and after somebody flushed it. Asking the kernel has three
-  answers, not two: present, absent, and *could not be asked*, which is what a machine
-  with no nft says. Reading the third as the second would make a preview taken away from
-  the host claim it would install a ruleset the host already has, so it is reported
-  instead ([ADR 0006](0006-dry-run-and-rendering.md)) and the ruleset is left alone.
+  answers, not two: present, absent, and *could not be asked* — which is what a machine
+  with no nft says, and equally what nft failing says, whatever the reason. Reading the
+  third as the second would make a preview taken away from the host claim it would
+  install a ruleset the host already has, so it is reported instead
+  ([ADR 0006](0006-dry-run-and-rendering.md)) and the ruleset is left alone. The probe
+  asks nft to list every table and looks for its own, so that "absent" is only ever
+  something nft said with a successful exit. [ADR 0005](0005-apply-rollback.md) depends
+  on that: absent is the one answer that lets a rollback delete the table.
 - A kernel switch is read before it is written and written only if it differs.
 - A reload or a restart runs only when something the process in question reads actually
   changed.

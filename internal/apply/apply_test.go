@@ -82,7 +82,7 @@ func TestApplyRollsBackAFailedCommand(t *testing.T) {
 func TestApplyRollsBackToThePreviousGenerationRatherThanToNothing(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	before, _ := files.content("/etc/regied/dnsmasq/dnsmasq.conf")
 	beforeRuleset, _ := files.content("/var/lib/regied/applied/ruleset.nft")
@@ -210,7 +210,7 @@ func TestApplyChangesNothingTheSecondTime(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	cfg := load(t, hostFixture)
 	mustApply(t, engine, cfg)
-	delete(runner.fail, "nft list table inet regied")
+	tablePresent(runner)
 
 	before := len(runner.ran)
 	result := mustApply(t, engine, cfg)
@@ -221,7 +221,7 @@ func TestApplyChangesNothingTheSecondTime(t *testing.T) {
 	// The only command the second apply is allowed is the probe that asks whether the
 	// table is in the kernel.
 	for _, cmd := range runner.ran[before:] {
-		if cmd.String() != "nft list table inet regied" {
+		if cmd.String() != "nft list tables" {
 			t.Errorf("an apply that changes nothing ran %q", cmd)
 		}
 	}

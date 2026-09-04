@@ -149,24 +149,30 @@ type FirewallChange struct {
 	Ruleset string
 	// Before is the text the last apply recorded having installed.
 	Before string
-	// Table is what the probe could establish about the kernel.
+	// Table is what the probe could establish about the kernel, and Note is why it
+	// could establish nothing, when that is the answer.
 	Table TableState
+	Note  string
 	// Apply is whether the ruleset has to be installed.
 	Apply bool
 }
 
 // TableState is what asking the kernel about regied's table answered.
 //
-// "Not there" and "could not be asked" are different answers, and reading the second as
-// the first makes a dry-run on a machine without nft report that it would install a
-// ruleset the host already has. ADR 0006 asks for the same honesty of the check that
-// runs beside this probe.
+// "Not there" and "could not be asked" are different answers. Reading the second as the
+// first makes a dry-run on a machine without nft report that it would install a ruleset
+// the host already has (ADR 0006) — and, worse, "not there" is the one answer that lets
+// a rollback delete the table, so a probe that merely failed must never produce it
+// (ADR 0005).
 type TableState int
 
 const (
-	// TableUnknown is what a machine with no nft can say. It is treated as present:
-	// a run that cannot ask cannot have anything useful to install either.
+	// TableUnknown is what a machine that could not ask says: nft is not installed, or
+	// it ran and failed. It is treated as present, which is the safe side in both
+	// directions: nothing is deleted over it, and the ruleset still goes in when it
+	// differs from the one recorded.
 	TableUnknown TableState = iota
+	// TablePresent and TableAbsent are answers: nft ran and listed the tables.
 	TablePresent
 	TableAbsent
 )
@@ -432,9 +438,8 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 	if err != nil {
 		return nil, err
 	}
-	if plan.Firewall.Table == TableUnknown {
-		plan.Notes = append(plan.Notes,
-			"nft is not installed here, so whether the table is already in the kernel could not be asked; this assumes it is")
+	if plan.Firewall.Note != "" {
+		plan.Notes = append(plan.Notes, plan.Firewall.Note)
 	}
 	if plan.Firewall.Apply {
 		if err := e.checkRuleset(ctx, plan); err != nil {
@@ -609,30 +614,32 @@ func (e *Engine) firewall(ctx context.Context, ruleset string) (FirewallChange, 
 
 	// The probe changes nothing. Its answer is what makes a reboot, and a flush
 	// somebody else did, put the ruleset back (ADR 0004).
-	change.Table, err = e.probeTable(ctx)
-	if err != nil {
-		return change, err
-	}
+	change.Table, change.Note = e.probeTable(ctx)
 	change.Apply = change.Table == TableAbsent || change.Ruleset != change.Before
 	return change, nil
 }
 
-// probeTable asks whether regied's table is in the kernel.
+// probeTable asks the kernel which tables it holds and looks for regied's among them.
 //
-// Only one failure is distinguishable without reading nft's error text, and it is the
-// one that matters: nft not being installed, which is a dry-run somewhere other than the
-// host it is about. Every other failure is read as the table being absent, which costs
-// one redundant transaction on a host and never leaves a firewall uninstalled.
-func (e *Engine) probeTable(ctx context.Context) (TableState, error) {
-	_, err := e.host.Runner.Run(ctx, listTableCommand())
+// It lists every table rather than asking for one, so that "not there" is something nft
+// said with a successful exit, and every failure — nft not installed, a netlink error, a
+// capability this process lacks — is the one remaining answer, "could not be asked". The
+// second result says why, for the plan's notes.
+func (e *Engine) probeTable(ctx context.Context) (TableState, string) {
+	out, err := e.host.Runner.Run(ctx, listTablesCommand())
 	switch {
-	case err == nil:
-		return TablePresent, nil
 	case errors.Is(err, ErrCommandNotFound):
-		return TableUnknown, nil
-	default:
-		return TableAbsent, nil
+		return TableUnknown, "nft is not installed here, so whether the table is already in the kernel could not be asked; this assumes it is"
+	case err != nil:
+		return TableUnknown, fmt.Sprintf("whether the table is already in the kernel could not be asked (%v); this assumes it is", err)
 	}
+	ours := []string{"table", nftables.TableFamily, nftables.TableName}
+	for _, line := range strings.Split(string(out), "\n") {
+		if slices.Equal(strings.Fields(line), ours) {
+			return TablePresent, ""
+		}
+	}
+	return TableAbsent, ""
 }
 
 func (e *Engine) checkRuleset(ctx context.Context, plan *Plan) error {
@@ -653,8 +660,8 @@ func (e *Engine) checkRuleset(ctx context.Context, plan *Plan) error {
 	return nil
 }
 
-func listTableCommand() Command {
-	return Command{Name: "nft", Args: []string{"list", "table", nftables.TableFamily, nftables.TableName}}
+func listTablesCommand() Command {
+	return Command{Name: "nft", Args: []string{"list", "tables"}}
 }
 
 // steps is what the commit stage would run, in the order ADR 0004 fixes.

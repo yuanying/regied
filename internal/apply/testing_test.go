@@ -157,6 +157,16 @@ func (r *fakeRunner) Run(_ context.Context, cmd Command) ([]byte, error) {
 	return []byte(r.output[key]), nil
 }
 
+// tablePresent makes the kernel answer that regied's table is there, and tableAbsent
+// that it is not. Both are answers: a probe that fails is neither (ADR 0005).
+func tablePresent(runner *fakeRunner) {
+	runner.output["nft list tables"] = "table inet filter\ntable inet regied\n"
+}
+
+func tableAbsent(runner *fakeRunner) {
+	runner.output["nft list tables"] = "table inet filter\n"
+}
+
 // commands is what was run, in order, as text.
 func (r *fakeRunner) commands() []string {
 	out := make([]string, len(r.ran))
