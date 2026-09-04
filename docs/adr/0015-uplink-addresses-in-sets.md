@@ -82,6 +82,13 @@ depend on one another.
   and both families. It is the general mechanism; the two above are what make a host
   correct without it.
 
+*Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
+not built: the first and the third of these are one thing. An apply is a turn of a
+reconciliation loop, and the daemon's address event wakes a turn rather than writing a set
+on its own — a turn already seeds every set from the kernel. The hook is kept exactly as
+written, because it is the writer that needs no daemon, which is the property this section
+was after. Three writers become two: a turn, and a hook beside it.*
+
 Both directories are shared with the distribution's own hooks, so the scripts carry
 regied's name prefix and the ownership marker, the way its units do in
 `/etc/systemd/system` ([ADR 0009](0009-ownership-boundary.md)). They are reclaimed when

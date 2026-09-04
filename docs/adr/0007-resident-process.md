@@ -14,8 +14,10 @@
 > Read the rest of this record with three amendments from ADR 0016.
 >
 > - **The record designed below gains the accepted declaration itself**, not only its
->   digest, and splits in two: a spec written only when a turn converged, and a report of
->   the last attempt written every time. The dispositions stated here apply to the report.
+>   digest, and it is written at submission — once the declaration validates and stages,
+>   before the first command — rather than at the end. Beside it, the account of what the
+>   last turn did carries the turn's state. The dispositions stated here apply to that
+>   account.
 > - **The boot unit reads that record rather than a configuration file.** Everything else
 >   argued for the two units — the ordering, the `nftables.service` guard, the package
 >   shipping them rather than regied rendering them — is unchanged.
@@ -115,10 +117,10 @@ is applied is the question `regied apply --dry-run` exists to answer (ADR 0006).
 *Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
 not built: the record becomes the thing that is converged toward and not only the thing that
 is read about. It therefore holds **the accepted declaration itself**, not only the digest
-of it, and it splits along the rule below about when it is written: the accepted declaration
-only when a turn converged, and the account of the attempt every time. The table below is
-that second half, and the uplink rows in it are derived from the declaration rather than
-carried separately.*
+of it, and it is written at submission, before the first command runs, rather than at the
+end of the apply. The account of what the turn did sits beside it, with the turn's state
+added; the table below is that account, and the uplink rows in it are derived from the
+declaration rather than carried separately.*
 
 An apply gains a second artifact under regied's state directory, beside the recorded
 ruleset: **one record of the apply itself.** It is written at the end of every apply,

@@ -4,18 +4,21 @@
   (2026-09-04) as a decision. **The mechanism described here is what is built and running,
   and it stays until the replacement exists.**
 
-> ADR 0016 folds rolling back into converging on the declaration the host last accepted:
-> the record holds that declaration, it is written only when a turn converged, so a failed
-> apply has somewhere to go back to without any step needing an inverse of its own. **That
-> convergence is decided and not built.** Removing the undo steps before it exists would
-> leave a period with no safety net and nothing in its place, so the code goes when the
-> unit that builds the replacement takes it — the same two steps
-> [ADR 0015](0015-uplink-addresses-in-sets.md) was run in.
+> ADR 0016 removes rolling back altogether. A submission that fails part way leaves the
+> record holding what was submitted; a reconciliation loop keeps working toward it under
+> backoff, within a line it may not cross on its own; and going back is a person applying
+> the previous file — which this record's last section already said going further back than
+> one apply would be. The one automatic revert that remains is the expiry of an apply made
+> with a deadline, for the case where the person cannot reach the host. **That loop is
+> decided and not built.** Removing the undo steps before it exists would leave a period
+> with no safety net and nothing in its place, so the code goes when the unit that builds
+> the loop takes it — the same two steps [ADR 0015](0015-uplink-addresses-in-sets.md) was
+> run in.
 >
 > **What this record says about what cannot be reversed at all survives ADR 0016 intact**
 > — a restarted session is a new session, a lease handed out stays handed out, a dropped
 > connection stays dropped. Those are properties of the host, not of the mechanism, and
-> converging back does not un-happen an event any more than an undo step did.
+> applying the previous file does not un-happen an event any more than an undo step did.
 
 ## Context
 
