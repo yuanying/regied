@@ -201,19 +201,26 @@ func TestTheReportIsWrittenOnlyWhenItChanges(t *testing.T) {
 	clock := host.Clock.(*fakeClock)
 	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
 	// The kernel now answers both probes the way it would after the apply, so that the
-	// second turn has nothing new to note.
+	// turns that follow have nothing to do.
 	tablePresent(runner)
 	setsHold(runner, map[string][]string{"uplink4_pppoe0": {}, "uplink6_pppoe0": {}})
 	report := "/var/lib/regied/turn/report.yaml"
+
+	// The turn after the submission does say something new — the submission applied, this
+	// one found nothing to do — so it writes. It is the one after that which must not.
+	clock.now = clock.now.Add(time.Minute)
+	if _, err := engine.Reconcile(context.Background()); err != nil {
+		t.Fatalf("the first reconcile failed: %v", err)
+	}
 	writes := countOf(files.writes, report)
 
 	clock.now = clock.now.Add(time.Minute)
 	if _, err := engine.Reconcile(context.Background()); err != nil {
-		t.Fatalf("the reconcile failed: %v", err)
+		t.Fatalf("the second reconcile failed: %v", err)
 	}
 
 	if got := countOf(files.writes, report); got != writes {
-		t.Errorf("a turn that changed nothing rewrote the report (%d writes, then %d)", writes, got)
+		t.Errorf("a turn that changed nothing and said nothing new rewrote the report (%d writes, then %d)", writes, got)
 	}
 }
 
@@ -393,4 +400,87 @@ func countOf(paths []string, path string) int {
 		}
 	}
 	return n
+}
+
+// --- What the turn did, beside where it left the host -------------------------------
+
+// ADR 0007 asked the report for the outcome and the phases that ran, and ADR 0016 keeps
+// both beside the state it added. They answer a different question: the state says where
+// the host is, the outcome and the phases say what this turn did to get there.
+func TestTheReportSaysWhatTheTurnDidAndWhichPhasesRan(t *testing.T) {
+	engine, _, runner, _ := planFixture(t)
+
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+
+	report := mustLastTurn(t, engine)
+	if report.Outcome != OutcomeApplied {
+		t.Errorf("the report says the turn %q, want applied", report.Outcome)
+	}
+	phases := strings.Join(report.Phases, "\n")
+	for _, want := range []string{"firewall", "kernel switches", "networkd", "processes"} {
+		if !strings.Contains(phases, want) {
+			t.Errorf("the report does not say the %s phase ran: %v", want, report.Phases)
+		}
+	}
+
+	// A turn that found nothing to do says so, and names no phase: none ran.
+	tablePresent(runner)
+	setsHold(runner, map[string][]string{"uplink4_pppoe0": {}, "uplink6_pppoe0": {}})
+	if _, err := engine.Reconcile(context.Background()); err != nil {
+		t.Fatalf("the reconcile failed: %v", err)
+	}
+	report = mustLastTurn(t, engine)
+	if report.Outcome != OutcomeUnchanged {
+		t.Errorf("a turn with nothing to do says it %q, want unchanged", report.Outcome)
+	}
+	if len(report.Phases) != 0 {
+		t.Errorf("a turn that ran no phase names %v", report.Phases)
+	}
+	if report.State != StateConverged {
+		t.Errorf("the state is %q, want converged", report.State)
+	}
+}
+
+// A turn that stopped part-way says so as its outcome, which is not the same statement as
+// the state: the state is about the host against the declaration, the outcome is about
+// what this turn managed (ADR 0007, ADR 0016).
+func TestTheReportSaysWhenTheTurnWasPutBack(t *testing.T) {
+	engine, _, runner, _ := planFixture(t)
+	runner.fail["systemctl enable --now regied-dnsmasq.service"] = errFake
+
+	plan := mustPlan(t, engine, load(t, hostFixture))
+	if _, err := engine.Submit(context.Background(), plan, Declaration{Bytes: declarationOf(hostFixture)}); err == nil {
+		t.Fatal("the failing start was not reported")
+	}
+
+	report := mustLastTurn(t, engine)
+	if report.Outcome != OutcomeRolledBack {
+		t.Errorf("the report says the turn %q, want rolled back", report.Outcome)
+	}
+	if report.State != StateFailing {
+		t.Errorf("the state is %q, want failing", report.State)
+	}
+}
+
+// Validation warnings are about the declaration, so they are in the report of every turn
+// that converged toward it — including the ones nobody was watching, which is the only
+// place a warning about the record can still be read (ADR 0006, ADR 0016).
+func TestTheReportCarriesTheDeclarationsWarnings(t *testing.T) {
+	engine, files, _, _ := planFixture(t)
+	// Prefix delegation with no DUID file: networkd sends one of its own, and a host
+	// replacing one that already holds a delegation is silently given another prefix.
+	warns := strings.Replace(hostFixture, "      spec: {ifname: eth0}\n", `      spec:
+        ifname: eth0
+        dhcpv6:
+          prefixDelegation:
+            prefixLength: 56
+`, 1)
+	_ = files
+
+	mustSubmit(t, engine, warns, "/etc/regied/config.yaml")
+
+	report := mustLastTurn(t, engine)
+	if !strings.Contains(strings.Join(report.Warnings, "\n"), "duidFile") {
+		t.Errorf("the report does not carry what validation warned about: %v", report.Warnings)
+	}
 }
