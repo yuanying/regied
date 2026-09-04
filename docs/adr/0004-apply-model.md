@@ -66,6 +66,14 @@ because networkd would otherwise send a different one and the delegated prefix w
 change silently, while an uplink whose address is not known yet is ordinary — the line is
 not up, and the rules that depend on it are left out and say so.
 
+*Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
+not built: with a loop there is another attempt in a minute, so the general answer is that
+the artifact depending on a missing value is left out and picked up on a later turn — the
+disposition this paragraph gives an uplink address, given to the rest. **What is left out is
+the whole artifact, and what a previous turn wrote is left alone**, which is what keeps the
+reasoning above about the DUID true: a prefix delegation written without one is not a
+smaller version of it.*
+
 ### Idempotence is measured per artefact, and "nothing changed" means no command runs
 
 - A file whose rendered content and mode already match what is on disk is not rewritten.
@@ -89,6 +97,14 @@ not up, and the rules that depend on it are left out and say so.
 
 An apply that changes nothing therefore runs no command at all, which is what makes
 `regied apply` safe to run from a timer, from a boot unit, and by hand during an outage.
+
+*Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
+not built: this property is what the reconciliation loop is built out of — a turn of that
+loop is exactly what this section describes — but the loop is not built out of a timer. A
+timer would run `regied apply`, which reads the configuration file, so an unfinished edit
+would reach the host on a schedule; and a second mechanism would mean a second thing to
+stop. The statement above stays true, and an operator who wants such a timer can have one,
+knowing what it reads.*
 
 ### Two stages: stage everything, then commit
 
@@ -217,6 +233,13 @@ use it.
   reason is gone. The two around it are not, and they are enough on their own.)*
 - It would run before regied and before the links exist, so nothing would ever correct
   it.
+
+*Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
+not built: what runs at start is a turn over the record of the declaration the host
+accepted, not an apply over the configuration file. The argument below is unchanged — the
+ruleset is kernel state and somebody has to install it after every boot — and what changes
+is only the input, so that an edit left unfinished in the file does not become the host's
+configuration at the next reboot.*
 
 **regied applies at start instead.** The apply is idempotent, so on a boot where nothing
 changed it writes no file and runs one command — the one that installs a table the kernel

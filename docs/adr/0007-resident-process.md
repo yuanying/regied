@@ -1,11 +1,35 @@
 # ADR 0007: The resident process answers questions and follows addresses. It does not apply
 
-- Status: Deferred (2026-09-04). **Decided, and then set aside: nothing here is being
-  built.** The HTTP API turned out not to be wanted yet, and the work of building it is
-  not scheduled. It becomes a decision to act on when a host is found to need something
-  resident.
+- Status: Deferred (2026-09-04) as to the API. **The daemon half is superseded by
+  [ADR 0016](0016-converging-on-the-accepted-declaration.md)** (2026-09-04). Nothing here
+  is built.
 
-> **There is no resident process on the host, and none is planned for now.** `regied` has
+> **The title of this record is now half wrong, and the half that is wrong is the
+> important one.** A host was found to need something resident after all, and it needs it
+> in order to converge: ADR 0016 gives the resident process a reconciliation loop, so
+> **"it does not apply" is reversed.** What survives, and is promoted to the centre of that
+> design, is the other half — **`serve` takes no configuration file.** The record of the
+> apply is its input, which is what keeps an unfinished edit from reaching the host.
+>
+> Read the rest of this record with three amendments from ADR 0016.
+>
+> - **The record designed below gains the accepted declaration itself**, not only its
+>   digest, and splits in two: a spec written only when a turn converged, and a report of
+>   the last attempt written every time. The dispositions stated here apply to the report.
+> - **The boot unit reads that record rather than a configuration file.** Everything else
+>   argued for the two units — the ordering, the `nftables.service` guard, the package
+>   shipping them rather than regied rendering them — is unchanged.
+> - **The address watcher stops being a separate mechanism.** A kernel address event wakes
+>   a turn of the loop, and a turn already seeds every set from the kernel.
+>
+> **The HTTP API is unaffected and stays deferred.** It is not wanted yet, and ADR 0016
+> does not want it either: the control socket it adds carries two verbs — confirm and
+> cancel — and no endpoint. Everything below about endpoints, readiness, the conntrack
+> summary and the lease list is still a decision about how to build something nobody is
+> building.
+
+> **There is no resident process on the host.** *(ADR 0016 decides that there will be one,
+> for a reason this record did not have; it is not built either.)* `regied` has
 > two commands, `render` and `apply`; there is no `serve`, no listener, and no unit that
 > runs anything at boot. The only thing an apply leaves behind is the text of the ruleset
 > it installed ([ADR 0004](0004-apply-model.md)), written under regied's state directory
@@ -87,6 +111,14 @@ the declaration must not move the router's sets. The difference between the file
 is applied is the question `regied apply --dry-run` exists to answer (ADR 0006).
 
 ### The apply writes down what it did, and that record is the interface
+
+*Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
+not built: the record becomes the thing that is converged toward and not only the thing that
+is read about. It therefore holds **the accepted declaration itself**, not only the digest
+of it, and it splits along the rule below about when it is written: the accepted declaration
+only when a turn converged, and the account of the attempt every time. The table below is
+that second half, and the uplink rows in it are derived from the declaration rather than
+carried separately.*
 
 An apply gains a second artifact under regied's state directory, beside the recorded
 ruleset: **one record of the apply itself.** It is written at the end of every apply,
@@ -289,7 +321,22 @@ notices drift. Deciding to restart a router's only uplink is an act with a rollb
 attached to it, and it belongs to an operator or to a boot unit, not to the judgement of
 a process whose job is to answer questions.
 
+*Superseded by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided
+and not built: converging is the reason the process exists. The concern in the paragraph
+above is not dismissed there — it is answered by drawing the line inside the loop instead
+of around it. **A turn nobody asked for never takes down something that is up**: it writes,
+creates and starts, and restarting a session that is running stays with an operator, or
+with a deadline an operator set. The two verbs ADR 0016 puts on the socket are confirm and
+cancel; there is still no apply endpoint, no dry-run endpoint, and no HTTP API.*
+
 ### Two units, and regied does not write them
+
+*Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
+not built: the boot unit runs one turn over the record rather than an apply over a
+configuration file, so that an edit left unfinished in the file does not become the host's
+configuration at the next reboot. Everything else in this section — the ordering, the
+`nftables.service` guard, the resident process not requiring the boot unit, and the package
+shipping both rather than regied rendering them — stands as written.*
 
 **`regied-apply.service`** runs `regied apply` once at boot and stays marked as done. It
 is where ADR 0004's decision lands: the ruleset is kernel state, so somebody must install
@@ -339,6 +386,13 @@ ever a resident process for it to sit beside. A host that installs regied and ne
 anything still needs it.
 
 ### The daemon half: following the sets
+
+*Amended by [ADR 0016](0016-converging-on-the-accepted-declaration.md), which is decided and
+not built: the watcher is not a separate writer of the sets. An address event wakes a turn
+of the reconciliation loop, and a turn already reads what each link holds and writes the
+sets that differ. Everything below about what belongs in a set, about reconciling at
+startup rather than trusting events, and about a missing table being ordinary, is what a
+turn does — which is why the mechanism collapses into it rather than sitting beside it.*
 
 The watcher subscribes to the kernel's address notifications for both families and keeps
 each uplink's set equal to the global addresses that uplink's link is holding. That is
