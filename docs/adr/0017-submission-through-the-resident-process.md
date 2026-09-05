@@ -1,14 +1,9 @@
 # ADR 0017: A submission goes through the resident process, which is the host's only writer
 
-- Status: Accepted (2026-09-05). **Not built.**
+- Status: Accepted (2026-09-05). **Implemented.**
 
-> **Nothing in this record is implemented.** What runs on a host today is ADR 0016 as
-> built: `regied apply` validates, stages, writes the record and runs its turn in its own
-> process; only a trial travels over the control socket; `regied reconcile` exists, and a
-> boot unit runs it. This record decides the shape that replaces that. The code follows in
-> a later unit, the same two-step way [ADR 0015](0015-uplink-addresses-in-sets.md) and
-> [ADR 0016](0016-converging-on-the-accepted-declaration.md) were carried, after the netns
-> acceptance and the operational README are closed and before the first real host.
+> **The submission path, four control messages, process-lifetime writer lock, root-only
+> socket, first unattended turn, and single service described here are implemented.**
 >
 > ADR 0007's HTTP API stays deferred, and nothing here revives it.
 

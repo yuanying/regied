@@ -137,13 +137,8 @@ regied 無しで同じ値を計算できる。
 
 ## 宣言がホストに届くまで
 
-> **この節は [ADR 0017](../adr/0017-submission-through-the-resident-process.md) が
-> 決めた形を書いており、まだ実装されていない。** 実装されるまで動いているのは
-> [ADR 0016](../adr/0016-converging-on-the-accepted-declaration.md) が実装されたままの
-> 形であり、4 か所が違う。`regied apply` は自分のプロセスで検証・記録・周回を行い、デーモンを
-> 必要としない。記録へ向けて 1 周回す `regied reconcile` があり、起動時ユニット
-> `regied-reconcile.service` がそれを走らせる。制御ソケットが受け付けるのは試行・確認・取消の
-> 3 つである。ソケットは root と 1 グループに開かれている。
+> **この節は [ADR 0017](../adr/0017-submission-through-the-resident-process.md) により
+> 実装された提出経路を記述する。**
 
 **ディスク上のファイルは、ホストが収束していく先ではない。** `regied apply` がそれを読んで
 常駐プロセスへ送り、常駐プロセスが検証してステージし、検証とステージングを通った時点で、
