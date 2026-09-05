@@ -363,17 +363,6 @@ func TestAHookIsRecognisedAsOurs(t *testing.T) {
 	}
 }
 
-func TestEveryStepKnowsHowToPutTheHostBack(t *testing.T) {
-	engine, _, _, _ := planFixture(t)
-	plan := mustPlan(t, engine, load(t, hostFixture))
-
-	for _, step := range plan.Steps {
-		if step.Undo == nil {
-			t.Errorf("the step %q has no way back, so a later failure could not roll it back", step.describe())
-		}
-	}
-}
-
 // --- helpers -----------------------------------------------------------------------
 
 func fileChangeFor(plan *Plan, path string) (FileChange, bool) {

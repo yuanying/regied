@@ -1,19 +1,17 @@
 # ADR 0005: What a failed apply rolls back, and what it cannot
 
 - Status: Superseded by [ADR 0016](0016-converging-on-the-accepted-declaration.md)
-  (2026-09-04) as a decision. **The mechanism described here is what is built and running,
-  and it stays until the replacement exists.**
+  (2026-09-04). **The mechanism described here was removed when the reconciliation loop
+  was built.**
 
 > ADR 0016 removes rolling back altogether. A submission that fails part way leaves the
 > record holding what was submitted; a reconciliation loop keeps working toward it under
 > backoff, within a line it may not cross on its own; and going back is a person applying
 > the previous file — which this record's last section already said going further back than
 > one apply would be. The one automatic revert that remains is the expiry of an apply made
-> with a deadline, for the case where the person cannot reach the host. **That loop is
-> decided and not built.** Removing the undo steps before it exists would leave a period
-> with no safety net and nothing in its place, so the code goes when the unit that builds
-> the loop takes it — the same two steps [ADR 0015](0015-uplink-addresses-in-sets.md) was
-> run in.
+> with a deadline, for the case where the person cannot reach the host. **The loop is now
+> built, and its implementation unit removed the undo steps.** Confirmation and its
+> deadline remain for a later implementation unit.
 >
 > **What this record says about what cannot be reversed at all survives ADR 0016 intact**
 > — a restarted session is a new session, a lease handed out stays handed out, a dropped

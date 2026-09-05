@@ -209,9 +209,8 @@ func TestNoCredentialIsAnywhereInThePlan(t *testing.T) {
 	}
 }
 
-// C-3. A staging failure leaves files half written, and what could not be put back is
-// the first thing an operator needs.
-func TestAStagingFailureNamesWhatCouldNotBePutBack(t *testing.T) {
+// C-3. A staging failure names the file and leaves the host at that point.
+func TestAStagingFailureNamesWhereItStopped(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
 	tablePresent(runner)
@@ -225,8 +224,7 @@ func TestAStagingFailureNamesWhatCouldNotBePutBack(t *testing.T) {
 	_, err := engine.Apply(context.Background(), changed)
 
 	requireErrorContaining(t, err, conf)
-	requireErrorContaining(t, err, "could not be put back")
-	requireErrorContaining(t, err, "the rollback also failed")
+	requireErrorContaining(t, err, "remains at the point")
 }
 
 // C-4. Everything is on the host and working; only the note of what was installed could
@@ -275,14 +273,13 @@ func TestAReclaimedCredentialsFileIsNotInThePlan(t *testing.T) {
 		t.Error("the report prints the credential of a file it is reclaiming")
 	}
 
-	// It still has to come back if the apply is rolled back.
+	// A later failure does not put reclaimed secrets back on disk.
 	runner.fail["networkctl reload"] = errFake
 	if _, err := engine.ApplyPlan(context.Background(), plan); err == nil {
 		t.Fatal("the failing reload was not reported")
 	}
-	restored, ok := files.content(stale)
-	if !ok || !strings.Contains(restored, "swordfish") {
-		t.Errorf("the reclaimed credentials file was not put back: %q", restored)
+	if restored, ok := files.content(stale); ok {
+		t.Errorf("the reclaimed credentials file unexpectedly came back: %q", restored)
 	}
 }
 
@@ -358,7 +355,7 @@ func TestRenderAcceptsNoRuntimeAtAll(t *testing.T) {
 // there" is the one answer that lets a rollback delete the table. Reading a failure as
 // that answer takes the firewall off a host over a question nobody could answer
 // (ADR 0005).
-func TestAProbeThatCouldNotBeAskedNeverLetsARollbackDeleteTheTable(t *testing.T) {
+func TestAProbeThatCouldNotBeAskedNeverLetsFailureDeleteTheTable(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
 
@@ -382,7 +379,7 @@ func TestAProbeThatCouldNotBeAskedNeverLetsARollbackDeleteTheTable(t *testing.T)
 	// replacement (ADR 0013); what the undo must not hand nft is a deletion alone.
 	for _, cmd := range runner.ran {
 		if cmd.Stdin == "table inet regied\ndelete table inet regied\n" {
-			t.Fatal("the rollback deleted the table over a probe that had no answer")
+			t.Fatal("the failed turn deleted the table over a probe that had no answer")
 		}
 	}
 }

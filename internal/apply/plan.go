@@ -322,11 +322,7 @@ const (
 	// command like StepCommand and is a kind of its own so that the dry-run can tell the
 	// two nft transactions of the firewall phase apart (ADR 0015).
 	StepSeed StepKind = "seed"
-	// StepKeep does nothing on purpose. It is what an undo is when there is nothing
-	// safe to put back, and its Reason is what the rollback reports (ADR 0005). With no
-	// Reason it is a step that needs no undo at all, and the rollback says nothing about
-	// it: the seeding step is the one case, because the firewall step's undo already
-	// seeds whatever table it leaves.
+	// StepKeep does nothing on purpose and carries the reason a turn could not act.
 	StepKeep StepKind = "keep"
 )
 
@@ -339,10 +335,6 @@ type Step struct {
 	Command Command
 	Switch  SwitchChange
 	File    FileChange
-
-	// Undo puts back what this step changed. Every step has one, because a step without
-	// a way back is a step a later failure could not roll back (ADR 0005).
-	Undo *Step
 }
 
 func (s Step) describe() string {
@@ -940,7 +932,6 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 			Kind:    StepCommand,
 			Reason:  firewallReason(plan.Firewall),
 			Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: plan.Firewall.Ruleset},
-			Undo:    firewallUndo(plan.Firewall),
 		})
 	}
 	// Right after the table when the table went in, and on its own when it did not: the
@@ -952,7 +943,6 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 			Kind:    StepSeed,
 			Reason:  "write the uplink sets: " + describeElements(plan.Firewall.Elements),
 			Command: seedCommand(plan.Firewall.Elements),
-			Undo:    seedUndo(),
 		})
 	}
 
@@ -965,7 +955,6 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 			Kind:   StepSysctl,
 			Reason: "spec.global",
 			Switch: change,
-			Undo:   sysctlUndo(change),
 		})
 	}
 
@@ -979,7 +968,6 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 			Kind:    StepCommand,
 			Reason:  "the systemd-networkd configuration changed",
 			Command: reload,
-			Undo:    &Step{Phase: PhaseNetworkd, Kind: StepCommand, Command: reload},
 		})
 	}
 
@@ -1004,74 +992,8 @@ func firewallReason(change FirewallChange) string {
 	return "the ruleset changed"
 }
 
-// firewallUndo puts the table back as it was.
-//
-// There are three answers, not two. With a recorded ruleset, that text goes back in — one
-// transaction, as ADR 0013 makes it — and the elements this apply read go back into the
-// sets it declares in the same transaction. Replacing a table empties its sets, and the
-// seeding step may never have run: a failure at the table itself is undone before it, so
-// the restore has to carry its own seeding or a rollback that reports success would leave
-// the hairpin rules matching nothing (ADR 0005, ADR 0015). With no record and no table before this apply,
-// taking ours off *is* putting the host back.
-//
-// With no record and a table that was already there, there is nothing to put back and
-// deleting is not the same thing: it would take the firewall off a host that was running
-// one, to recover from a missing note. The table this apply installed is left, and the
-// rollback says so (ADR 0005).
-func firewallUndo(change FirewallChange) *Step {
-	if change.Before != "" {
-		return &Step{
-			Phase:  PhaseFirewall,
-			Kind:   StepCommand,
-			Reason: "put the ruleset the previous apply installed back",
-			Command: Command{Name: "nft", Args: []string{"-f", "-"},
-				Stdin: change.Before + seedingText(declaredIn(change.Before, change.Elements))},
-		}
-	}
-	if change.Table == TableAbsent {
-		return &Step{
-			Phase:  PhaseFirewall,
-			Kind:   StepCommand,
-			Reason: "take the table back off, because there was none before",
-			Command: Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: fmt.Sprintf(
-				"table %s %s\ndelete table %s %s\n",
-				nftables.TableFamily, nftables.TableName, nftables.TableFamily, nftables.TableName)},
-		}
-	}
-	return &Step{
-		Phase: PhaseFirewall,
-		Kind:  StepKeep,
-		Reason: fmt.Sprintf(
-			"the %s %s table this apply installed was left in place: there is no record of what was there before it, and taking it off would leave the host with no firewall",
-			nftables.TableFamily, nftables.TableName),
-	}
-}
-
 func seedCommand(elements []SetElements) Command {
 	return Command{Name: "nft", Args: []string{"-f", "-"}, Stdin: seedingText(elements)}
-}
-
-// seedUndo is deliberately nothing, and says nothing. Whatever table a rollback leaves
-// behind already holds the elements: the table it restores is seeded by the restore
-// itself, the table it could not remove was seeded by the forward step, and the table it
-// takes off has no sets to seed. A table that was left alone and had a set written is
-// holding what the link holds, which is what it should hold whatever the configuration
-// says (ADR 0005).
-func seedUndo() *Step {
-	return &Step{Phase: PhaseFirewall, Kind: StepKeep}
-}
-
-// declaredIn is the elements whose set the given ruleset text declares. A recorded
-// ruleset from before the sets existed declares none, and one add for a set the text does
-// not declare would make the whole restore fail.
-func declaredIn(ruleset string, elements []SetElements) []SetElements {
-	var out []SetElements
-	for _, entry := range elements {
-		if strings.Contains(ruleset, "set "+entry.Set+" {") {
-			out = append(out, entry)
-		}
-	}
-	return out
 }
 
 // describeElements is the seeding as one line, for the dry-run and for the summary.
@@ -1081,15 +1003,6 @@ func describeElements(elements []SetElements) string {
 		out = append(out, entry.String())
 	}
 	return strings.Join(out, ", ")
-}
-
-func sysctlUndo(change SwitchChange) *Step {
-	if !change.HadBefore {
-		return nil
-	}
-	restored := change
-	restored.Value, restored.Before = change.Before, change.Value
-	return &Step{Phase: PhaseKernel, Kind: StepSysctl, Switch: restored}
 }
 
 // changeFor is the plan's entry for one path, or an unchanged one when the plan has
