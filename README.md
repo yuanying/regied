@@ -77,8 +77,8 @@ assumption drives the safety requirements
   prefix is a safe state: the firewall goes in before forwarding is enabled. Going back is
   a person applying the previous file.
 - **The host converges on what was accepted, not on the file.** Only `regied apply` reads
-  the configuration file. The loop and the boot unit read the declaration the host
-  accepted, so an unfinished edit never reaches the host on a timer.
+  the configuration file. The resident process reads the declaration the host accepted,
+  so an unfinished edit never reaches the host on a timer.
 - **A change can be applied with a deadline.** `regied apply --confirm` reverts to the
   previous declaration unless the operator, still able to reach the host, confirms it.
   This is the one automatic revert in the design, and it exists for lockout.
@@ -142,13 +142,13 @@ below is.
 
 | What | Where | Written by |
 |---|---|---|
-| The binary | `/usr/bin/regied` — the shipped units expect it there | the operator |
+| The binary | `/usr/bin/regied` — the shipped unit expects it there | the operator |
 | The configuration | `/etc/regied/config.yaml` — the default of `regied apply` and `regied render`; `--config` names another | the operator |
 | Credentials | files under `/etc/regied/secrets/`, at the paths the configuration names | the operator |
-| The two systemd units | `/etc/systemd/system/`, copied from [`dist/systemd/`](dist/systemd/) | the operator |
+| The systemd unit | `/etc/systemd/system/regied.service`, copied from [`dist/systemd/`](dist/systemd/) | the operator |
 | The accepted declaration | `/var/lib/regied/accepted/declaration.yaml` | regied, when a submission is accepted |
 | The report of the last turn | `/var/lib/regied/turn/report.yaml` | regied, when what it says changes |
-| The control socket | `/run/regied/control.sock` | the resident process |
+| The control socket | `/run/regied/control.sock`. Root's, with no group: reaching it is the capability of reconfiguring the host | the resident process |
 | networkd, dnsmasq, pppd files and the pppd hooks | the distribution's own directories, under regied's name and ownership marker | regied |
 
 regied creates its own directories. The operator supplies the first four rows.
@@ -162,31 +162,42 @@ control**, and keeping it there is the whole of the rollback story below.
 
 ### The systemd units
 
-Two units ship in `dist/systemd/`. Until there is a package, copy them into
-`/etc/systemd/system/`, reload, and enable both.
+One unit ships in `dist/systemd/`. Until there is a package, copy it into
+`/etc/systemd/system/`, reload, and enable it.
 
 ```sh
-cp dist/systemd/regied-reconcile.service dist/systemd/regied.service /etc/systemd/system/
+cp dist/systemd/regied.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now regied-reconcile.service regied.service
+systemctl enable --now regied.service
 ```
 
 | Unit | Runs | Role |
 |---|---|---|
-| `regied-reconcile.service` | `regied reconcile` once at boot, then exits | Puts the firewall and everything else back after a reboot. Fails, visibly, if the turn ended failing |
-| `regied.service` | `regied serve`, resident | The reconciliation loop, the confirmation trials, and the control socket |
+| `regied.service` | `regied serve`, resident | The reconciliation loop, the control socket, the confirmation trials, and the convergence at boot |
 
-Both read the accepted declaration and nothing else. The resident unit is ordered after
-the boot unit but does not require it: a boot turn that failed is exactly when the loop's
-retrying is wanted. There is no timer, and the package ships none. **The loop lives in
-`regied.service` alone, which is what makes stopping it one operation**
+It reads the accepted declaration and nothing else. There is no separate boot unit: the
+first turn the daemon runs after any start — a boot, an upgrade, a `systemctl restart` —
+is what puts the firewall and everything else back from the record. That turn is an
+unattended one, so restarting the daemon never restarts a session
+([ADR 0017](docs/adr/0017-submission-through-the-resident-process.md)). There is no timer,
+and the package ships none. **The loop lives in `regied.service` alone, which is what
+makes stopping it one operation**
 ([ADR 0016](docs/adr/0016-converging-on-the-accepted-declaration.md)).
 
-Two things on the host must be true before the units are enabled.
+The unit is `Type=notify`. The daemon hands systemd its state after every turn, so
+`systemctl status regied` says `converged`, `waiting` or `failing`, and names the first
+thing it is waiting on or failing at, without anyone opening the journal.
+
+**Stop it, never disable it.** Stopping the daemon stops the converging and nothing else,
+which is what the outage procedure below relies on. Disabling it also gives up the
+convergence at boot, and the session units regied wrote are systemd's to start: on the
+next boot they dial with no table in front of them.
+
+Two things on the host must be true before the unit is enabled.
 
 - **The distribution's `nftables.service` is disabled.** Its unit file starts by flushing
   the entire ruleset, which takes regied's table with it, and a second owner of the
-  ruleset is one the loop would fight with every minute. The units are ordered after it
+  ruleset is one the loop would fight with every minute. The unit is ordered after it
   as a guard against the case where it is enabled anyway; that ordering is not a blessing
   ([ADR 0007](docs/adr/0007-resident-process.md)).
 - **networkd is enabled and owns the links.** `/etc/network/interfaces` is empty and
@@ -199,20 +210,32 @@ systemctl enable --now systemd-networkd.service
 
 ### Commands
 
-Six verbs. The table says what each one reads, because that is the property the design
-rests on: **only `regied apply` reads the configuration file**. The full table, with
-flags, is in [`docs/spec/configuration.md`](docs/spec/configuration.md#how-a-declaration-reaches-the-host).
+Five verbs. The table says what each one reads, because that is the property the design
+rests on: **only `regied apply` reads the configuration file**, and **only the resident
+process writes the host**. The full table, with flags, is in
+[`docs/spec/configuration.md`](docs/spec/configuration.md#how-a-declaration-reaches-the-host).
 
 | Command | Reads | Does |
 |---|---|---|
 | `regied render` | the configuration file | Prints what every backend would be given. Touches no host |
 | `regied apply --dry-run` | the file and this host | Prints what an apply would change, and changes nothing |
-| `regied apply` | the file and this host | Records the declaration as accepted, then runs one turn toward it |
-| `regied apply --confirm <duration>` | the file and this host | Starts a trial with a deadline instead of writing the record. Needs `regied.service` running |
-| `regied reconcile` | the record and this host | One turn toward the accepted declaration. Exits non-zero if it ended failing |
-| `regied serve` | the record and this host | The loop: a turn every resync interval and on every kernel address change |
+| `regied apply` | the file | Sends the declaration to the resident process, which records it as accepted and runs one turn toward it. Prints where the turn left the host |
+| `regied apply --confirm <duration>` | the file | Sends the declaration as a trial with a deadline instead of writing the record |
+| `regied serve` | the record and this host | The resident process: a turn every resync interval and on every kernel address change, and the control socket |
 | `regied confirm` | the control socket | Makes the trial the accepted declaration. Stops the clock |
 | `regied cancel` | the control socket | Drops the trial and converges on the previous declaration now |
+
+`regied apply`, with or without `--confirm`, needs `regied.service` running. On a host
+where it is not, the command is refused before anything on the host is read, and says
+what to do:
+
+```
+regied: the resident process is not running: ...
+  start regied.service and try again
+```
+
+It does not fall back to running the turn itself; the resident process is the host's only
+writer. `render` and `apply --dry-run` need no daemon.
 
 Each verb answers `-h` with its flags.
 
@@ -252,7 +275,7 @@ What an operator needs to know about it:
 
 Every turn ends in one of three states, and the state is what to read.
 
-| State | Meaning | Exit status of `apply` / `reconcile` |
+| State | Meaning | Exit status of `apply` |
 |---|---|---|
 | `converged` | The host holds the whole declaration | 0 |
 | `waiting` | Everything that could be done was done; something is left out for want of a value that only exists at apply time, such as an AFTR name that has not resolved. What it waits on is named | 0 |
@@ -281,9 +304,10 @@ what avoids it.
 
 1. **Prepare the host.** Build (`make build-arm64`), copy the binary to `/usr/bin/regied`,
    write the configuration to `/etc/regied/config.yaml` and the credential files under
-   `/etc/regied/secrets/`, meet the prerequisites above, install and enable the two units.
-   Until a declaration is accepted, both units report that there is none and change
-   nothing. That is expected.
+   `/etc/regied/secrets/`, meet the prerequisites above, and install, enable and start
+   `regied.service`. The daemon comes first because an `apply` is a submission to it.
+   Until a declaration is accepted it reports that there is none and changes nothing,
+   and `systemctl status regied` says so. That is expected.
 2. **Look before touching anything.** `regied render` prints what each backend would be
    given. `regied apply --dry-run` prints what the host would change, file by file and
    command by command, and does none of it. Credentials are reported as "would be written,
@@ -294,8 +318,9 @@ what avoids it.
    regied apply --confirm 10m
    ```
 
-   This is refused, and says why, if `regied.service` is not running: nobody would be
-   holding the clock. The trial is held in the daemon's memory; the record is untouched.
+   Like every `apply`, this is refused, and says why, if `regied.service` is not running;
+   for a trial there would also be nobody holding the clock. The trial is held in the
+   daemon's memory; the record is untouched.
 4. **Prove you can still get in, by the path the change could have broken.** Open a new
    session to the host over the network. Check from a LAN client that it gets an address
    and reaches the outside. Read `/var/lib/regied/turn/report.yaml` and
@@ -306,9 +331,9 @@ what avoids it.
    turn, allowed to restart sessions. Confirm over the network path, not from a serial
    console: a confirmation that arrives by a path the change cannot affect proves nothing.
 6. **Commit the file you confirmed** to version control. That copy is the rollback.
-7. **Reboot once** before moving clients over. `regied-reconcile.service` should bring
-   the firewall and everything else back from the record with no file involved. A trial
-   never survives a reboot; only a confirmed declaration does.
+7. **Reboot once** before moving clients over. The first turn of `regied.service` should
+   bring the firewall and everything else back from the record with no file involved. A
+   trial never survives a reboot; only a confirmed declaration does.
 
 A plain `regied apply` during a trial ends the trial and writes its own declaration to
 the record, with no deadline left. The command says so. That is choosing to have no net.
@@ -318,7 +343,8 @@ the record, with no deadline left. The command says so. That is choosing to have
 The loop is a repair mechanism. During an incident that is the last thing you want
 running while you work, so the procedure starts and ends with the daemon.
 
-**Before touching anything by hand, stop the daemon. Start it when you are done.**
+**Before touching anything by hand, stop the daemon. Start it when you are done. Stop,
+never disable.**
 
 ```sh
 systemctl stop regied     # the loop stops. Nothing else happens
@@ -334,9 +360,15 @@ accepted declaration is what the host is supposed to hold.** That is correct. If
 edit is the fix, put it in the file and submit it. Hand edits made while the daemon is
 running are drift and are gone within a minute, which is the loop doing its job.
 
-If a trial was running when you stopped the daemon, it is gone: the next turn, from the
-daemon starting again or from the boot unit, converges on the declaration that was
-accepted before the trial. That is the safe direction, and it is what to expect.
+Two things follow from the daemon being the only writer. While it is stopped, `regied
+apply` is refused, because there is nothing to submit to; start the daemon first. And
+the lever is stop, not disable: a disabled unit does not come back at boot, which is
+exactly when the host needs a turn, and the session units regied wrote still dial then
+with no table in front of them.
+
+If a trial was running when you stopped the daemon, it is gone: the next turn, when the
+daemon starts again, converges on the declaration that was accepted before the trial.
+That is the safe direction, and it is what to expect.
 
 **Going back is applying the previous file.** There is no rollback command, because there
 is nothing to roll back to except a file, and the file is in version control.
@@ -366,6 +398,11 @@ dropped. Two ways forward, both ordinary submissions:
 Re-running the same `regied apply` is also the retry for the half the loop is not allowed
 to do on its own: an apply is idempotent, so it does the remaining steps and nothing else.
 
+**An `apply` that was interrupted** — Ctrl-C, an ssh session that dropped, a change that
+cut your own path — did not interrupt the turn. The turn belongs to the daemon and runs
+to its end; the command says so as it exits. The report and the journal say how it ended,
+and the report is what answers whether the record was written.
+
 **Locked out.** If the change went in with `--confirm`, wait: the deadline reverts to the
 previous declaration with a submitted turn, sessions and all, and the host comes back.
 If it went in without `--confirm`, nothing on the host will undo it. Reach the host by a
@@ -381,7 +418,7 @@ name the thing rather than the mood.
 |---|---|
 | `journalctl -u regied` | Every change of state, and each distinct drift when it appears and when it clears, with its backoff. Not every turn: a quiet log is a converged host |
 | `/var/lib/regied/turn/report.yaml` | The state the last turn ended in and when it was entered, what it is waiting on or what is failing, the revision, warnings, whether a trial is active and its deadline. Rewritten only when what it says changes, so a daemon restart does not lose it |
-| `systemctl status regied-reconcile` | Whether the boot turn ended failing. `regied reconcile` exits non-zero when it does |
+| `systemctl status regied` | Whether the daemon is running at all, which is the first question when an `apply` is refused. On its status line, the state the last turn ended in and the first thing it waits on or fails at |
 
 Read the state first. `waiting` names a value that has not arrived yet — a name that has
 not resolved, a DUID file that could not be read — and usually resolves itself.
@@ -392,9 +429,14 @@ nothing submitted to it yet, or has lost its state directory; the answer to both
 upgraded past its declaration: it keeps running what it has and asks for a declaration
 the new version accepts.
 
-`regied reconcile` from a shell runs one turn toward the record and prints the same
-state. It is what to type to ask "put the host back where it should be" without
-submitting anything, and its exit status answers whether it could.
+There is no command that asks for a turn without submitting anything, because the loop
+runs one every minute unasked, up to the line an unattended turn may not cross. Past that
+line — a session to restart on new options, something to stop that the declaration
+dropped — is a submission, and the way to ask for it is `regied apply` of the file. When
+the file and the record differ and it is the record you want re-run with a person's
+authority, apply the record: `/var/lib/regied/accepted/declaration.yaml` is an ordinary
+declaration, and pointing `apply --config` at it is an ordinary submission of the same
+revision.
 
 ## Test
 
