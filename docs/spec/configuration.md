@@ -150,9 +150,12 @@ that converges reads the record rather than the file
 |---|---|---|
 | `regied render` | the configuration file, and nothing of any host | prints what the configuration means |
 | `regied apply` | the configuration file and this host | records the declaration, then converges this host on it |
+| `regied apply --confirm duration` | the configuration file and this host | starts an in-memory trial and a deadline without replacing the accepted declaration |
 | `regied apply --dry-run` | the configuration file and this host | prints what that would change, and changes nothing |
 | `regied reconcile` | the record and this host | converges this host on the recorded declaration |
-| `regied serve [-resync duration]` | the record and this host | continuously converges on resync (one minute by default) and address events |
+| `regied serve [-resync duration] [-control path]` | the record and this host | continuously converges on resync (one minute by default) and address events, and holds confirmation trials |
+| `regied confirm` | the local control socket | writes the active trial to the accepted declaration and reports its revision and last turn state |
+| `regied cancel` | the local control socket | drops the active trial and immediately runs a submitted turn toward the accepted declaration |
 
 `regied apply` is the only thing that reads the configuration file. `serve` has no
 configuration-file flag; netlink events only bring a full comparison forward. That keeps an
@@ -163,6 +166,20 @@ The record is what was **asked for**, not what last worked. A submission whose c
 fail leaves the new declaration in the record; the host is wherever the failure left it,
 and the report says so. Going back to an earlier declaration is applying an earlier file,
 which is an ordinary submission.
+
+The control socket defaults to `/run/regied/control.sock`. Its directory is accessible to
+root and one operating-system group, and the socket mode is `0660`. It accepts exactly
+three messages: start or replace a trial, confirm it, and cancel it. It is not an HTTP API
+and carries no status, apply, dry-run, reload, or resource operation.
+
+While a trial is active, every resident-loop turn uses the trial as its spec. Expiry and
+cancel use the same path: discard the in-memory trial and run a submitted turn toward the
+accepted declaration immediately. Stopping or restarting the daemon discards the trial;
+the durable declaration was never replaced, so the next turn moves in the safe direction.
+A plain `apply` during a trial replaces the accepted declaration and ends the trial on the
+daemon's next comparison. The last-turn report marks an active trial with its revision and
+deadline because this is useful diagnosis, but it remains diagnosis and never becomes a
+second spec.
 
 ## Where a turn ends
 
