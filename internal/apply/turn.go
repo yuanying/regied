@@ -203,7 +203,40 @@ type TurnReport struct {
 	// Warnings is what validation and the renderers said about the declaration.
 	Warnings []string `yaml:"warnings,omitempty"`
 	// Notes is what the host could not answer without that being a failure.
-	Notes []string `yaml:"notes,omitempty"`
+	Notes         []string  `yaml:"notes,omitempty"`
+	Trial         bool      `yaml:"trial,omitempty"`
+	TrialDeadline time.Time `yaml:"trialDeadline,omitempty"`
+}
+
+func (e *Engine) ReportTrial(revision string, deadline time.Time) (*TurnReport, error) {
+	report, _, err := e.readTurnReport()
+	if err != nil {
+		return nil, err
+	}
+	report.Trial = true
+	report.TrialDeadline = deadline.UTC()
+	data, err := yaml.Marshal(report)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.host.Files.WriteFile(e.opts.turnReport(), data, 0o644); err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+func (e *Engine) ClearTrialReport() error {
+	report, _, err := e.readTurnReport()
+	if err != nil {
+		return err
+	}
+	report.Trial = false
+	report.TrialDeadline = time.Time{}
+	data, err := yaml.Marshal(report)
+	if err != nil {
+		return err
+	}
+	return e.host.Files.WriteFile(e.opts.turnReport(), data, 0o644)
 }
 
 // LastTurn reads the report of the last turn.
@@ -433,6 +466,64 @@ func (e *Engine) Submit(ctx context.Context, plan *Plan, declaration Declaration
 	}
 	return result, nil
 }
+
+// SubmitTrial runs a submitted turn without replacing the accepted declaration.
+func (e *Engine) SubmitTrial(ctx context.Context, declaration Declaration) (*Result, error) {
+	document, err := config.Parse(declaration.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Validate(document, config.WithSecretFiles(namedFiles{}))
+	if err != nil {
+		return nil, err
+	}
+	plan, err := e.Plan(ctx, cfg)
+	if err != nil {
+		_, reportErr := e.ReportTurn(Revision(declaration.Bytes), declaration.Source, nil, err)
+		return nil, withNote(err, reportErr)
+	}
+	revision := Revision(declaration.Bytes)
+	result, err := e.ApplyPlan(ctx, plan)
+	_, reportErr := e.ReportTurn(revision, declaration.Source, plan, err)
+	if err != nil {
+		return nil, withNote(err, reportErr)
+	}
+	result.Revision = revision
+	if reportErr != nil {
+		result.Notes = append(result.Notes, reportErr.Error())
+	}
+	return result, nil
+}
+
+// ReconcileTrial runs a turn toward an in-memory trial instead of the durable record.
+func (e *Engine) ReconcileTrial(ctx context.Context, declaration Declaration, unattended bool) (*Result, error) {
+	document, err := config.Parse(declaration.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.Validate(document, config.WithSecretFiles(namedFiles{}))
+	if err != nil {
+		return nil, err
+	}
+	plan, err := e.Plan(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if unattended {
+		plan = e.unattendedPlan(plan)
+	}
+	result, err := e.ApplyPlan(ctx, plan)
+	_, reportErr := e.ReportTurn(Revision(declaration.Bytes), declaration.Source, plan, err)
+	if err != nil {
+		return nil, withNote(err, reportErr)
+	}
+	result.Revision = Revision(declaration.Bytes)
+	return result, reportErr
+}
+
+// AcceptTrial makes an already validated in-memory trial durable without requiring it
+// to have converged. Confirmation tests reachability, not convergence (ADR 0016).
+func (e *Engine) AcceptTrial(declaration Declaration) error { return e.accept(declaration.Bytes) }
 
 // Reconcile runs one turn toward the record and stops. It reads no file but the record:
 // this is what a boot unit runs, and what an operator types to put a host back where it

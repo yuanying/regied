@@ -1,7 +1,7 @@
 // Command regied puts a declared network configuration on one Linux host, and keeps it
 // there.
 //
-// It has four commands, split by what they read. `render` reads nothing: it answers what
+// It has six commands, split by what they read. `render` reads nothing: it answers what
 // a configuration means, anywhere, about any host. `apply` reads a configuration file and
 // this host, and submits the configuration: it is written down as the declaration this
 // host converges toward, and a turn runs toward it. `apply --dry-run` shows what that turn
@@ -33,6 +33,8 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"apply":     applyCommand,
 	"reconcile": reconcileCommand,
 	"serve":     serveCommand,
+	"confirm":   confirmCommand,
+	"cancel":    cancelCommand,
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -62,6 +64,8 @@ Usage:
   regied apply     [flags]   Submit a configuration: record it and converge this host on it.
   regied reconcile           Converge this host on the recorded declaration. Reads no file.
   regied serve     [flags]   Keep converging on the recorded declaration. Reads no file.
+  regied confirm   [flags]   Accept the active confirmation trial.
+  regied cancel    [flags]   Cancel the active trial and converge on the accepted declaration.
 
 Run a command with -h for its flags.
 `)
@@ -71,6 +75,7 @@ Run a command with -h for its flags.
 // otherwise. It is under regied's own directory, alongside the generated configuration
 // it owns and the secrets directory the declaration refers to.
 const DefaultConfigPath = "/etc/regied/config.yaml"
+const DefaultControlPath = "/run/regied/control.sock"
 
 // newFlagSet builds a flag set that prints to the writer the caller chose rather than to
 // stderr, so that a test can read what it said.

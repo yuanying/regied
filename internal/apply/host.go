@@ -32,8 +32,10 @@ type Host struct {
 	// Clock and Locker are what a turn adds to the list (ADR 0016): the time a report
 	// records, and the lock a turn holds while it runs. Left nil, they are the ones this
 	// process is running on.
-	Clock  Clock
-	Locker Locker
+	Clock   Clock
+	Locker  Locker
+	Control Control
+	Timer   Timer
 }
 
 // OSHost is the host this process is running on.
@@ -47,6 +49,8 @@ func OSHost() Host {
 		Units:    OSUnits{},
 		Clock:    OSClock{},
 		Locker:   OSLocker{},
+		Control:  OSControl{},
+		Timer:    OSTimer{},
 	}
 }
 
@@ -60,6 +64,13 @@ type Clock interface {
 type OSClock struct{}
 
 func (OSClock) Now() time.Time { return time.Now() }
+
+type Timer interface {
+	After(time.Duration) <-chan time.Time
+}
+type OSTimer struct{}
+
+func (OSTimer) After(duration time.Duration) <-chan time.Time { return time.After(duration) }
 
 // Locker takes a lock across processes on a path, and blocks until it has it or the
 // context is done. What it returns releases the lock.
