@@ -11,6 +11,11 @@ export NS_ROUTER="rg-router"
 export NS_WAN="rg-wan"
 export NS_INTERNET="rg-internet"
 
+# The reference device lives in NS_ROUTER. A systemd-backed device can instead use the
+# initial namespace, where the real service manager and networkd are running.
+export ROUTER_CONTEXT="${REGIED_NETNS_ROUTER_CONTEXT:-netns}"
+export ROUTER_MGMT_IF="${REGIED_NETNS_MGMT_IF:-}"
+
 # ---- Interfaces the device under test sees --------------------------------
 #
 # The setup script is called with the router netns holding exactly these two links:
@@ -97,6 +102,14 @@ nse() {
   local ns="$1"
   shift
   ip netns exec "${ns}" "$@"
+}
+
+router_exec() {
+  if [[ "${ROUTER_CONTEXT}" == "root" ]]; then
+    "$@"
+  else
+    nse "${NS_ROUTER}" "$@"
+  fi
 }
 
 # sysctl inside a network namespace. The same settings go up in every netns, which is

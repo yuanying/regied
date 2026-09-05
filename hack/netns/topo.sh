@@ -8,7 +8,9 @@
 #
 # This script does not touch the device under test. It goes as far as placing the LAN-
 # side and WAN-side interfaces into the router netns, and leaves configuring what is
-# inside to the script named by REGIED_NETNS_ROUTER_SETUP (ADR 0010).
+# inside to the script named by REGIED_NETNS_ROUTER_SETUP (ADR 0010). Setting
+# REGIED_NETNS_ROUTER_CONTEXT=root leaves the device-side veth ends in the initial
+# namespace. This is for a VM whose real systemd and networkd are part of the test.
 #
 # Usage: topo.sh up | down | status
 set -euo pipefail
@@ -44,7 +46,13 @@ load_modules() {
 
 create_namespaces() {
   local ns
-  for ns in "${NS_CLIENT}" "${NS_ROUTER}" "${NS_WAN}" "${NS_INTERNET}"; do
+  local namespaces=("${NS_CLIENT}" "${NS_WAN}" "${NS_INTERNET}")
+  if [[ "${ROUTER_CONTEXT}" == "netns" ]]; then
+    namespaces+=("${NS_ROUTER}")
+  elif [[ "${ROUTER_CONTEXT}" != "root" ]]; then
+    die "REGIED_NETNS_ROUTER_CONTEXT must be netns or root"
+  fi
+  for ns in "${namespaces[@]}"; do
     ip netns add "${ns}"
     nse "${ns}" ip link set lo up
   done
@@ -54,11 +62,15 @@ create_links() {
   # client <-> router
   ip link add "cl0" type veth peer name "${ROUTER_LAN_IF}"
   ip link set "cl0" netns "${NS_CLIENT}"
-  ip link set "${ROUTER_LAN_IF}" netns "${NS_ROUTER}"
+  if [[ "${ROUTER_CONTEXT}" == "netns" ]]; then
+    ip link set "${ROUTER_LAN_IF}" netns "${NS_ROUTER}"
+  fi
 
   # router <-> wan (the side that stands in for eth0 on real hardware)
   ip link add "${ROUTER_WAN_IF}" type veth peer name "${PPPOE_SERVER_IF}"
-  ip link set "${ROUTER_WAN_IF}" netns "${NS_ROUTER}"
+  if [[ "${ROUTER_CONTEXT}" == "netns" ]]; then
+    ip link set "${ROUTER_WAN_IF}" netns "${NS_ROUTER}"
+  fi
   ip link set "${PPPOE_SERVER_IF}" netns "${NS_WAN}"
 
   # wan <-> internet
@@ -260,6 +272,11 @@ status() {
     ip netns exec "${ns}" ip -brief addr show 2>/dev/null || printf '(absent)\n'
     ip netns exec "${ns}" ip route show 2>/dev/null || true
   done
+  if [[ "${ROUTER_CONTEXT}" == "root" ]]; then
+    printf '=== root device under test ===\n'
+    ip -brief addr show dev "${ROUTER_LAN_IF}" 2>/dev/null || printf '(absent)\n'
+    ip -brief addr show dev "${ROUTER_WAN_IF}" 2>/dev/null || printf '(absent)\n'
+  fi
 }
 
 case "${1:-}" in

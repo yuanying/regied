@@ -81,6 +81,11 @@ netns-image: ## Build the container image for the netns integration tests.
 test-netns-docker: netns-image ## Bring up a privileged container and run the netns integration tests.
 	hack/netns/run-in-docker.sh make test-netns
 
+.PHONY: test-netns-regied
+test-netns-regied: ## Test regied on a systemd host; requires root and real networkd.
+	@test -n "$(REGIED_NETNS_MGMT_IF)" || (echo "REGIED_NETNS_MGMT_IF is required" >&2; exit 1)
+	REGIED_NETNS_ROUTER_CONTEXT=root REGIED_NETNS_ROUTER_SETUP=$(CURDIR)/hack/netns/router/regied.sh $(MAKE) test-netns
+
 .PHONY: netns-shell
 netns-shell: netns-image ## Open a shell in the same container. Build the topology with hack/netns/topo.sh up.
 	hack/netns/run-in-docker.sh bash
