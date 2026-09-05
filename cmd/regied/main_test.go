@@ -149,15 +149,29 @@ func TestHelpIsNotAnError(t *testing.T) {
 	}
 }
 
-// ADR 0016. Three verbs, split by what they read: render reads nothing, apply reads a
-// file and submits it, reconcile reads the record and nothing else.
-func TestUsageNamesTheThreeVerbs(t *testing.T) {
+// ADR 0016. Four verbs, split by what they read: serve and reconcile read the record,
+// never the configuration file.
+func TestUsageNamesTheFourVerbs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	run([]string{"help"}, &stdout, &stderr)
-	for _, verb := range []string{"regied render", "regied apply", "regied reconcile"} {
+	for _, verb := range []string{"regied render", "regied apply", "regied reconcile", "regied serve"} {
 		if !strings.Contains(stdout.String(), verb) {
 			t.Errorf("the usage does not name %q:\n%s", verb, stdout.String())
 		}
+	}
+}
+
+func TestServeTakesNoConfigurationFileAndHasAResyncFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"serve", "-config", "/etc/regied/config.yaml"}, &stdout, &stderr); code != 2 {
+		t.Errorf("regied serve -config exits %d, want 2 (usage)", code)
+	}
+	stderr.Reset()
+	if code := run([]string{"serve", "-h"}, &stdout, &stderr); code != 0 {
+		t.Errorf("regied serve -h exits %d, want 0", code)
+	}
+	if !strings.Contains(stderr.String(), "-resync") || strings.Contains(stderr.String(), "-config") {
+		t.Errorf("serve flags are wrong:\n%s", stderr.String())
 	}
 }
 

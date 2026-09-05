@@ -1,25 +1,18 @@
 # ADR 0016: Converging on the declaration the host accepted
 
-- Status: Accepted (2026-09-04). **Decided, not built.**
+- Status: Accepted (2026-09-04). **The reconciliation loop is built; confirmation is not.**
 
-> **Nothing described here exists on the host.** `regied` has two commands, `render` and
-> `apply`. There is no resident process, no loop, no timer, no confirmation, no deadline,
-> and no unit that runs anything at boot. The only thing an apply leaves behind is the
-> text of the ruleset it installed ([ADR 0004](0004-apply-model.md)), written on success.
-> The record of an apply that [ADR 0007](0007-resident-process.md) designed is not built
-> either, and this record changes what it holds before anything ever writes one.
+> **The record, one-turn reconciliation, resident loop, and boot units described here are
+> built.** Confirmation, cancellation, trials, and their deadline are not; those belong
+> to the following implementation unit. ADR 0007's HTTP API remains deferred.
 >
-> **The rollback [ADR 0005](0005-apply-rollback.md) decided is built, and it stays.** This
+> **The rollback [ADR 0005](0005-apply-rollback.md) decided has been removed.** This
 > record supersedes that one as a decision — nothing rolls back automatically any more;
 > the loop keeps working toward what was submitted, and going back is a person applying
-> the previous file — but the loop does not exist yet. Taking the undo away first would
-> leave a period with no safety net and nothing in its place, on the one part of the
-> system that only runs during an incident. **The code is removed by the unit that builds
-> the loop**, in the same two-step way [ADR 0015](0015-uplink-addresses-in-sets.md) was
-> decided and then built.
+> the previous file. The code was removed by the unit that built the loop, in the same
+> two-step way [ADR 0015](0015-uplink-addresses-in-sets.md) was decided and then built.
 >
-> **Everything below is therefore a decision about how to build this, not a description of
-> anything running.** ADR 0007's HTTP API stays deferred, and nothing here revives it: the
+> ADR 0007's HTTP API stays deferred, and nothing here revives it: the
 > resident process this record asks for answers no questions over HTTP and serves no
 > endpoint.
 
@@ -819,7 +812,7 @@ one subscription that is kept is the one ADR 0015 already needed.
   already dropped — survives intact and is restated above, because it is a property of the
   host and not of the mechanism; and its last section, that going back is an ordinary apply
   of an older file from version control, stops being the exception and becomes the whole
-  answer. **The code stays until the loop is built.**
+  answer. **The code was removed when the loop was built.**
 - **The daemon half of [ADR 0007](0007-resident-process.md) is superseded.** "The resident
   process never applies" is reversed: converging is the reason it exists. "It takes no
   configuration file" is not merely kept but promoted to the centre of the design. The

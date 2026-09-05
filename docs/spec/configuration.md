@@ -152,8 +152,10 @@ that converges reads the record rather than the file
 | `regied apply` | the configuration file and this host | records the declaration, then converges this host on it |
 | `regied apply --dry-run` | the configuration file and this host | prints what that would change, and changes nothing |
 | `regied reconcile` | the record and this host | converges this host on the recorded declaration |
+| `regied serve [-resync duration]` | the record and this host | continuously converges on resync (one minute by default) and address events |
 
-`regied apply` is the only thing that reads the configuration file. That is what keeps an
+`regied apply` is the only thing that reads the configuration file. `serve` has no
+configuration-file flag; netlink events only bring a full comparison forward. That keeps an
 unfinished edit from becoming the host's configuration: nothing that runs on its own can
 reach the file at all.
 

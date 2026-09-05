@@ -1,6 +1,5 @@
 # Build artifacts
 /bin/
-/dist/
 /regied
 
 # Test artifacts
