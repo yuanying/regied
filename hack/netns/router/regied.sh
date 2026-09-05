@@ -79,7 +79,12 @@ up() {
   go build -o "${binary}" ./cmd/regied
   render_declaration
   verify_preview
-  "${binary}" apply -config "${declaration}"
+  "${binary}" serve -control "${RUNTIME_DIR}/control.sock" -resync 1m \
+    >"${RUNTIME_DIR}/serve.log" 2>&1 &
+  echo "$!" >"${serve_pid_file}"
+  wait_for "the regied control socket" 10 test -S "${RUNTIME_DIR}/control.sock" || \
+    die "regied serve did not create its control socket"
+  "${binary}" apply -config "${declaration}" -control "${RUNTIME_DIR}/control.sock"
 
   local state_after
   state_after="$(management_state)"
@@ -97,9 +102,6 @@ up() {
   wait_for "the PPPoE link" 45 ip link show pppoe0 || die "regied did not establish PPPoE"
   wait_for "the DS-Lite tunnel" 20 ip link show dslite0 || die "regied did not establish DS-Lite"
 
-  "${binary}" serve -control "${RUNTIME_DIR}/control.sock" -resync 1m \
-    >"${RUNTIME_DIR}/serve.log" 2>&1 &
-  echo "$!" >"${serve_pid_file}"
   wait_for "reconciliation of the DS-Lite link" 20 \
     bash -c '[[ "$(< /proc/sys/net/ipv4/conf/dslite0/rp_filter)" == 0 ]]' || \
     die "regied serve did not reconcile the DS-Lite link"
