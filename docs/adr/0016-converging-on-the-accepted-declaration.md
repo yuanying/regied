@@ -1,10 +1,10 @@
 # ADR 0016: Converging on the declaration the host accepted
 
-- Status: Accepted (2026-09-04). **The reconciliation loop is built; confirmation is not.**
+- Status: Accepted (2026-09-04). **Implemented.**
 
-> **The record, one-turn reconciliation, resident loop, and boot units described here are
-> built.** Confirmation, cancellation, trials, and their deadline are not; those belong
-> to the following implementation unit. ADR 0007's HTTP API remains deferred.
+> **The record, one-turn reconciliation, resident loop, boot units, confirmation,
+> cancellation, trials, and their deadline described here are built.** ADR 0007's HTTP
+> API remains deferred.
 >
 > **The rollback [ADR 0005](0005-apply-rollback.md) decided has been removed.** This
 > record supersedes that one as a decision — nothing rolls back automatically any more;
