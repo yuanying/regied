@@ -34,6 +34,9 @@ fi
 if [[ -n "${REGIED_NETNS_ROUTER_SETUP:-}" ]]; then
   args+=(--env "REGIED_NETNS_ROUTER_SETUP=${REGIED_NETNS_ROUTER_SETUP}")
 fi
+if [[ -n "${REGIED_NETNS_ROUTER_CONTEXT:-}" ]]; then
+  args+=(--env "REGIED_NETNS_ROUTER_CONTEXT=${REGIED_NETNS_ROUTER_CONTEXT}")
+fi
 if [[ -t 0 && -t 1 ]]; then
   args+=(--interactive --tty)
 fi

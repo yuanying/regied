@@ -1,0 +1,151 @@
+apiVersion: net.unstable.cloud/v1alpha1
+kind: NetworkConfig
+metadata:
+  name: netns-acceptance
+spec:
+  global:
+    ipForwarding: true
+    sourceValidation: false
+    mssClamp: ${MSS_CLAMP}
+  resources:
+    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: ${ROUTER_LAN_IF}
+        addresses: [${ROUTER_LAN_IP}/${LAN_PREFIXLEN}]
+        routes:
+          # Host routes keep the synthetic clients on this veth even when a VM's
+          # management network happens to overlap the test LAN's private range.
+          - destination: ${CLIENT_PPPOE_IP}/32
+          - destination: ${CLIENT_DSLITE_IP}/32
+          - destination: ${CLIENT_SERVER_IP}/32
+    - kind: Interface
+      metadata: {name: wan}
+      spec:
+        ifname: ${ROUTER_WAN_IF}
+        addresses: [${WAN_V6_ROUTER}/${WAN_V6_PREFIXLEN}]
+        routes:
+          - destination: ::/0
+            via: ${WAN_V6_AFTR}
+    - kind: Interface
+      metadata: {name: mgmt}
+      spec:
+        ifname: ${ROUTER_MGMT_IF}
+    - kind: PPPoESession
+      metadata: {name: pppoe0}
+      spec:
+        interfaceRef: wan
+        userIDFile: ${PPPOE_USER_FILE}
+        passwordFile: ${PPPOE_PASSWORD_FILE}
+        mtu: ${PPPOE_MTU}
+        persist: true
+        useDNS: false
+        defaultRoute: {install: false}
+    - kind: DSLiteTunnel
+      metadata: {name: dslite0}
+      spec:
+        underlayRef: wan
+        localAddress: ${WAN_V6_ROUTER}
+        aftrAddress: ${WAN_V6_AFTR}
+        mtu: ${DSLITE_MTU}
+        defaultRoute: {install: true}
+    - kind: EgressRoutePolicy
+      metadata: {name: pppoe-range}
+      spec:
+        family: ipv4
+        priority: 10
+        egressRef: pppoe0
+        sourceRanges: [${PBR_PPPOE_RANGE_START}-${PBR_PPPOE_RANGE_END}]
+        excludeDestinations: [${LAN_CIDR}]
+    - kind: EgressRoutePolicy
+      metadata: {name: dslite-default}
+      spec:
+        family: ipv4
+        priority: 20
+        egressRef: dslite0
+        sourceRanges: [${LAN_CIDR}]
+        excludeDestinations: [${LAN_CIDR}]
+    - kind: SourceNAT
+      metadata: {name: pppoe-masquerade}
+      spec:
+        type: masquerade
+        egressRef: pppoe0
+        sourceRanges: [${LAN_CIDR}]
+    - kind: PortForward
+      metadata: {name: ssh-stub}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: ${FORWARD_WAN_PORT}
+        target:
+          address: ${CLIENT_SERVER_IP}
+          port: ${FORWARD_LAN_PORT}
+    - kind: FirewallZone
+      metadata: {name: outside}
+      spec:
+        linkRefs: [wan, pppoe0, dslite0]
+    - kind: FirewallZone
+      metadata: {name: inside}
+      spec:
+        linkRefs: [lan]
+    - kind: FirewallZone
+      metadata: {name: mgmt}
+      spec:
+        linkRefs: [mgmt]
+    - kind: FirewallPolicy
+      metadata: {name: outside-to-self}
+      spec:
+        from: outside
+        to: self
+        defaultAction: drop
+        rules:
+          - name: icmp
+            action: accept
+            family: ipv4
+            protocol: icmp
+          - name: icmpv6
+            action: accept
+            family: ipv6
+            protocol: icmpv6
+          - name: dslite
+            action: accept
+            family: ipv6
+            protocol: ipip
+    - kind: FirewallPolicy
+      metadata: {name: outside-to-inside}
+      spec:
+        from: outside
+        to: inside
+        defaultAction: drop
+    - kind: FirewallPolicy
+      metadata: {name: inside-to-outside}
+      spec:
+        from: inside
+        to: outside
+        defaultAction: accept
+    - kind: FirewallPolicy
+      metadata: {name: inside-to-self}
+      spec:
+        from: inside
+        to: self
+        defaultAction: accept
+    - kind: FirewallPolicy
+      metadata: {name: mgmt-to-self}
+      spec:
+        from: mgmt
+        to: self
+        defaultAction: drop
+        rules:
+          - name: ssh
+            action: accept
+            family: ipv4
+            protocol: tcp
+            destinationPorts: [22]
+          - name: icmp
+            action: accept
+            family: ipv4
+            protocol: icmp
+          - name: icmpv6
+            action: accept
+            family: ipv6
+            protocol: icmpv6
