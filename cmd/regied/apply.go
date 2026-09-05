@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/yuanying/regied/internal/apply"
@@ -24,7 +26,7 @@ import (
 // An apply is a submission, and it is the only thing in regied that reads the
 // configuration file. Once the declaration has validated and staged it is written down as
 // the one this host converges toward, and the turn that follows runs toward it; the
-// resident process and `regied reconcile` read that record, never the file (ADR 0016).
+// resident process reads that record, never the file (ADR 0017).
 func applyCommand(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("apply", stderr)
 	path := flags.String("config", DefaultConfigPath, "the configuration to apply")
@@ -35,13 +37,8 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 		return parseExit(err)
 	}
 
-	declaration, cfg, err := loadDeclaration(*path)
-	if err != nil {
-		return reportError(stderr, err)
-	}
-	reportConfigWarnings(stderr, cfg)
-
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	engine := apply.New(apply.OSHost(), apply.Options{})
 
 	if *dryRun {
@@ -49,6 +46,11 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "regied apply: -confirm cannot be used with -dry-run")
 			return 2
 		}
+		_, cfg, err := loadDeclaration(*path)
+		if err != nil {
+			return reportError(stderr, err)
+		}
+		reportConfigWarnings(stderr, cfg)
 		// A dry run is not a turn: it writes nothing and runs nothing that changes
 		// anything, so it takes no lock and never waits for one.
 		plan, err := engine.Plan(ctx, cfg)
@@ -62,89 +64,76 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "regied apply: -confirm must be greater than zero")
 		return 2
 	}
+	data, err := os.ReadFile(*path)
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	declaration := apply.Declaration{Bytes: data, Source: *path}
 	if *confirm > 0 {
-		plan, err := engine.Plan(ctx, cfg)
-		if err != nil {
-			return reportError(stderr, err)
-		}
-		apply.ReportWarnings(stderr, plan)
 		deadline := time.Now().Add(*confirm)
 		response, err := (apply.OSControl{}).Do(ctx, *control, apply.ControlRequest{
 			Verb: apply.ControlTrial, Declaration: declaration.Bytes, Source: declaration.Source, Deadline: deadline,
 		})
 		if err != nil {
-			fmt.Fprintf(stderr, "regied: cannot start a confirmation trial because the resident process is unavailable or refused it: %v\n  start regied, or apply without -confirm and accept that nothing will undo it\n", err)
+			if response.Report != nil {
+				reportTurn(stdout, response.Report)
+			}
+			return reportSubmissionError(stderr, err)
+		}
+		if response.Report != nil {
+			reportTurn(stdout, response.Report)
+		}
+		fmt.Fprintf(stdout, "Trial %s started; confirm it before %s.\n", response.Revision, deadline.UTC().Format(time.RFC3339))
+		if response.State == apply.StateFailing {
 			return 1
 		}
-		fmt.Fprintf(stdout, "Trial %s started; state: %s. Confirm it before %s.\n", response.Revision, response.State, deadline.UTC().Format(time.RFC3339))
 		return 0
 	}
-
-	// A turn holds the lock from the moment it reads the host to the moment it stops
-	// changing it, so that the plan is computed against a host nothing else is moving.
-	release, err := engine.LockTurn(ctx)
+	response, err := (apply.OSControl{}).Do(ctx, *control, apply.ControlRequest{Verb: apply.ControlSubmit, Declaration: declaration.Bytes, Source: declaration.Source})
 	if err != nil {
-		return reportError(stderr, err)
+		if response.Report != nil {
+			reportTurn(stdout, response.Report)
+		}
+		return reportSubmissionError(stderr, err)
 	}
-	defer release()
-	previousReport, _ := engine.LastTurn()
-
-	plan, err := engine.Plan(ctx, cfg)
-	if err != nil {
-		return reportError(stderr, err)
+	if response.Report != nil {
+		reportTurn(stdout, response.Report)
 	}
-	// A declaration that could not be rendered as written matters more when it is being
-	// applied than when it is being previewed, so it goes in front of the apply rather
-	// than only in front of a dry run (ADR 0006).
-	apply.ReportWarnings(stderr, plan)
-
-	result, err := engine.Submit(ctx, plan, declaration)
-	if err != nil {
-		return reportError(stderr, err)
-	}
-	reportResult(stdout, result)
-	if previousReport != nil && previousReport.Trial {
-		fmt.Fprintln(stdout, "The plain apply ended the active confirmation trial; no automatic revert remains.")
+	if response.State == apply.StateFailing {
+		return 1
 	}
 	return 0
 }
 
-// reconcileCommand runs one turn toward the declaration this host accepted, and stops.
-//
-// It takes no configuration file, on purpose: it is the one way to ask for a turn that
-// reads nothing but the record. It is what a boot unit runs, and what an operator types
-// to put a host back where it should be without submitting anything (ADR 0016).
-func reconcileCommand(args []string, stdout, stderr io.Writer) int {
-	flags := newFlagSet("reconcile", stderr)
-	if err := flags.Parse(args); err != nil {
-		return parseExit(err)
+func reportSubmissionError(stderr io.Writer, err error) int {
+	if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "connection refused") {
+		fmt.Fprintf(stderr, "regied: the resident process is not running: %v\n  start regied.service and try again\n", err)
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || strings.Contains(err.Error(), "connection reset") {
+		fmt.Fprintf(stderr, "regied: the connection to the resident process was lost: %v\n  the turn belongs to the daemon; its outcome is in the turn report and journal\n", err)
+	} else {
+		fmt.Fprintf(stderr, "regied: submission was refused: %v\n", err)
 	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "regied reconcile: takes no arguments; it reads the accepted declaration and nothing else\n")
-		return 2
-	}
+	return 1
+}
 
-	ctx := context.Background()
-	engine := apply.New(apply.OSHost(), apply.Options{})
-
-	release, err := engine.LockTurn(ctx)
-	if err != nil {
-		return reportError(stderr, err)
+func reportTurn(stdout io.Writer, report *apply.TurnReport) {
+	fmt.Fprintf(stdout, "Revision: %s\nOutcome: %s\n", report.Revision, report.Outcome)
+	for _, phase := range report.Phases {
+		fmt.Fprintf(stdout, "  changed: %s\n", phase)
 	}
-	defer release()
-
-	result, err := engine.Reconcile(ctx)
-	switch {
-	case errors.Is(err, apply.ErrNoRecord):
-		// Nothing was done, and this says so. It is still a failure of the turn to
-		// converge, which is what a boot unit has to be told (ADR 0016).
-		fmt.Fprintf(stderr, "regied: %v\n  nothing was changed; submit a declaration with `regied apply`\n", err)
-		return 1
-	case err != nil:
-		return reportError(stderr, err)
+	for _, item := range report.Waiting {
+		fmt.Fprintf(stdout, "  waiting: %s\n", item)
 	}
-	reportResult(stdout, result)
-	return 0
+	for _, item := range report.Failing {
+		fmt.Fprintf(stdout, "  failing: %s\n", item)
+	}
+	for _, item := range report.Warnings {
+		fmt.Fprintf(stdout, "  warning: %s\n", item)
+	}
+	for _, item := range report.Notes {
+		fmt.Fprintf(stdout, "  note: %s\n", item)
+	}
+	fmt.Fprintf(stdout, "State: %s\n", report.State)
 }
 
 // loadDeclaration reads a configuration file and validates it, and keeps the bytes it
