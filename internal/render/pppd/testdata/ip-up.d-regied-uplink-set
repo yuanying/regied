@@ -15,5 +15,6 @@ address="$4"
 [ -n "$interface" ] || exit 0
 [ -n "$address" ] || exit 0
 
+networkctl reconfigure "$interface" >/dev/null 2>&1 || true
 nft add element inet regied "uplink4_${interface}" "{ ${address} }" >/dev/null 2>&1
 exit 0

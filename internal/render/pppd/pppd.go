@@ -290,6 +290,14 @@ func hookScript(which direction) string {
 	b.WriteString("[ -n \"$interface\" ] || exit 0\n")
 	b.WriteString("[ -n \"$address\" ] || exit 0\n")
 	b.WriteString("\n")
+	if which == up {
+		// networkd sees the PPP link before pppd has assigned its address. On systemd
+		// 257 it then leaves the link configuring and does not install routes from the
+		// matching .network file. The ip-up event is the first point at which the link
+		// is complete, so ask networkd to finish configuring it here. Like the set
+		// update below, this is a best effort hook and never makes pppd's ip-up fail.
+		b.WriteString("networkctl reconfigure \"$interface\" >/dev/null 2>&1 || true\n")
+	}
 	// The set name is built by the renderer that declared the set, with the shell's own
 	// variable where the interface goes. Writing it out here would be a second place for
 	// the name to be decided, and a hook writing to a set nothing declares fails silently
