@@ -240,6 +240,13 @@ What an operator needs to know about it:
   slowed, so the report stays current.
 - **It never exits because it cannot converge.** It stays up and keeps saying what is
   wrong.
+- **Some things converge only on a later turn, by design.** A link that a submission
+  creates — the DS-Lite tunnel — does not exist when that submission plans its kernel
+  switches, so the reverse-path setting declared for it lands on the resident process's
+  first turn after the link appears: the submission reports `waiting`, the next turn
+  reports `converged`. A PPPoE link is the other case: networkd sees it before pppd has
+  given it an address, so the hook pppd runs on ip-up asks networkd to reconfigure the
+  finished link, and the policy route for that uplink appears then.
 - **A host with no accepted declaration does nothing, and says so.** So does a host
   whose record this version of regied no longer accepts. Neither converges toward empty.
 
@@ -260,6 +267,17 @@ The procedure assumes what the project was built against: **the existing router 
 place, and the new host is brought up beside it.** Recovery from anything below is moving
 a cable back. Do not skip the deadline on the strength of that; the deadline is what
 covers the case where the cable is somewhere else.
+
+**One thing to check in the declaration before anything else.** A host that declares any
+`FirewallPolicy` gets an `input` chain whose policy is drop, and a link that belongs to no
+zone has no rule that lets anything in
+([ADR 0013](docs/adr/0013-nftables-ruleset-shape.md)). So the interface through which you
+reach the host must be in a zone, and that zone must have a policy toward `self` that
+admits the management protocol — SSH at least, ICMP if you want to ping it. The first time
+the acceptance suite was run against a virtual machine, the declaration named the LAN and
+the uplinks and not the management link, and the apply locked the session out exactly as
+the ruleset said it would. The deadline below is what covers that; declaring the link is
+what avoids it.
 
 1. **Prepare the host.** Build (`make build-arm64`), copy the binary to `/usr/bin/regied`,
    write the configuration to `/etc/regied/config.yaml` and the credential files under
@@ -387,6 +405,7 @@ Tests are split by the privileges they need.
 | unit tests | `make test` | the Go toolchain, nothing else |
 | netns integration tests | `make test-netns-docker` | Docker (starts a privileged container) |
 | netns integration tests, directly | `make test-netns` | root / CAP_NET_ADMIN and `nft`, `pppd`, `pppoe-server`, `socat` |
+| netns integration tests, with regied under test | `make test-netns-regied REGIED_NETNS_MGMT_IF=<interface>` | root on a host with systemd, such as a Debian 13 VM: real systemd-networkd, pppd and nftables |
 
 The integration tests build a pseudo-WAN out of network namespaces — a PPPoE server,
 a DS-Lite AFTR, and reachability servers — run a router inside it, and check the
@@ -414,11 +433,40 @@ indistinguishable from a pass. A bare `go test -tags netns` skips instead, and
 
 Everything that assembles the router lives in one script, selected by the
 `REGIED_NETNS_ROUTER_SETUP` environment variable. The default is a reference router
-assembled by hand out of `ip` and `nft`. The contract is in
-`docs/adr/0010-netns-testbed.md`.
+assembled by hand out of `ip` and `nft`, and `make test-netns-docker` runs that one. It
+stays as the proof that the testbed itself can judge the seven checks
+([ADR 0010](docs/adr/0010-netns-testbed.md)), which is what makes a failure against regied
+mean something. The contract a setup script has to satisfy is in the same record.
 
-To put a different implementation under test, write one script that satisfies that
-contract and point the variable at it. The tests stay as they are.
+### Testing regied itself
+
+The second setup script puts regied under test, and it needs a host with systemd on it: a
+Debian 13 virtual machine is the intended one. It does not run in the container and it
+does not run on a development machine, because what it tests is regied driving the real
+systemd-networkd, the real pppd units, the real nftables and a real `regied serve`.
+
+```sh
+make test-netns-regied REGIED_NETNS_MGMT_IF=<interface>
+```
+
+Run it as root. The device under test is the host's own root network namespace
+(`REGIED_NETNS_ROUTER_CONTEXT=root`); the pseudo-WAN, the client and the peers stay in
+network namespaces, and the seven checks are exactly the same ones, still observed from
+outside. The script renders and dry-runs the declaration before applying it, starts
+`regied serve` against a test control socket, waits for the host to converge, runs the
+checks, and tears everything down: the daemon, the generated units and files, the state
+directory, the links, the namespaces, and regied's nftables table.
+
+**The management interface has to be named**, and the target refuses to run without it.
+The declaration under test carries firewall policies, and a host with any firewall policy
+drops input on every link that is not in a zone — see
+[the note under first deployment](#putting-it-on-a-host-for-the-first-time). The script
+puts that link in a zone of its own and admits SSH and ICMP to the host, declares nothing
+about its addresses or routes so that the platform's own networkd file stays
+authoritative, records the management addresses and default route before the apply,
+verifies them after it, and probes the management gateway. If any of that fails it
+deletes regied's nftables table at once and nothing else. Building the VM is outside the
+scope of this README.
 
 ### Looking around
 
