@@ -15,6 +15,8 @@
 > ADR 0007's HTTP API stays deferred, and nothing here revives it: the
 > resident process this record asks for answers no questions over HTTP and serves no
 > endpoint.
+>
+> **The submission path is superseded by [ADR 0017](0017-submission-through-the-resident-process.md)** (decided 2026-09-05, not built): a submission goes to the resident process over the control socket, which writes the record and runs the turn; `regied reconcile` and the boot unit are removed. Everything else here stands.
 
 ## Context
 
