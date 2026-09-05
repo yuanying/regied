@@ -149,12 +149,12 @@ func TestHelpIsNotAnError(t *testing.T) {
 	}
 }
 
-// ADR 0016. Four verbs, split by what they read: serve and reconcile read the record,
+// ADR 0016. Six verbs, split by what they read: serve and reconcile read the record,
 // never the configuration file.
-func TestUsageNamesTheFourVerbs(t *testing.T) {
+func TestUsageNamesTheSixVerbs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	run([]string{"help"}, &stdout, &stderr)
-	for _, verb := range []string{"regied render", "regied apply", "regied reconcile", "regied serve"} {
+	for _, verb := range []string{"regied render", "regied apply", "regied reconcile", "regied serve", "regied confirm", "regied cancel"} {
 		if !strings.Contains(stdout.String(), verb) {
 			t.Errorf("the usage does not name %q:\n%s", verb, stdout.String())
 		}

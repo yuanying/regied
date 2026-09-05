@@ -59,8 +59,32 @@ func (OSAddressEvents) Subscribe(ctx context.Context) (<-chan struct{}, error) {
 // startup, then reacts to the periodic resync and netlink address events. Cancellation
 // only stops convergence; it changes no host state.
 func Serve(ctx context.Context, engine *Engine, resync <-chan time.Time, events <-chan struct{}, log io.Writer) error {
+	return serve(ctx, engine, resync, events, nil, log)
+}
+
+// ServeControl is Serve with the local control socket used for trial, confirm, and
+// cancel. Those are the only messages the socket accepts.
+func ServeControl(ctx context.Context, engine *Engine, resync <-chan time.Time, events <-chan struct{}, socket string, log io.Writer) error {
+	requests, closeControl, err := engine.host.Control.Listen(ctx, socket, 0o660)
+	if err != nil {
+		return fmt.Errorf("cannot listen on control socket %s: %w", socket, err)
+	}
+	defer closeControl()
+	return serve(ctx, engine, resync, events, requests, log)
+}
+
+func serve(ctx context.Context, engine *Engine, resync <-chan time.Time, events <-chan struct{}, requests <-chan ControlRequest, log io.Writer) error {
 	var previousState State
 	previousDrift := map[string]bool{}
+	var trial *Declaration
+	var trialBase string
+	var trialDeadline time.Time
+	var expiry <-chan time.Time
+	revertTrial := func(reason string) (*Result, error) {
+		trial, expiry = nil, nil
+		fmt.Fprintf(log, "trial %s\n", reason)
+		return reconcileLocked(ctx, engine)
+	}
 	run := func() {
 		release, err := engine.LockTurn(ctx)
 		if err != nil {
@@ -69,7 +93,22 @@ func Serve(ctx context.Context, engine *Engine, resync <-chan time.Time, events 
 			}
 			return
 		}
-		result, turnErr := engine.ReconcileUnattended(ctx)
+		if trial != nil {
+			if record, err := engine.LoadRecord(); err == nil && record.Revision != trialBase {
+				fmt.Fprintln(log, "trial ended by a plain apply")
+				trial, expiry = nil, nil
+			}
+		}
+		var result *Result
+		var turnErr error
+		if trial != nil {
+			result, turnErr = engine.ReconcileTrial(ctx, *trial, true)
+			if _, err := engine.ReportTrial(Revision(trial.Bytes), trialDeadline); err != nil && turnErr == nil {
+				turnErr = err
+			}
+		} else {
+			result, turnErr = engine.ReconcileUnattended(ctx)
+		}
 		if err := release(); err != nil {
 			fmt.Fprintf(log, "turn lock release failed: %v\n", err)
 		}
@@ -119,6 +158,100 @@ func Serve(ctx context.Context, engine *Engine, resync <-chan time.Time, events 
 				continue
 			}
 			run()
+		case request, ok := <-requests:
+			if !ok {
+				requests = nil
+				continue
+			}
+			switch request.Verb {
+			case ControlTrial:
+				candidate := Declaration{Bytes: request.Declaration, Source: request.Source}
+				release, err := engine.LockTurn(ctx)
+				if err != nil {
+					request.Reply(ControlResponse{Error: err.Error()})
+					continue
+				}
+				if record, err := engine.LoadRecord(); err == nil {
+					trialBase = record.Revision
+				} else {
+					trialBase = ""
+				}
+				trial = &candidate
+				trialDeadline = request.Deadline
+				delay := trialDeadline.Sub(engine.host.Clock.Now())
+				if delay < 0 {
+					delay = 0
+				}
+				expiry = engine.host.Timer.After(delay)
+				result, err := engine.SubmitTrial(ctx, candidate)
+				_ = release()
+				state := StateFailing
+				if result != nil {
+					state = result.State
+				}
+				if _, reportErr := engine.ReportTrial(Revision(candidate.Bytes), trialDeadline); reportErr != nil && err == nil {
+					err = reportErr
+				}
+				fmt.Fprintf(log, "trial started: revision=%s deadline=%s\n", Revision(candidate.Bytes), trialDeadline.UTC().Format(time.RFC3339))
+				response := ControlResponse{Revision: Revision(candidate.Bytes), State: state}
+				if err != nil {
+					response.Error = err.Error()
+				}
+				request.Reply(response)
+			case ControlConfirm:
+				if trial == nil {
+					request.Reply(ControlResponse{Error: "there is no trial to confirm"})
+					continue
+				}
+				release, lockErr := engine.LockTurn(ctx)
+				if lockErr != nil {
+					request.Reply(ControlResponse{Error: lockErr.Error()})
+					continue
+				}
+				report, _ := engine.LastTurn()
+				if err := engine.AcceptTrial(*trial); err != nil {
+					_ = release()
+					request.Reply(ControlResponse{Error: err.Error()})
+					continue
+				}
+				revision := Revision(trial.Bytes)
+				state := StateFailing
+				if report != nil {
+					state = report.State
+				}
+				trial, expiry = nil, nil
+				if err := engine.ClearTrialReport(); err != nil {
+					fmt.Fprintf(log, "confirmed trial report update failed: %v\n", err)
+				}
+				_ = release()
+				fmt.Fprintf(log, "trial confirmed: revision=%s\n", revision)
+				request.Reply(ControlResponse{Revision: revision, State: state})
+			case ControlCancel:
+				if trial == nil {
+					request.Reply(ControlResponse{Error: "there is no trial to cancel"})
+					continue
+				}
+				result, err := revertTrial("cancelled")
+				response := ControlResponse{}
+				if result != nil {
+					response.Revision, response.State = result.Revision, result.State
+				}
+				if err != nil {
+					response.Error = err.Error()
+				}
+				request.Reply(response)
+			}
+		case <-expiry:
+			_, _ = revertTrial("expired")
 		}
 	}
+}
+
+func reconcileLocked(ctx context.Context, engine *Engine) (*Result, error) {
+	release, err := engine.LockTurn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return engine.Reconcile(ctx)
 }

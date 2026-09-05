@@ -14,6 +14,7 @@ import (
 func serveCommand(args []string, _ io.Writer, stderr io.Writer) int {
 	flags := newFlagSet("serve", stderr)
 	resync := flags.Duration("resync", time.Minute, "periodic reconciliation interval")
+	control := flags.String("control", DefaultControlPath, "control socket path")
 	if err := flags.Parse(args); err != nil {
 		return parseExit(err)
 	}
@@ -35,7 +36,7 @@ func serveCommand(args []string, _ io.Writer, stderr io.Writer) int {
 	ticker := time.NewTicker(*resync)
 	defer ticker.Stop()
 	engine := apply.New(apply.OSHost(), apply.Options{})
-	if err := apply.Serve(ctx, engine, ticker.C, events, stderr); err != nil {
+	if err := apply.ServeControl(ctx, engine, ticker.C, events, *control, stderr); err != nil {
 		return reportError(stderr, err)
 	}
 	return 0

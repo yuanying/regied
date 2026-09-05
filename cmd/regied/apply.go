@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/yuanying/regied/internal/apply"
 	"github.com/yuanying/regied/internal/config"
@@ -28,6 +29,8 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("apply", stderr)
 	path := flags.String("config", DefaultConfigPath, "the configuration to apply")
 	dryRun := flags.Bool("dry-run", false, "show what would change and do none of it")
+	confirm := flags.Duration("confirm", 0, "revert unless confirmed within this duration")
+	control := flags.String("control", DefaultControlPath, "resident process control socket")
 	if err := flags.Parse(args); err != nil {
 		return parseExit(err)
 	}
@@ -42,6 +45,10 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 	engine := apply.New(apply.OSHost(), apply.Options{})
 
 	if *dryRun {
+		if *confirm != 0 {
+			fmt.Fprintln(stderr, "regied apply: -confirm cannot be used with -dry-run")
+			return 2
+		}
 		// A dry run is not a turn: it writes nothing and runs nothing that changes
 		// anything, so it takes no lock and never waits for one.
 		plan, err := engine.Plan(ctx, cfg)
@@ -49,6 +56,27 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 			return reportError(stderr, err)
 		}
 		apply.Report(stdout, plan)
+		return 0
+	}
+	if *confirm < 0 {
+		fmt.Fprintln(stderr, "regied apply: -confirm must be greater than zero")
+		return 2
+	}
+	if *confirm > 0 {
+		plan, err := engine.Plan(ctx, cfg)
+		if err != nil {
+			return reportError(stderr, err)
+		}
+		apply.ReportWarnings(stderr, plan)
+		deadline := time.Now().Add(*confirm)
+		response, err := (apply.OSControl{}).Do(ctx, *control, apply.ControlRequest{
+			Verb: apply.ControlTrial, Declaration: declaration.Bytes, Source: declaration.Source, Deadline: deadline,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "regied: cannot start a confirmation trial because the resident process is unavailable or refused it: %v\n  start regied, or apply without -confirm and accept that nothing will undo it\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Trial %s started; state: %s. Confirm it before %s.\n", response.Revision, response.State, deadline.UTC().Format(time.RFC3339))
 		return 0
 	}
 
@@ -59,6 +87,7 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 		return reportError(stderr, err)
 	}
 	defer release()
+	previousReport, _ := engine.LastTurn()
 
 	plan, err := engine.Plan(ctx, cfg)
 	if err != nil {
@@ -74,6 +103,9 @@ func applyCommand(args []string, stdout, stderr io.Writer) int {
 		return reportError(stderr, err)
 	}
 	reportResult(stdout, result)
+	if previousReport != nil && previousReport.Trial {
+		fmt.Fprintln(stdout, "The plain apply ended the active confirmation trial; no automatic revert remains.")
+	}
 	return 0
 }
 

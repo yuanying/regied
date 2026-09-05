@@ -83,6 +83,12 @@ func New(host Host, opts Options) *Engine {
 	if host.Locker == nil {
 		host.Locker = OSLocker{}
 	}
+	if host.Control == nil {
+		host.Control = OSControl{}
+	}
+	if host.Timer == nil {
+		host.Timer = OSTimer{}
+	}
 	return &Engine{host: host, opts: opts.withDefaults(), retries: make(map[string]retryState)}
 }
 
