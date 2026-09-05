@@ -16,6 +16,7 @@ import (
 type ControlVerb string
 
 const (
+	ControlSubmit  ControlVerb = "submit"
 	ControlTrial   ControlVerb = "trial"
 	ControlConfirm ControlVerb = "confirm"
 	ControlCancel  ControlVerb = "cancel"
@@ -32,9 +33,10 @@ type ControlRequest struct {
 func (r ControlRequest) Reply(response ControlResponse) { r.reply <- response }
 
 type ControlResponse struct {
-	Revision string `json:"revision,omitempty"`
-	State    State  `json:"state,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Revision string      `json:"revision,omitempty"`
+	State    State       `json:"state,omitempty"`
+	Report   *TurnReport `json:"report,omitempty"`
+	Error    string      `json:"error,omitempty"`
 }
 
 type Control interface {
@@ -45,7 +47,7 @@ type Control interface {
 type OSControl struct{}
 
 func validControlVerb(verb ControlVerb) bool {
-	return verb == ControlTrial || verb == ControlConfirm || verb == ControlCancel
+	return verb == ControlSubmit || verb == ControlTrial || verb == ControlConfirm || verb == ControlCancel
 }
 
 func (OSControl) Listen(ctx context.Context, socket string, mode fs.FileMode) (<-chan ControlRequest, func() error, error) {
@@ -55,6 +57,12 @@ func (OSControl) Listen(ctx context.Context, socket string, mode fs.FileMode) (<
 	if info, err := os.Lstat(socket); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
 			return nil, nil, fmt.Errorf("refusing to replace non-socket path %s", socket)
+		}
+		var dialer net.Dialer
+		conn, dialErr := dialer.DialContext(ctx, "unix", socket)
+		if dialErr == nil {
+			conn.Close()
+			return nil, nil, fmt.Errorf("refusing to replace live control socket %s", socket)
 		}
 		if err := os.Remove(socket); err != nil {
 			return nil, nil, err
@@ -92,6 +100,15 @@ func (OSControl) Listen(ctx context.Context, socket string, mode fs.FileMode) (<
 
 func serveControlConnection(ctx context.Context, conn net.Conn, out chan<- ControlRequest) {
 	defer conn.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
 	var request ControlRequest
 	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&request); err != nil {
 		_ = json.NewEncoder(conn).Encode(ControlResponse{Error: err.Error()})
@@ -124,11 +141,23 @@ func (OSControl) Do(ctx context.Context, socket string, request ControlRequest) 
 		return ControlResponse{}, err
 	}
 	defer conn.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
 	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		return ControlResponse{}, err
 	}
 	var response ControlResponse
 	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&response); err != nil {
+		if ctx.Err() != nil {
+			return ControlResponse{}, ctx.Err()
+		}
 		return ControlResponse{}, err
 	}
 	if response.Error != "" {

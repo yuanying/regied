@@ -32,10 +32,11 @@ type Host struct {
 	// Clock and Locker are what a turn adds to the list (ADR 0016): the time a report
 	// records, and the lock a turn holds while it runs. Left nil, they are the ones this
 	// process is running on.
-	Clock   Clock
-	Locker  Locker
-	Control Control
-	Timer   Timer
+	Clock    Clock
+	Locker   Locker
+	Control  Control
+	Timer    Timer
+	Notifier Notifier
 }
 
 // OSHost is the host this process is running on.
@@ -51,7 +52,35 @@ func OSHost() Host {
 		Locker:   OSLocker{},
 		Control:  OSControl{},
 		Timer:    OSTimer{},
+		Notifier: OSNotifier{},
 	}
+}
+
+// Notifier exposes the daemon's convergence state through the service manager.
+type Notifier interface{ Status(string) error }
+type noopNotifier struct{}
+
+func (noopNotifier) Status(string) error { return nil }
+
+// OSNotifier sends sd_notify datagrams when systemd supplied NOTIFY_SOCKET.
+type OSNotifier struct{}
+
+func (OSNotifier) Status(status string) error {
+	socket := os.Getenv("NOTIFY_SOCKET")
+	if socket == "" {
+		return nil
+	}
+	if socket[0] == '@' {
+		socket = "\x00" + socket[1:]
+	}
+	address := &net.UnixAddr{Name: socket, Net: "unixgram"}
+	conn, err := net.DialUnix("unixgram", nil, address)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_, err = conn.Write([]byte("READY=1\nSTATUS=" + status))
+	return err
 }
 
 // Clock is what a report reads the time from. It is an interface so that a test can say
