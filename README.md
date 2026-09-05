@@ -131,6 +131,170 @@ The deployment target is an arm64 single-board computer running Debian 13
 Linux. The cross-build is static (`CGO_ENABLED=0`), so the binary copies onto the target
 with no runtime dependency.
 
+## Operating
+
+Everything below assumes a host that meets the platform prerequisites: Debian 13 with
+`systemd-networkd` enabled and nothing else owning the links
+([ADR 0011](docs/adr/0011-target-platform.md)). regied is run as root; every command
+below is.
+
+### Where things go
+
+| What | Where | Written by |
+|---|---|---|
+| The binary | `/usr/bin/regied` — the shipped units expect it there | the operator |
+| The configuration | `/etc/regied/config.yaml` — the default of `regied apply` and `regied render`; `--config` names another | the operator |
+| Credentials | files under `/etc/regied/secrets/`, at the paths the configuration names | the operator |
+| The two systemd units | `/etc/systemd/system/`, copied from [`dist/systemd/`](dist/systemd/) | the operator |
+| The accepted declaration | `/var/lib/regied/accepted/declaration.yaml` | regied, when a submission is accepted |
+| The report of the last turn | `/var/lib/regied/turn/report.yaml` | regied, when what it says changes |
+| The control socket | `/run/regied/control.sock` | the resident process |
+| networkd, dnsmasq, pppd files and the pppd hooks | the distribution's own directories, under regied's name and ownership marker | regied |
+
+regied creates its own directories. The operator supplies the first four rows.
+
+**Credentials.** The configuration cannot hold a secret; it names the path of a file that
+does ([ADR 0003](docs/adr/0003-secrets-out-of-configuration.md)). Keep those files owned
+by root with mode `0600`, in a directory only root can enter. regied reads a credential on
+the turn that needs it and never writes it into the record, a dry-run, a diff or a log
+line. The consequence worth using: **the configuration file is safe to keep in version
+control**, and keeping it there is the whole of the rollback story below.
+
+### The systemd units
+
+Two units ship in `dist/systemd/`. Until there is a package, copy them into
+`/etc/systemd/system/`, reload, and enable both.
+
+```sh
+cp dist/systemd/regied-reconcile.service dist/systemd/regied.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now regied-reconcile.service regied.service
+```
+
+| Unit | Runs | Role |
+|---|---|---|
+| `regied-reconcile.service` | `regied reconcile` once at boot, then exits | Puts the firewall and everything else back after a reboot. Fails, visibly, if the turn ended failing |
+| `regied.service` | `regied serve`, resident | The reconciliation loop, the confirmation trials, and the control socket |
+
+Both read the accepted declaration and nothing else. The resident unit is ordered after
+the boot unit but does not require it: a boot turn that failed is exactly when the loop's
+retrying is wanted. There is no timer, and the package ships none. **The loop lives in
+`regied.service` alone, which is what makes stopping it one operation**
+([ADR 0016](docs/adr/0016-converging-on-the-accepted-declaration.md)).
+
+Two things on the host must be true before the units are enabled.
+
+- **The distribution's `nftables.service` is disabled.** Its unit file starts by flushing
+  the entire ruleset, which takes regied's table with it, and a second owner of the
+  ruleset is one the loop would fight with every minute. The units are ordered after it
+  as a guard against the case where it is enabled anyway; that ordering is not a blessing
+  ([ADR 0007](docs/adr/0007-resident-process.md)).
+- **networkd is enabled and owns the links.** `/etc/network/interfaces` is empty and
+  NetworkManager is not installed ([ADR 0011](docs/adr/0011-target-platform.md)).
+
+```sh
+systemctl disable --now nftables.service
+systemctl enable --now systemd-networkd.service
+```
+
+### Commands
+
+Six verbs. The table says what each one reads, because that is the property the design
+rests on: **only `regied apply` reads the configuration file**. The full table, with
+flags, is in [`docs/spec/configuration.md`](docs/spec/configuration.md#how-a-declaration-reaches-the-host).
+
+| Command | Reads | Does |
+|---|---|---|
+| `regied render` | the configuration file | Prints what every backend would be given. Touches no host |
+| `regied apply --dry-run` | the file and this host | Prints what an apply would change, and changes nothing |
+| `regied apply` | the file and this host | Records the declaration as accepted, then runs one turn toward it |
+| `regied apply --confirm <duration>` | the file and this host | Starts a trial with a deadline instead of writing the record. Needs `regied.service` running |
+| `regied reconcile` | the record and this host | One turn toward the accepted declaration. Exits non-zero if it ended failing |
+| `regied serve` | the record and this host | The loop: a turn every resync interval and on every kernel address change |
+| `regied confirm` | the control socket | Makes the trial the accepted declaration. Stops the clock |
+| `regied cancel` | the control socket | Drops the trial and converges on the previous declaration now |
+
+Each verb answers `-h` with its flags.
+
+### What the loop does, and what it does not
+
+The resident process runs a **turn** once a minute (`--resync`), and sooner when the
+kernel reports that an address was added or removed on any link. A turn renders every backend from
+the accepted declaration, reads what the host holds, and moves only what differs. A turn
+that finds nothing differing runs no command.
+
+What an operator needs to know about it:
+
+- **An unattended turn never takes down something that is up.** It writes files, replaces
+  regied's nftables table, sets kernel switches and starts declared units that are not
+  running. It does not restart a running PPPoE session, even one whose options it has just
+  rewritten, and it does not stop something the declaration no longer declares. It reports
+  those and waits for a person. The way to ask for them is to run `regied apply` again:
+  an apply is idempotent, so re-running it does the remaining steps and nothing else.
+- **It sees drift, not health.** A declared unit that is not active is drift. A unit that
+  is active is at the declaration, whatever it is doing: a session that is up and passing
+  no traffic is not something the loop notices. Keeping a session alive is pppd's own
+  `persist` and systemd's `Restart=`, not regied's.
+- **It retries under backoff, per target.** A dnsmasq that will not start does not stop
+  the table from being repaired. The comparison keeps running while the command is
+  slowed, so the report stays current.
+- **It never exits because it cannot converge.** It stays up and keeps saying what is
+  wrong.
+- **A host with no accepted declaration does nothing, and says so.** So does a host
+  whose record this version of regied no longer accepts. Neither converges toward empty.
+
+Every turn ends in one of three states, and the state is what to read.
+
+| State | Meaning | Exit status of `apply` / `reconcile` |
+|---|---|---|
+| `converged` | The host holds the whole declaration | 0 |
+| `waiting` | Everything that could be done was done; something is left out for want of a value that only exists at apply time, such as an AFTR name that has not resolved. What it waits on is named | 0 |
+| `failing` | Something was tried and did not work, or something differs that this turn was not allowed to fix. What, and why, is named | non-zero |
+
+`waiting` is the ordinary state of a host that has just booted. `failing` that persists
+is the one to act on. Both are in the report of the last turn and in the journal.
+
+### Putting it on a host for the first time
+
+The procedure assumes what the project was built against: **the existing router stays in
+place, and the new host is brought up beside it.** Recovery from anything below is moving
+a cable back. Do not skip the deadline on the strength of that; the deadline is what
+covers the case where the cable is somewhere else.
+
+1. **Prepare the host.** Build (`make build-arm64`), copy the binary to `/usr/bin/regied`,
+   write the configuration to `/etc/regied/config.yaml` and the credential files under
+   `/etc/regied/secrets/`, meet the prerequisites above, install and enable the two units.
+   Until a declaration is accepted, both units report that there is none and change
+   nothing. That is expected.
+2. **Look before touching anything.** `regied render` prints what each backend would be
+   given. `regied apply --dry-run` prints what the host would change, file by file and
+   command by command, and does none of it. Credentials are reported as "would be written,
+   with this mode", never with their content.
+3. **Apply with a deadline.**
+
+   ```sh
+   regied apply --confirm 10m
+   ```
+
+   This is refused, and says why, if `regied.service` is not running: nobody would be
+   holding the clock. The trial is held in the daemon's memory; the record is untouched.
+4. **Prove you can still get in, by the path the change could have broken.** Open a new
+   session to the host over the network. Check from a LAN client that it gets an address
+   and reaches the outside. Read `/var/lib/regied/turn/report.yaml` and
+   `journalctl -u regied`. Spend the window on this; the daemon confirms whatever state the
+   turn is in, so *waiting* on an AFTR name does not stop you, but it should be a decision.
+5. **Confirm, or let it go.** `regied confirm` writes the trial to the record. `regied
+   cancel`, or the deadline passing, converges back to what was there before — a submitted
+   turn, allowed to restart sessions. Confirm over the network path, not from a serial
+   console: a confirmation that arrives by a path the change cannot affect proves nothing.
+6. **Commit the file you confirmed** to version control. That copy is the rollback.
+7. **Reboot once** before moving clients over. `regied-reconcile.service` should bring
+   the firewall and everything else back from the record with no file involved. A trial
+   never survives a reboot; only a confirmed declaration does.
+
+A plain `regied apply` during a trial ends the trial and writes its own declaration to
+the record, with no deadline left. The command says so. That is choosing to have no net.
+
 ## Test
 
 Tests are split by the privileges they need.
