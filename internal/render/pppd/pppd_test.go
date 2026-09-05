@@ -118,8 +118,14 @@ func TestHooks(t *testing.T) {
 	if !strings.Contains(up.Content, "add element") {
 		t.Errorf("the ip-up hook adds nothing:\n%s", up.Content)
 	}
+	if !strings.Contains(up.Content, `networkctl reconfigure "$interface"`) {
+		t.Errorf("the ip-up hook does not ask networkd to install the routes for the new link:\n%s", up.Content)
+	}
 	if !strings.Contains(down.Content, "delete element") {
 		t.Errorf("the ip-down hook deletes nothing:\n%s", down.Content)
+	}
+	if strings.Contains(down.Content, "networkctl reconfigure") {
+		t.Errorf("the ip-down hook tries to reconfigure a link that is going away:\n%s", down.Content)
 	}
 }
 
