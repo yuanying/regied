@@ -1,10 +1,10 @@
 [Unit]
 Description=Keep the host converged on the accepted regied network declaration
-After=systemd-networkd.service nftables.service regied-reconcile.service
+After=systemd-networkd.service nftables.service
 Wants=systemd-networkd.service
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=/usr/bin/regied serve
 Restart=on-failure
 RestartSec=5s
