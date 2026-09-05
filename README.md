@@ -295,6 +295,89 @@ covers the case where the cable is somewhere else.
 A plain `regied apply` during a trial ends the trial and writes its own declaration to
 the record, with no deadline left. The command says so. That is choosing to have no net.
 
+### When something goes wrong
+
+The loop is a repair mechanism. During an incident that is the last thing you want
+running while you work, so the procedure starts and ends with the daemon.
+
+**Before touching anything by hand, stop the daemon. Start it when you are done.**
+
+```sh
+systemctl stop regied     # the loop stops. Nothing else happens
+# ... look, edit nftables by hand, restart a session, whatever the outage needs ...
+systemctl start regied    # the loop resumes, and takes the hand edits back
+```
+
+Stopping the daemon stops the converging and nothing else: no file is reclaimed, no table
+removed, no session stopped, no kernel switch put back. The host keeps running what is on
+it, the record and the configuration file are untouched, and your hand edits stay for as
+long as the daemon is stopped. **When it starts again, it takes them back, because the
+accepted declaration is what the host is supposed to hold.** That is correct. If the hand
+edit is the fix, put it in the file and submit it. Hand edits made while the daemon is
+running are drift and are gone within a minute, which is the loop doing its job.
+
+If a trial was running when you stopped the daemon, it is gone: the next turn, from the
+daemon starting again or from the boot unit, converges on the declaration that was
+accepted before the trial. That is the safe direction, and it is what to expect.
+
+**Going back is applying the previous file.** There is no rollback command, because there
+is nothing to roll back to except a file, and the file is in version control.
+
+```sh
+regied apply --config /path/to/the/previous/config.yaml
+```
+
+That is an ordinary submission: a submitted turn, allowed to restart sessions, so pick
+the moment. What the new declaration already did is not undone by it. A session that was
+restarted is a new session, leases dnsmasq handed out stay handed out, connections the
+new ruleset dropped stay dropped. Applying the previous file gives you the previous
+declaration, not the previous moment. Every `apply` prints the revision it recorded; the
+revision is the digest of the file's bytes, so a copy in version control can be matched
+to what the host accepted without regied.
+
+**A submission that failed part way.** The record holds the new declaration and the host
+holds as much of it as got done, up to the step that failed. The console said which step,
+and the report says the same. The loop finishes what it may — writes what is missing,
+replaces the table, starts what is declared and not running — and reports what it may
+not: restarting a session that is running on old options, stopping what the declaration
+dropped. Two ways forward, both ordinary submissions:
+
+- fix the file and `regied apply` it, or
+- `regied apply` the previous file.
+
+Re-running the same `regied apply` is also the retry for the half the loop is not allowed
+to do on its own: an apply is idempotent, so it does the remaining steps and nothing else.
+
+**Locked out.** If the change went in with `--confirm`, wait: the deadline reverts to the
+previous declaration with a submitted turn, sessions and all, and the host comes back.
+If it went in without `--confirm`, nothing on the host will undo it. Reach the host by a
+path the change cannot affect — a console — and apply the previous file from there, or
+put the cable back on the router that was there before. A reboot converges on the record,
+so it helps only if the record is the declaration you want; a trial never survives one,
+an accepted declaration always does.
+
+**Failing, and what to read.** There is no API. Three places say what is wrong, and they
+name the thing rather than the mood.
+
+| Where | What it says |
+|---|---|
+| `journalctl -u regied` | Every change of state, and each distinct drift when it appears and when it clears, with its backoff. Not every turn: a quiet log is a converged host |
+| `/var/lib/regied/turn/report.yaml` | The state the last turn ended in and when it was entered, what it is waiting on or what is failing, the revision, warnings, whether a trial is active and its deadline. Rewritten only when what it says changes, so a daemon restart does not lose it |
+| `systemctl status regied-reconcile` | Whether the boot turn ended failing. `regied reconcile` exits non-zero when it does |
+
+Read the state first. `waiting` names a value that has not arrived yet — a name that has
+not resolved, a DUID file that could not be read — and usually resolves itself.
+`failing` names the command that did not work or the drift the turn is not allowed to
+fix, and is waiting for you. A host that reports it has no accepted declaration has had
+nothing submitted to it yet, or has lost its state directory; the answer to both is
+`regied apply`. A host whose record this version of regied no longer accepts has been
+upgraded past its declaration: it keeps running what it has and asks for a declaration
+the new version accepts.
+
+`regied reconcile` from a shell runs one turn toward the record and prints the same
+state. It is what to type to ask "put the host back where it should be" without
+submitting anything, and its exit status answers whether it could.
+
 ## Test
 
 Tests are split by the privileges they need.
