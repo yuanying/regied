@@ -149,15 +149,17 @@ func TestHelpIsNotAnError(t *testing.T) {
 	}
 }
 
-// ADR 0016. Six verbs, split by what they read: serve and reconcile read the record,
-// never the configuration file.
-func TestUsageNamesTheSixVerbs(t *testing.T) {
+// ADR 0017. Five verbs: every host-writing turn belongs to serve.
+func TestUsageNamesTheFiveVerbs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	run([]string{"help"}, &stdout, &stderr)
-	for _, verb := range []string{"regied render", "regied apply", "regied reconcile", "regied serve", "regied confirm", "regied cancel"} {
+	for _, verb := range []string{"regied render", "regied apply", "regied serve", "regied confirm", "regied cancel"} {
 		if !strings.Contains(stdout.String(), verb) {
 			t.Errorf("the usage does not name %q:\n%s", verb, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "regied reconcile") {
+		t.Errorf("the removed reconcile verb remains in usage:\n%s", stdout.String())
 	}
 }
 
@@ -177,15 +179,60 @@ func TestServeTakesNoConfigurationFileAndHasAResyncFlag(t *testing.T) {
 
 // reconcile takes no configuration file. That is the whole point of it: the one way to
 // ask for a turn that reads nothing but the record (ADR 0016).
-func TestReconcileTakesNoConfigurationFile(t *testing.T) {
+func TestReconcileIsNotACommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"reconcile", "-config", "/etc/regied/config.yaml"}, &stdout, &stderr); code != 2 {
-		t.Errorf("regied reconcile -config exits %d, want 2 (usage)", code)
+	if code := run([]string{"reconcile"}, &stdout, &stderr); code != 2 {
+		t.Errorf("regied reconcile exits %d, want 2", code)
 	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := run([]string{"reconcile", "-h"}, &stdout, &stderr); code != 0 {
-		t.Errorf("regied reconcile -h exits %d, want 0", code)
+	if !strings.Contains(stderr.String(), `there is no "reconcile" command`) {
+		t.Errorf("the removed verb was not rejected:\n%s", stderr.String())
+	}
+}
+
+func TestApplyWithoutDaemonSaysToStartTheService(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("not even parsed by the client"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", "-config", path, "-control", filepath.Join(t.TempDir(), "missing.sock")}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "start regied.service") {
+		t.Fatalf("apply without daemon exits %d and says:\n%s", code, stderr.String())
+	}
+}
+
+func TestApplySendsBytesAndPrintsTheDaemonsReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := []byte("bytes validated only by the daemon")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	requests, closeControl, err := (apply.OSControl{}).Listen(t.Context(), socket, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeControl()
+	go func() {
+		request := <-requests
+		if request.Verb != apply.ControlSubmit || !bytes.Equal(request.Declaration, data) || request.Source != path {
+			request.Reply(apply.ControlResponse{Error: "wrong submission"})
+			return
+		}
+		request.Reply(apply.ControlResponse{Revision: "sha256:test", State: apply.StateWaiting, Report: &apply.TurnReport{
+			Revision: "sha256:test", State: apply.StateWaiting, Outcome: apply.OutcomeUnchanged,
+			Waiting: []string{"an address"}, Notes: []string{"kept running"},
+		}})
+	}()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", "-config", path, "-control", socket}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("apply exits %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{"sha256:test", "waiting", "an address", "kept running"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("output does not contain %q:\n%s", want, stdout.String())
+		}
 	}
 }
 

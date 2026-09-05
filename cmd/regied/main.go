@@ -1,14 +1,10 @@
 // Command regied puts a declared network configuration on one Linux host, and keeps it
 // there.
 //
-// It has six commands, split by what they read. `render` reads nothing: it answers what
+// It has five verbs. `render` reads nothing: it answers what
 // a configuration means, anywhere, about any host. `apply` reads a configuration file and
-// this host, and submits the configuration: it is written down as the declaration this
-// host converges toward, and a turn runs toward it. `apply --dry-run` shows what that turn
-// would change without doing any of it (ADR 0006). `reconcile` reads the record and this
-// host, and runs one turn toward the record — it is the only way to ask for a turn that
-// reads no configuration file, which is what a boot unit runs. `serve` repeats that turn
-// on a resync interval and on address events (ADR 0016).
+// submits the file's bytes to the resident process. `apply --dry-run` remains local and
+// shows what the turn would change. `serve` is the host's only writer (ADR 0017).
 package main
 
 import (
@@ -29,12 +25,11 @@ func main() {
 // commands is what regied can be asked to do. There is no HTTP API; ADR 0007 remains
 // deferred on that point.
 var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
-	"render":    renderCommand,
-	"apply":     applyCommand,
-	"reconcile": reconcileCommand,
-	"serve":     serveCommand,
-	"confirm":   confirmCommand,
-	"cancel":    cancelCommand,
+	"render":  renderCommand,
+	"apply":   applyCommand,
+	"serve":   serveCommand,
+	"confirm": confirmCommand,
+	"cancel":  cancelCommand,
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -61,8 +56,7 @@ func usage(w io.Writer) {
 
 Usage:
   regied render    [flags]   Render a configuration and print it. Reads nothing.
-  regied apply     [flags]   Submit a configuration: record it and converge this host on it.
-  regied reconcile           Converge this host on the recorded declaration. Reads no file.
+  regied apply     [flags]   Submit a configuration through the resident process.
   regied serve     [flags]   Keep converging on the recorded declaration. Reads no file.
   regied confirm   [flags]   Accept the active confirmation trial.
   regied cancel    [flags]   Cancel the active trial and converge on the accepted declaration.
