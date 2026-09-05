@@ -140,46 +140,71 @@ regied.
 
 ## How a declaration reaches the host
 
+> **This section describes the shape
+> [ADR 0017](../adr/0017-submission-through-the-resident-process.md) decided, which is
+> not built yet.** Until it is, what runs is
+> [ADR 0016](../adr/0016-converging-on-the-accepted-declaration.md) as built, and it
+> differs in four places: `regied apply` validates, records and runs the turn in its own
+> process and needs no daemon; a `regied reconcile` command runs one turn over the record,
+> and a `regied-reconcile.service` unit runs it at boot; the control socket accepts three
+> messages, trial, confirm and cancel; and the socket is open to root and one group.
+
 **The file on disk is not what the host converges toward.** `regied apply` reads it and
-validates it, and once it has validated and staged, writes it down as the declaration this
-host accepted. From that moment the record is the declaration in effect, and everything
-that converges reads the record rather than the file
-([ADR 0016](../adr/0016-converging-on-the-accepted-declaration.md)).
+sends it to the resident process, which validates it, stages it, and once it has validated
+and staged writes it down as the declaration this host accepted. From that moment the
+record is the declaration in effect, and everything that converges reads the record rather
+than the file ([ADR 0016](../adr/0016-converging-on-the-accepted-declaration.md)). The
+resident process is the only thing that writes the host
+([ADR 0017](../adr/0017-submission-through-the-resident-process.md)).
 
 | Command | Reads | Does |
 |---|---|---|
 | `regied render` | the configuration file, and nothing of any host | prints what the configuration means |
-| `regied apply` | the configuration file and this host | records the declaration, then converges this host on it |
-| `regied apply --confirm duration` | the configuration file and this host | starts an in-memory trial and a deadline without replacing the accepted declaration |
-| `regied apply --dry-run` | the configuration file and this host | prints what that would change, and changes nothing |
-| `regied reconcile` | the record and this host | converges this host on the recorded declaration |
-| `regied serve [-resync duration] [-control path]` | the record and this host | continuously converges on resync (one minute by default) and address events, and holds confirmation trials |
+| `regied apply` | the configuration file | sends the declaration to the resident process, which records it and runs a turn toward it; prints where the turn left the host. Refused when the resident process is not running |
+| `regied apply --confirm duration` | the configuration file | sends the declaration as a trial with a deadline; the accepted declaration is not replaced |
+| `regied apply --dry-run` | the configuration file and this host | prints what applying it would change, and changes nothing. Needs no resident process |
+| `regied serve [-resync duration] [-control path]` | the record and this host | the resident process: accepts submissions and trials on the control socket, converges on resync (one minute by default) and address events, and holds confirmation trials |
 | `regied confirm` | the local control socket | writes the active trial to the accepted declaration and reports its revision and last turn state |
 | `regied cancel` | the local control socket | drops the active trial and immediately runs a submitted turn toward the accepted declaration |
 
-`regied apply` is the only thing that reads the configuration file. It and `regied render` read `/etc/regied/config.yaml` unless `--config` names another path. `serve` has no
-configuration-file flag; netlink events only bring a full comparison forward. That keeps an
-unfinished edit from becoming the host's configuration: nothing that runs on its own can
-reach the file at all.
+`regied apply` is the only thing that reads the configuration file. It and `regied render`
+read `/etc/regied/config.yaml` unless `--config` names another path. `serve` has no
+configuration-file flag; it reads the record and what a client sends it, and netlink
+events only bring a full comparison forward. That keeps an unfinished edit from becoming
+the host's configuration: nothing that runs on its own can reach the file at all.
+
+A submission waits for its turn and prints the same account the resident process writes
+to the report: the revision, the state, what changed by phase, what is being waited on,
+and what failed and where. The turn belongs to the resident process, not to the
+connection: an `apply` that is interrupted, or whose ssh session drops, leaves a turn that
+finishes and a report that says how it ended.
 
 The record is what was **asked for**, not what last worked. A submission whose commands
 fail leaves the new declaration in the record; the host is wherever the failure left it,
 and the report says so. Going back to an earlier declaration is applying an earlier file,
-which is an ordinary submission.
+which is an ordinary submission. The recorded declaration is itself such a file.
 
-The control socket defaults to `/run/regied/control.sock`. Its directory is accessible to
-root and one operating-system group, and the socket mode is `0660`. It accepts exactly
-three messages: start or replace a trial, confirm it, and cancel it. It is not an HTTP API
-and carries no status, apply, dry-run, reload, or resource operation.
+The control socket defaults to `/run/regied/control.sock`. It belongs to root: reaching it
+is the capability of reconfiguring the host, and the package gives it to nobody else. It
+accepts exactly four messages: submit a declaration, start or replace a trial, confirm it,
+and cancel it. It is the path a declaration takes to the host and not a read API: it
+answers only about the turn a message caused, and carries no status, report, dry-run,
+render, reload, or resource operation.
 
 While a trial is active, every resident-loop turn uses the trial as its spec. Expiry and
 cancel use the same path: discard the in-memory trial and run a submitted turn toward the
 accepted declaration immediately. Stopping or restarting the daemon discards the trial;
 the durable declaration was never replaced, so the next turn moves in the safe direction.
-A plain `apply` during a trial replaces the accepted declaration and ends the trial on the
-daemon's next comparison. The last-turn report marks an active trial with its revision and
-deadline because this is useful diagnosis, but it remains diagnosis and never becomes a
-second spec.
+A plain `apply` during a trial replaces the accepted declaration and ends the trial at
+once. The last-turn report marks an active trial with its revision and deadline because
+this is useful diagnosis, but it remains diagnosis and never becomes a second spec.
+
+There is one unit, `regied.service`, and the resident process's first turn after any start
+is what puts the ruleset and everything else back after a reboot. That turn is an
+unattended one: on a host that has just booted nothing is up, so the limits on an
+unattended turn bind nothing, and on a host that was merely restarted they keep a restart
+of the daemon from restarting a session. Stopping the daemon stops convergence and
+changes nothing on the host; disabling it also gives up the convergence at boot.
 
 ## Where a turn ends
 
