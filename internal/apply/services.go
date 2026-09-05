@@ -1,6 +1,7 @@
 package apply
 
 import (
+	"context"
 	"slices"
 	"strings"
 )
@@ -26,6 +27,7 @@ type service struct {
 	unitFile FileChange
 	// inputs is every other file it reads.
 	inputs []FileChange
+	active *bool
 }
 
 // steps is what the commit stage does to this one process.
@@ -41,7 +43,7 @@ func (s service) steps() []Step {
 		for _, file := range s.files() {
 			if file.Kind == ChangeRemove {
 				return []Step{s.command(s.what+" is no longer declared",
-					systemctl("disable", "--now", s.unit), systemctl("enable", "--now", s.unit))}
+					systemctl("disable", "--now", s.unit))}
 			}
 		}
 		return nil
@@ -61,7 +63,9 @@ func (s service) steps() []Step {
 	switch {
 	case fresh:
 		return []Step{s.command(s.what+" is not on the host yet",
-			systemctl("enable", "--now", s.unit), systemctl("disable", "--now", s.unit))}
+			systemctl("enable", "--now", s.unit))}
+	case s.active != nil && !*s.active:
+		return []Step{s.command(s.what+" is not active", systemctl("start", s.unit))}
 	case s.unitFile.Kind == ChangeCreate:
 		// The unit was put back, so the process may be running from systemd's copy of
 		// the old one, or not running at all. Starting what is running does nothing,
@@ -70,12 +74,12 @@ func (s service) steps() []Step {
 		restart := systemctl("restart", s.unit)
 		return []Step{
 			s.command("the unit "+s.what+" runs from was put back",
-				systemctl("enable", s.unit), systemctl("disable", s.unit)),
-			s.command("something "+s.what+" reads changed", restart, restart),
+				systemctl("enable", s.unit)),
+			s.command("something "+s.what+" reads changed", restart),
 		}
 	case written:
 		restart := systemctl("restart", s.unit)
-		return []Step{s.command("something "+s.what+" reads changed", restart, restart)}
+		return []Step{s.command("something "+s.what+" reads changed", restart)}
 	}
 	return nil
 }
@@ -85,20 +89,19 @@ func (s service) files() []FileChange {
 	return append([]FileChange{s.unitFile}, s.inputs...)
 }
 
-func (s service) command(reason string, run, undo Command) Step {
+func (s service) command(reason string, run Command) Step {
 	return Step{
 		Phase:   PhaseProcesses,
 		Kind:    StepCommand,
 		Reason:  reason,
 		Command: run,
-		Undo:    &Step{Phase: PhaseProcesses, Kind: StepCommand, Command: undo},
 	}
 }
 
 // services is every process this plan has to decide about: the sessions the
 // configuration declares, the sessions anything on the host still belongs to, and
 // dnsmasq — which comes last, because it binds to the addresses the links hold.
-func (e *Engine) services(plan *Plan, rendered *rendering) []service {
+func (e *Engine) services(ctx context.Context, plan *Plan, rendered *rendering) []service {
 	peers := e.opts.Root + "/ppp/peers/"
 	credentials := e.opts.Root + "/ppp/credentials/"
 	template := changeFor(plan, e.opts.UnitDir+"/"+pppoeTemplateUnit)
@@ -115,7 +118,7 @@ func (e *Engine) services(plan *Plan, rendered *rendering) []service {
 
 	var out []service
 	for _, name := range names {
-		out = append(out, service{
+		service := service{
 			what:     "the session " + name,
 			unit:     pppoeUnit(name),
 			declared: declared[name],
@@ -124,15 +127,31 @@ func (e *Engine) services(plan *Plan, rendered *rendering) []service {
 				changeFor(plan, peers+name+".conf"),
 				changeFor(plan, credentials+name+".conf"),
 			},
-		})
+		}
+		service.active = e.unitActive(ctx, service.unit, plan)
+		out = append(out, service)
 	}
-	return append(out, service{
+	dns := service{
 		what:     "dnsmasq",
 		unit:     dnsmasqUnit,
 		declared: rendered.dnsmasq,
 		unitFile: changeFor(plan, e.opts.UnitDir+"/"+dnsmasqUnit),
 		inputs:   []FileChange{changeFor(plan, e.opts.Root+"/dnsmasq/dnsmasq.conf")},
-	})
+	}
+	dns.active = e.unitActive(ctx, dns.unit, plan)
+	return append(out, dns)
+}
+
+func (e *Engine) unitActive(ctx context.Context, unit string, plan *Plan) *bool {
+	if e.host.Units == nil || plan.Rendered {
+		return nil
+	}
+	active, err := e.host.Units.Active(ctx, unit)
+	if err != nil {
+		plan.Notes = append(plan.Notes, "could not ask whether "+unit+" is active: "+err.Error())
+		return nil
+	}
+	return &active
 }
 
 // namesIn is the name of every session with a .conf file under a directory in this
@@ -160,14 +179,11 @@ func namesIn(plan *Plan, prefix string) []string {
 func deferredReclaim(files []FileChange, reason string) []Step {
 	var steps []Step
 	for _, change := range files {
-		restored := change
-		restored.Content, restored.Mode = change.Before, change.BeforeMode
 		steps = append(steps, Step{
 			Phase:  PhaseProcesses,
 			Kind:   StepRemove,
 			Reason: reason,
 			File:   change,
-			Undo:   &Step{Phase: PhaseProcesses, Kind: StepWrite, File: restored},
 		})
 	}
 	if len(steps) == 0 {
@@ -194,7 +210,6 @@ func daemonReload(phase Phase, reason string) Step {
 		Kind:    StepCommand,
 		Reason:  reason,
 		Command: reload,
-		Undo:    &Step{Phase: phase, Kind: StepCommand, Command: reload},
 	}
 }
 

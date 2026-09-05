@@ -131,8 +131,8 @@ func TestASubmissionRunsNothingWhenTheDeclarationCannotBeRecorded(t *testing.T) 
 			t.Errorf("a submission that could not be recorded still ran %q", command)
 		}
 	}
-	if _, ok := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); ok {
-		t.Error("the staged files were left on the host")
+	if _, ok := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); !ok {
+		t.Error("the staged files disappeared even though no inverse is run")
 	}
 }
 
@@ -284,6 +284,84 @@ func TestReconcileConvergesToTheRecord(t *testing.T) {
 	}
 	if result.State != StateConverged {
 		t.Errorf("the reconcile says %q, want converged", result.State)
+	}
+}
+
+func TestUnattendedTurnReportsButDoesNotRestartARunningProcess(t *testing.T) {
+	engine, files, runner, _ := planFixture(t)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	tablePresent(runner)
+
+	changed := strings.Replace(hostFixture, "192.168.10.127", "192.168.10.200", 1)
+	files.put("/var/lib/regied/accepted/declaration.yaml", string(declarationOf(changed)), 0o644)
+	before := len(runner.ran)
+	result, err := engine.ReconcileUnattended(context.Background())
+	if err != nil {
+		t.Fatalf("unattended turn failed: %v", err)
+	}
+	if slices.Contains(commandsSince(runner, before), "systemctl restart regied-dnsmasq.service") {
+		t.Fatal("an unattended turn restarted a running process")
+	}
+	if result.State != StateFailing || !strings.Contains(strings.Join(result.Plan.Failing, "\n"), "does not take down") {
+		t.Errorf("unsafe drift was not reported as failing: state=%s failing=%v", result.State, result.Plan.Failing)
+	}
+	if got, _ := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); !strings.Contains(got, "192.168.10.200") {
+		t.Error("the unattended turn did not write the owned file")
+	}
+}
+
+func TestUnattendedTurnBacksOffACommandWhileStillComparing(t *testing.T) {
+	engine, _, runner, _ := planFixture(t)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	tableAbsent(runner)
+
+	before := len(runner.ran)
+	if _, err := engine.ReconcileUnattended(context.Background()); err != nil {
+		t.Fatalf("first unattended turn failed: %v", err)
+	}
+	first := commandsSince(runner, before)
+	if !slices.Contains(first, "nft -f -") {
+		t.Fatal("the first repair attempt was rate limited")
+	}
+
+	before = len(runner.ran)
+	result, err := engine.ReconcileUnattended(context.Background())
+	if err != nil {
+		t.Fatalf("backed-off turn failed: %v", err)
+	}
+	if slices.Contains(commandsSince(runner, before), "nft -f -") {
+		t.Fatal("the repeated repair command was not backed off")
+	}
+	if result.State != StateFailing || !strings.Contains(strings.Join(result.Plan.Failing, "\n"), "backoff level") {
+		t.Errorf("backoff was not visible in the result: state=%s failing=%v", result.State, result.Plan.Failing)
+	}
+}
+
+type fixedUnits map[string]bool
+
+func (u fixedUnits) Active(_ context.Context, unit string) (bool, error) { return u[unit], nil }
+
+func TestUnattendedTurnStartsADeclaredInactiveUnit(t *testing.T) {
+	engine, _, runner, _ := planFixture(t)
+	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
+	tablePresent(runner)
+	engine.host.Units = fixedUnits{
+		"regied-pppoe@pppoe0.service": true,
+		"regied-dnsmasq.service":      false,
+	}
+
+	before := len(runner.ran)
+	if _, err := engine.ReconcileUnattended(context.Background()); err != nil {
+		t.Fatalf("unattended turn failed: %v", err)
+	}
+	commands := commandsSince(runner, before)
+	if !slices.Contains(commands, "systemctl start regied-dnsmasq.service") {
+		t.Errorf("the inactive declared unit was not started:\n%s", strings.Join(commands, "\n"))
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "restart") || strings.Contains(command, "disable --now") {
+			t.Errorf("the unattended turn crossed its safety line with %q", command)
+		}
 	}
 }
 

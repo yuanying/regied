@@ -27,6 +27,7 @@ type Host struct {
 	Resolver Resolver
 	Links    Links
 	Sysctl   Sysctl
+	Units    Units
 
 	// Clock and Locker are what a turn adds to the list (ADR 0016): the time a report
 	// records, and the lock a turn holds while it runs. Left nil, they are the ones this
@@ -43,6 +44,7 @@ func OSHost() Host {
 		Resolver: OSResolver{},
 		Links:    OSLinks{},
 		Sysctl:   OSSysctl{},
+		Units:    OSUnits{},
 		Clock:    OSClock{},
 		Locker:   OSLocker{},
 	}
@@ -107,8 +109,7 @@ func (OSLocker) Lock(ctx context.Context, path string) (func() error, error) {
 // FileSystem is the files the engine reads, writes and reclaims.
 //
 // It is deliberately smaller than os: the engine writes whole files and removes whole
-// files, and never appends, truncates in place, or renames. That is what lets a rollback
-// put a file back from the bytes it read before writing (ADR 0005).
+// files, and never appends or truncates in place.
 type FileSystem interface {
 	// ReadFile returns a file's contents and permission bits. It returns an error
 	// matching fs.ErrNotExist when there is no such file.
@@ -136,6 +137,26 @@ type FileSystem interface {
 // a dry-run; everything else is an effect and belongs to the commit stage (ADR 0004).
 type Runner interface {
 	Run(ctx context.Context, cmd Command) ([]byte, error)
+}
+
+// Units observes whether a declared process is active. Activity is drift; process
+// health beyond systemd's active state is deliberately outside reconciliation.
+type Units interface {
+	Active(context.Context, string) (bool, error)
+}
+
+type OSUnits struct{}
+
+func (OSUnits) Active(ctx context.Context, unit string) (bool, error) {
+	err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return false, nil
+	}
+	return false, err
 }
 
 // Command is one external command. Stdin is what is fed to it, which is how a ruleset

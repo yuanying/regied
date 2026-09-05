@@ -11,6 +11,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
@@ -69,8 +70,10 @@ func (o Options) rulesetRecord() string { return o.StateDir + "/applied/ruleset.
 
 // Engine puts a rendered configuration on one host.
 type Engine struct {
-	host Host
-	opts Options
+	host          Host
+	opts          Options
+	retries       map[string]retryState
+	retryRevision string
 }
 
 func New(host Host, opts Options) *Engine {
@@ -80,7 +83,12 @@ func New(host Host, opts Options) *Engine {
 	if host.Locker == nil {
 		host.Locker = OSLocker{}
 	}
-	return &Engine{host: host, opts: opts.withDefaults()}
+	return &Engine{host: host, opts: opts.withDefaults(), retries: make(map[string]retryState)}
+}
+
+type retryState struct {
+	attempts int
+	next     time.Time
 }
 
 // Phase is one step of the order an apply goes in (ADR 0004). The firewall is first
@@ -374,6 +382,10 @@ type Plan struct {
 	// with nothing in here that finds nothing to do has (ADR 0016).
 	Waiting []string
 
+	// Failing names drift this turn observed but was not allowed to repair. An
+	// unattended turn puts restart, stop, and unit reclamation here (ADR 0016).
+	Failing []string
+
 	Files    []FileChange
 	Switches []SwitchChange
 	Firewall FirewallChange
@@ -592,7 +604,7 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		}
 	}
 
-	plan.Steps = e.steps(plan, rendered)
+	plan.Steps = e.steps(ctx, plan, rendered)
 	return plan, nil
 }
 
@@ -923,7 +935,7 @@ func listTableCommand() Command {
 }
 
 // steps is what the commit stage would run, in the order ADR 0004 fixes.
-func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
+func (e *Engine) steps(ctx context.Context, plan *Plan, rendered *rendering) []Step {
 	var steps []Step
 
 	if plan.Firewall.Apply {
@@ -978,7 +990,7 @@ func (e *Engine) steps(plan *Plan, rendered *rendering) []Step {
 		steps = append(steps, daemonReload(PhaseProcessConfig, "a unit was written"))
 	}
 
-	for _, service := range e.services(plan, rendered) {
+	for _, service := range e.services(ctx, plan, rendered) {
 		steps = append(steps, service.steps()...)
 	}
 	steps = append(steps, deferredReclaim(deferredFiles(plan, ChangeRemove), "nothing runs from this unit any more")...)

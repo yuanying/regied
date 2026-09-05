@@ -244,6 +244,7 @@ func (e *Engine) ReportTurn(revision, source string, plan *Plan, failure error) 
 	}
 	if plan != nil {
 		report.Waiting = plan.Waiting
+		report.Failing = append(report.Failing, plan.Failing...)
 		report.Warnings = append(append([]string(nil), plan.validation...), plan.Warnings...)
 		report.Notes = plan.Notes
 	}
@@ -286,6 +287,8 @@ func (e *Engine) ReportTurn(revision, source string, plan *Plan, failure error) 
 func stateOf(plan *Plan, failure error) State {
 	switch {
 	case failure != nil:
+		return StateFailing
+	case plan != nil && len(plan.Failing) > 0:
 		return StateFailing
 	case plan != nil && len(plan.Waiting) > 0:
 		return StateWaiting
@@ -404,6 +407,8 @@ func linesOf(failure error) []string {
 // it read the file, and this is the only place in regied that a file's declaration
 // reaches the record.
 func (e *Engine) Submit(ctx context.Context, plan *Plan, declaration Declaration) (*Result, error) {
+	e.retries = make(map[string]retryState)
+	e.retryRevision = Revision(declaration.Bytes)
 	revision := Revision(declaration.Bytes)
 	var accepted bool
 	result, err := e.turn(ctx, plan, func() error {
@@ -438,6 +443,17 @@ func (e *Engine) Submit(ctx context.Context, plan *Plan, declaration Declaration
 // (RecordError). Either way nothing is changed: a running router keeps running what it
 // runs.
 func (e *Engine) Reconcile(ctx context.Context) (*Result, error) {
+	return e.reconcile(ctx, false)
+}
+
+// ReconcileUnattended runs a resync- or netlink-triggered turn. It performs all cheap
+// observation and comparison, but never restarts or stops a running process and never
+// reclaims a unit. Differences across that line remain visible as failing drift.
+func (e *Engine) ReconcileUnattended(ctx context.Context) (*Result, error) {
+	return e.reconcile(ctx, true)
+}
+
+func (e *Engine) reconcile(ctx context.Context, unattended bool) (*Result, error) {
 	record, err := e.LoadRecord()
 	if err != nil {
 		var invalid *RecordError
@@ -453,6 +469,13 @@ func (e *Engine) Reconcile(ctx context.Context) (*Result, error) {
 		_, reportErr := e.ReportTurn(record.Revision, "", nil, err)
 		return nil, withNote(err, reportErr)
 	}
+	if unattended {
+		if e.retryRevision != record.Revision {
+			e.retries = make(map[string]retryState)
+			e.retryRevision = record.Revision
+		}
+		plan = e.unattendedPlan(plan)
+	}
 	result, err := e.ApplyPlan(ctx, plan)
 	_, reportErr := e.ReportTurn(record.Revision, "", plan, err)
 	if err != nil {
@@ -463,6 +486,61 @@ func (e *Engine) Reconcile(ctx context.Context) (*Result, error) {
 		result.Notes = append(result.Notes, reportErr.Error())
 	}
 	return result, nil
+}
+
+func (e *Engine) unattendedPlan(original *Plan) *Plan {
+	plan := *original
+	plan.Files = append([]FileChange(nil), original.Files...)
+	plan.Steps = nil
+
+	for i := range plan.Files {
+		if plan.Files[i].Kind == ChangeRemove {
+			plan.Files[i].Deferred = true
+		}
+	}
+	present := make(map[string]bool)
+	for _, step := range original.Steps {
+		if unattendedForbidden(step) {
+			plan.Failing = append(plan.Failing, step.Reason+": an unattended turn does not take down something that is up")
+			continue
+		}
+		key := step.describe()
+		present[key] = true
+		if retry, ok := e.retries[key]; ok && e.host.Clock.Now().Before(retry.next) {
+			plan.Failing = append(plan.Failing, fmt.Sprintf("%s: retry backoff level %d until %s", key, retry.attempts, retry.next.UTC().Format(time.RFC3339)))
+			continue
+		}
+		retry := e.retries[key]
+		retry.attempts++
+		delay := time.Second << min(retry.attempts-1, 8)
+		if delay > 5*time.Minute {
+			delay = 5 * time.Minute
+		}
+		retry.next = e.host.Clock.Now().Add(delay)
+		e.retries[key] = retry
+		plan.Steps = append(plan.Steps, step)
+	}
+	for key := range e.retries {
+		if !present[key] {
+			delete(e.retries, key)
+		}
+	}
+	return &plan
+}
+
+func unattendedForbidden(step Step) bool {
+	if step.Kind == StepRemove {
+		return true
+	}
+	if step.Command.Name != "systemctl" {
+		return false
+	}
+	for _, arg := range step.Command.Args {
+		if arg == "restart" || arg == "disable" || arg == "--now" && len(step.Command.Args) > 0 && step.Command.Args[0] == "disable" {
+			return true
+		}
+	}
+	return false
 }
 
 // withNote attaches what went wrong around a failure — the report that could not be
