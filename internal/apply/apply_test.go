@@ -49,7 +49,7 @@ func TestApplyProtectsTheCredentialsDirectoryAndNothingAboveIt(t *testing.T) {
 	}
 }
 
-func TestApplyRollsBackAFailedCommand(t *testing.T) {
+func TestApplyStopsAtAFailedCommand(t *testing.T) {
 	engine, files, runner, host := planFixture(t)
 	sysctl := host.Sysctl.(*fakeSysctl)
 	sysctl.values["net.ipv4.ip_forward"] = "0"
@@ -61,25 +61,27 @@ func TestApplyRollsBackAFailedCommand(t *testing.T) {
 
 	_, err := engine.Apply(context.Background(), cfg)
 	requireErrorContaining(t, err, "regied-pppoe@pppoe0.service")
-	requireErrorContaining(t, err, "rolled back")
+	requireErrorContaining(t, err, "remains at the point")
 
-	if _, ok := files.content("/etc/systemd/network/50-regied-wan.network"); ok {
-		t.Error("a file this apply created is still there after the rollback")
+	if _, ok := files.content("/etc/systemd/network/50-regied-wan.network"); !ok {
+		t.Error("a file staged before the failure was lost")
 	}
-	if got := sysctl.values["net.ipv4.ip_forward"]; got != "0" {
-		t.Errorf("net.ipv4.ip_forward was left at %q, want the 0 it held before", got)
+	if got := sysctl.values["net.ipv4.ip_forward"]; got != "1" {
+		t.Errorf("net.ipv4.ip_forward was left at %q, want the value reached before the failure", got)
 	}
 	// The table was installed and has to come back off, because before this apply there
 	// was none.
-	if !ranNFTWith(runner.ran, "delete table inet regied") {
-		t.Errorf("the rollback did not take the table back off:\n%s", strings.Join(runner.commands(), "\n"))
+	for _, cmd := range runner.ran {
+		if cmd.Stdin == "table inet regied\ndelete table inet regied\n" {
+			t.Errorf("the failed turn tried to undo the firewall:\n%s", strings.Join(runner.commands(), "\n"))
+		}
 	}
 	if _, ok := files.content("/var/lib/regied/applied/ruleset.nft"); ok {
 		t.Error("a rolled-back apply recorded its ruleset as applied")
 	}
 }
 
-func TestApplyRollsBackToThePreviousGenerationRatherThanToNothing(t *testing.T) {
+func TestApplyLeavesTheNewGenerationAtTheFailurePoint(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustApply(t, engine, load(t, hostFixture))
 	tablePresent(runner)
@@ -95,14 +97,14 @@ func TestApplyRollsBackToThePreviousGenerationRatherThanToNothing(t *testing.T) 
 	_, err := engine.Apply(context.Background(), changed)
 	requireErrorContaining(t, err, "regied-dnsmasq.service")
 
-	if got, _ := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); got != before {
-		t.Error("the dnsmasq configuration was not put back as it was")
+	if got, _ := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); got == before {
+		t.Error("the staged dnsmasq configuration was unexpectedly undone")
 	}
 	if got, _ := files.content("/var/lib/regied/applied/ruleset.nft"); got != beforeRuleset {
 		t.Error("the recorded ruleset moved on even though the apply failed")
 	}
-	if !ranNFTWith(runner.ran[sinceSecondApply:], beforeRuleset) {
-		t.Error("the rollback did not reinstall the ruleset the previous apply had left")
+	if ranNFTWith(runner.ran[sinceSecondApply:], beforeRuleset) {
+		t.Error("the failed turn reinstalled the previous ruleset")
 	}
 }
 
@@ -191,97 +193,6 @@ func TestTheLineComingUpDuringAnApplyChangesNoRuleset(t *testing.T) {
 	setsHold(runner, map[string][]string{"uplink4_pppoe0": {"192.0.2.10"}, "uplink6_pppoe0": {}})
 	if result := mustApply(t, engine, cfg); result.Changed {
 		t.Errorf("the apply after the line came up reports a change: %s", result.Plan.Summary())
-	}
-}
-
-// A rollback puts the previous table text back, and replacing a table empties its sets.
-// Leaving them empty would take the hairpin rules away as surely as rendering them out
-// would, so the rollback seeds them the way the apply does (ADR 0015).
-func TestRollbackSeedsTheUplinkSetsAgain(t *testing.T) {
-	engine, _, runner, host := planFixture(t)
-	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
-	mustApply(t, engine, load(t, hostFixture+forwardResource))
-	tablePresent(runner)
-
-	// A second apply that changes the ruleset and dnsmasq's file, and fails at the
-	// restart, after the firewall phase has already run.
-	changed := load(t, strings.Replace(hostFixture, "192.168.10.127", "192.168.10.200", 1)+forwardResource+secondForward)
-	runner.fail["systemctl restart regied-dnsmasq.service"] = errFake
-	before := len(runner.ran)
-
-	if _, err := engine.Apply(context.Background(), changed); err == nil {
-		t.Fatal("the failing restart was not reported")
-	}
-
-	var restored, seeded bool
-	for _, cmd := range runner.ran[before:] {
-		if cmd.Name != "nft" {
-			continue
-		}
-		if strings.Contains(cmd.Stdin, "table inet regied {") && !strings.Contains(cmd.Stdin, "PortForward/ssh") {
-			restored = true
-		}
-		if restored && strings.Contains(cmd.Stdin, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
-			seeded = true
-		}
-	}
-	if !restored {
-		t.Fatalf("the previous ruleset was not put back:\n%s", strings.Join(runner.commands(), "\n"))
-	}
-	if !seeded {
-		t.Error("the restored table's uplink sets were left empty, so the hairpin rules match nothing")
-	}
-}
-
-// The seeding is a step of its own, after the table. A failure at the table itself means
-// the seeding was never attempted and is not among the steps the rollback undoes — and
-// the rollback still replaces the table, which empties its sets. So putting the previous
-// text back has to bring its elements with it, or a rollback that says it succeeded
-// leaves the hairpin rules matching nothing (ADR 0005, ADR 0015).
-func TestRollbackSeedsEvenWhenTheTableItselfFailed(t *testing.T) {
-	engine, _, runner, host := planFixture(t)
-	host.Links.(fakeLinks)["pppoe0"] = addrs(t, "192.0.2.10")
-	mustApply(t, engine, load(t, hostFixture+forwardResource))
-	tablePresent(runner)
-
-	changed := load(t, hostFixture+forwardResource+secondForward)
-	runner.fail["nft -f -"] = errFake
-	before := len(runner.ran)
-
-	_, err := engine.Apply(context.Background(), changed)
-	requireErrorContaining(t, err, "firewall")
-
-	var restoredAndSeeded bool
-	for _, cmd := range runner.ran[before:] {
-		if cmd.Name != "nft" || strings.Contains(cmd.Stdin, "PortForward/ssh") {
-			continue
-		}
-		if strings.Contains(cmd.Stdin, "table inet regied {") &&
-			strings.Contains(cmd.Stdin, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
-			restoredAndSeeded = true
-		}
-	}
-	if !restoredAndSeeded {
-		t.Errorf("the restored table was not seeded in the same transaction:\n%s", strings.Join(runner.commands(), "\n"))
-	}
-}
-
-// A recorded ruleset from before the sets existed declares none, and telling nft to add
-// elements to a set the text does not declare would make the whole restore fail. Only the
-// sets the restored text declares are seeded.
-func TestRollbackSeedsOnlyTheSetsTheRestoredTextDeclares(t *testing.T) {
-	change := FirewallChange{
-		Before:   "table inet regied {\n\tset uplink4_pppoe0 {\n\t\ttype ipv4_addr\n\t}\n}\n",
-		Elements: []SetElements{{Set: "uplink4_pppoe0", Elements: []string{"192.0.2.10"}}, {Set: "uplink6_pppoe0", Elements: []string{"2001:db8::1"}}},
-	}
-
-	undo := firewallUndo(change)
-
-	if !strings.Contains(undo.Command.Stdin, "add element inet regied uplink4_pppoe0 { 192.0.2.10 }") {
-		t.Errorf("the set the restored text declares is not seeded:\n%s", undo.Command.Stdin)
-	}
-	if strings.Contains(undo.Command.Stdin, "uplink6_pppoe0") {
-		t.Errorf("a set the restored text does not declare is seeded, which would make the restore fail:\n%s", undo.Command.Stdin)
 	}
 }
 
@@ -437,7 +348,7 @@ func TestASetMissingFromTheTableIsReportedNotSeeded(t *testing.T) {
 	}
 }
 
-func TestApplyReportsARollbackThatFailedToo(t *testing.T) {
+func TestApplyReportsWhereACommandFailed(t *testing.T) {
 	engine, _, runner, _ := planFixture(t)
 	// The reload fails, and the rollback re-runs it over the restored files, where it
 	// fails for the same reason. An operator has to be told both.
@@ -445,7 +356,7 @@ func TestApplyReportsARollbackThatFailedToo(t *testing.T) {
 
 	_, err := engine.Apply(context.Background(), load(t, hostFixture))
 	requireErrorContaining(t, err, "networkctl reload")
-	requireErrorContaining(t, err, "the rollback also failed")
+	requireErrorContaining(t, err, "remains at the point")
 }
 
 // ranNFTWith is whether nft was handed a ruleset holding the given text.

@@ -32,15 +32,13 @@ type Result struct {
 	Revision string
 }
 
-// Error is what Apply returns when the commit stage failed. It says what failed, and
-// what the rollback then managed to do about it, because on a host with one uplink the
-// operator is the recovery path and what they need is the truth about where it stopped
-// (ADR 0005).
+// Error is what Apply returns when a turn failed. It says exactly where the host was
+// left; a later turn retries from there, and going back is a person submitting an older
+// declaration (ADR 0016).
 type Error struct {
-	Phase    Phase
-	Step     string
-	Cause    error
-	Rollback []string
+	Phase Phase
+	Step  string
+	Cause error
 
 	// Notes is what else went wrong around the failure: the report of the turn that could
 	// not be written. It is said after the failure, never instead of it.
@@ -50,14 +48,7 @@ type Error struct {
 func (e *Error) Error() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "the apply failed in the %s phase, at %q: %v", e.Phase, e.Step, e.Cause)
-	if len(e.Rollback) == 0 {
-		b.WriteString("\n  the host was rolled back to the configuration it was running")
-	} else {
-		b.WriteString("\n  the rollback also failed, so the host is running a mixture:")
-		for _, problem := range e.Rollback {
-			b.WriteString("\n    " + problem)
-		}
-	}
+	b.WriteString("\n  the host remains at the point where the turn stopped")
 	for _, note := range e.Notes {
 		b.WriteString("\n  also: " + note)
 	}
@@ -72,7 +63,7 @@ func (e *Error) Unwrap() error { return e.Cause }
 // computes the plan, writes every file and reclaims what an earlier apply left, and
 // makes every check that can be made without changing anything. The commit stage runs
 // the commands. Writing a file is not an effect — nothing reads one until it is told to
-// — so everything knowable is found out while a rollback still costs nothing
+// — so everything knowable is found out before commands can change kernel state
 // (ADR 0004).
 func (e *Engine) Apply(ctx context.Context, cfg *config.Config) (*Result, error) {
 	plan, err := e.Plan(ctx, cfg)
@@ -121,8 +112,7 @@ func (e *Engine) turn(ctx context.Context, plan *Plan, accept func() error) (*Re
 		}
 	}
 
-	if attempted, failure := e.commit(ctx, plan); failure != nil {
-		failure.Rollback = e.undo(ctx, plan, attempted)
+	if failure := e.commit(ctx, plan); failure != nil {
 		return nil, failure
 	}
 
@@ -136,20 +126,10 @@ func (e *Engine) turn(ctx context.Context, plan *Plan, accept func() error) (*Re
 	return result, nil
 }
 
-// stagingFailure is a failure before the first command. Nothing has run, so putting the
-// files back is the whole of the rollback. What could not be put back is the first thing
-// an operator needs, so it travels with the failure rather than being dropped (ADR 0005).
-func (e *Engine) stagingFailure(plan *Plan, step string, cause error) *Error {
-	failure := &Error{Phase: PhaseStaging, Step: step, Cause: cause}
-	failure.Rollback = e.restoreFiles(plan)
-	// systemd was never told about the units this apply created, so they are taken away
-	// without telling it they are gone.
-	for _, change := range deferredFiles(plan, ChangeCreate) {
-		if err := e.host.Files.Remove(change.Path); err != nil {
-			failure.Rollback = append(failure.Rollback, fmt.Sprintf("%s could not be taken back off: %v", change.Path, err))
-		}
-	}
-	return failure
+// stagingFailure is a failure before the first command. Files already staged remain;
+// nothing has acted on them yet, and a later turn compares them normally (ADR 0016).
+func (e *Engine) stagingFailure(_ *Plan, step string, cause error) *Error {
+	return &Error{Phase: PhaseStaging, Step: step, Cause: cause}
 }
 
 // stage writes every file and takes away what was reclaimed. None of it is an effect
@@ -203,15 +183,14 @@ func (e *Engine) write(change FileChange, content string) error {
 	return nil
 }
 
-// commit runs the steps, in order. The first failure stops it, and how many steps had
-// been attempted is what the rollback then has to undo.
-func (e *Engine) commit(ctx context.Context, plan *Plan) (int, *Error) {
-	for i, step := range plan.Steps {
+// commit runs the steps in their safety order and stops at the first failure.
+func (e *Engine) commit(ctx context.Context, plan *Plan) *Error {
+	for _, step := range plan.Steps {
 		if err := e.run(ctx, step); err != nil {
-			return i + 1, &Error{Phase: step.Phase, Step: step.describe(), Cause: err}
+			return &Error{Phase: step.Phase, Step: step.describe(), Cause: err}
 		}
 	}
-	return len(plan.Steps), nil
+	return nil
 }
 
 func (e *Engine) run(ctx context.Context, step Step) error {
@@ -234,76 +213,6 @@ func (e *Engine) run(ctx context.Context, step Step) error {
 	// StepCommand and StepSeed, both of which are one command.
 	_, err := e.host.Runner.Run(ctx, step.Command)
 	return err
-}
-
-// restoreFiles puts every file back as it was, including the ones the apply reclaimed.
-// For a file the previous generation is the file itself, which is why the engine keeps
-// almost no state (ADR 0005).
-//
-// Putting content back is always safe: the file goes on existing, so nothing that
-// resolves through it breaks. Taking a file away is not, and for a deferred path — a
-// unit — it has to wait until the undo steps that resolve through it have run. That is
-// the same rule the forward direction follows, read from the same flag (ADR 0004).
-func (e *Engine) restoreFiles(plan *Plan) []string {
-	var problems []string
-	for _, change := range plan.Files {
-		var err error
-		before, hadBefore := plan.previousFor(change)
-		switch {
-		case change.Kind == ChangeNone:
-			continue
-		case hadBefore:
-			err = e.host.Files.WriteFile(change.Path, []byte(before), change.BeforeMode)
-		case change.Deferred:
-			// This apply created it. It goes once the stops are done.
-			continue
-		default:
-			err = e.host.Files.Remove(change.Path)
-		}
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s could not be put back: %v", change.Path, err))
-		}
-	}
-	return problems
-}
-
-// undo re-runs, over the restored files, the steps that had already been attempted. A
-// step that failed is undone too: it may have taken effect before it failed.
-//
-// It goes forward rather than backward, because the forward order is the safe one: the
-// firewall is restored before forwarding is, and the links before the processes. It does
-// not stop at the first failure — abandoning the rest would leave more of a mixture than
-// finishing does — but it does not retry either, and every failure is reported
-// (ADR 0005).
-func (e *Engine) undo(ctx context.Context, plan *Plan, attempted int) []string {
-	problems := e.restoreFiles(plan)
-	for _, step := range plan.Steps[:attempted] {
-		if step.Undo == nil {
-			problems = append(problems, fmt.Sprintf("%q has no way back and was left as it is", step.describe()))
-			continue
-		}
-		if step.Undo.Kind == StepKeep {
-			// Deliberately nothing. The operator is told what was left and why, unless
-			// there was nothing to leave: a step whose undo has no reason is one the
-			// rollback has no work for and nothing to report.
-			if step.Undo.Reason != "" {
-				problems = append(problems, step.Undo.Reason)
-			}
-			continue
-		}
-		if err := e.run(ctx, *step.Undo); err != nil {
-			problems = append(problems, fmt.Sprintf("%q failed: %v", step.Undo.describe(), err))
-		}
-	}
-	// The units this apply created go last, once the undo of every start has run
-	// through them, and systemd is told — the same steps the forward direction takes
-	// for a unit the configuration dropped.
-	for _, step := range deferredReclaim(deferredFiles(plan, ChangeCreate), "this apply created it") {
-		if err := e.run(ctx, step); err != nil {
-			problems = append(problems, fmt.Sprintf("%q failed: %v", step.describe(), err))
-		}
-	}
-	return problems
 }
 
 // record remembers the ruleset that was installed. It is the one thing an apply leaves

@@ -67,10 +67,8 @@ func TestRevisionIsTheDigestOfTheBytes(t *testing.T) {
 // holds what was asked for, not what last worked; the host is wherever the failure left
 // it, and the report says so (ADR 0016).
 //
-// Until the loop exists, the failed commands are still rolled back (ADR 0005 is
-// superseded but its code stays), so the host runs the previous declaration while the
-// record holds the new one. A reconcile then tries the new one again. That is the
-// transitional state unit A accepts, and this test pins both halves of it.
+// No inverse is run. The record and staged files keep the new declaration, while the
+// report identifies the command at which the turn stopped.
 func TestAFailedSubmissionKeepsTheDeclarationItWasAsked(t *testing.T) {
 	engine, files, runner, _ := planFixture(t)
 	mustSubmit(t, engine, hostFixture, "/etc/regied/config.yaml")
@@ -97,18 +95,8 @@ func TestAFailedSubmissionKeepsTheDeclarationItWasAsked(t *testing.T) {
 		t.Error("the report is about a different revision from the one recorded")
 	}
 
-	// The next turn goes toward the record, so it tries the same thing again.
-	delete(runner.fail, "systemctl restart regied-dnsmasq.service")
-	before := len(runner.ran)
-	result, err := engine.Reconcile(context.Background())
-	if err != nil {
-		t.Fatalf("the reconcile failed: %v", err)
-	}
-	if !result.Changed || !slices.Contains(commandsSince(runner, before), "systemctl restart regied-dnsmasq.service") {
-		t.Errorf("the reconcile did not finish what the submission started:\n%s", strings.Join(commandsSince(runner, before), "\n"))
-	}
 	if got, _ := files.content("/etc/regied/dnsmasq/dnsmasq.conf"); !strings.Contains(got, "192.168.10.200") {
-		t.Error("the host does not hold the recorded declaration after the reconcile")
+		t.Error("the staged file was rolled back after the failed submission")
 	}
 }
 
@@ -454,8 +442,8 @@ func TestTheReportSaysWhenTheTurnWasPutBack(t *testing.T) {
 	}
 
 	report := mustLastTurn(t, engine)
-	if report.Outcome != OutcomeRolledBack {
-		t.Errorf("the report says the turn %q, want rolled back", report.Outcome)
+	if report.Outcome != OutcomeStopped {
+		t.Errorf("the report says the turn %q, want stopped", report.Outcome)
 	}
 	if report.State != StateFailing {
 		t.Errorf("the state is %q, want failing", report.State)

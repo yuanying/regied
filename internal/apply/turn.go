@@ -53,12 +53,9 @@ const (
 	// OutcomeUnchanged says it found nothing to change and ran no command. On an
 	// idempotent engine this is the ordinary answer (ADR 0004).
 	OutcomeUnchanged Outcome = "unchanged"
-	// OutcomeRolledBack says the turn stopped part-way and the host was put back.
-	//
-	// It exists while the rollback does. The record it belongs to takes the rollback away
-	// and leaves the loop to finish what a turn started (ADR 0016), and this outcome goes
-	// with it.
-	OutcomeRolledBack Outcome = "rolled back"
+	// OutcomeStopped says a turn failed after it had begun changing the host and left it
+	// at that safe prefix of the phase order.
+	OutcomeStopped Outcome = "stopped"
 	// OutcomeNothingRun says the turn stopped before its first command: the declaration
 	// could not be staged, or something it had to read could not be read. The host was
 	// never touched.
@@ -298,15 +295,14 @@ func stateOf(plan *Plan, failure error) State {
 
 // outcomeOf is what the turn did to the host.
 //
-// A failure before the first command left the host untouched, and every other failure was
-// followed by the rollback putting it back — which is true while the rollback exists, and
-// goes when it does (ADR 0016).
+// A failure before the first command ran no command; a later failure leaves the host at
+// the safe prefix of the phase order it reached (ADR 0016).
 func outcomeOf(plan *Plan, failure error) Outcome {
 	switch {
 	case failure != nil && stoppedInStaging(failure):
 		return OutcomeNothingRun
 	case failure != nil:
-		return OutcomeRolledBack
+		return OutcomeStopped
 	case plan == nil || plan.Empty():
 		return OutcomeUnchanged
 	}
