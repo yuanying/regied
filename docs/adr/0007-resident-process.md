@@ -30,7 +30,7 @@
 > summary and the lease list is still a decision about how to build something nobody is
 > building.
 >
-> **What the socket carries is revised by [ADR 0017](0017-submission-through-the-resident-process.md)** (decided 2026-09-05, not built): it becomes the submission path — submit, trial, confirm, cancel — and is not a read API; its mode is narrowed to root.
+> **What the socket carries is revised by [ADR 0017](0017-submission-through-the-resident-process.md)** (implemented 2026-09-05): it is the submission path — submit, trial, confirm, cancel — and is not a read API; its mode is narrowed to root.
 
 > **There is no resident process on the host.** *(ADR 0016 decides that there will be one,
 > for a reason this record did not have; it is not built either.)* `regied` has

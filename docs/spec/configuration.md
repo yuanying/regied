@@ -140,14 +140,8 @@ regied.
 
 ## How a declaration reaches the host
 
-> **This section describes the shape
-> [ADR 0017](../adr/0017-submission-through-the-resident-process.md) decided, which is
-> not built yet.** Until it is, what runs is
-> [ADR 0016](../adr/0016-converging-on-the-accepted-declaration.md) as built, and it
-> differs in four places: `regied apply` validates, records and runs the turn in its own
-> process and needs no daemon; a `regied reconcile` command runs one turn over the record,
-> and a `regied-reconcile.service` unit runs it at boot; the control socket accepts three
-> messages, trial, confirm and cancel; and the socket is open to root and one group.
+> **This section describes the submission path implemented by
+> [ADR 0017](../adr/0017-submission-through-the-resident-process.md).**
 
 **The file on disk is not what the host converges toward.** `regied apply` reads it and
 sends it to the resident process, which validates it, stages it, and once it has validated
