@@ -157,7 +157,7 @@ that converges reads the record rather than the file
 | `regied confirm` | the local control socket | writes the active trial to the accepted declaration and reports its revision and last turn state |
 | `regied cancel` | the local control socket | drops the active trial and immediately runs a submitted turn toward the accepted declaration |
 
-`regied apply` is the only thing that reads the configuration file. `serve` has no
+`regied apply` is the only thing that reads the configuration file. It and `regied render` read `/etc/regied/config.yaml` unless `--config` names another path. `serve` has no
 configuration-file flag; netlink events only bring a full comparison forward. That keeps an
 unfinished edit from becoming the host's configuration: nothing that runs on its own can
 reach the file at all.
