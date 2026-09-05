@@ -10,8 +10,10 @@ declaration.
 
 A router is one kind of host regied applies to, not the only one.
 
-> **Status: under development.** Nothing here is ready to run yet. The configuration
-> schema is settled in shape but not in detail.
+> **Status: built, not yet deployed.** The engine, the resident loop and the confirmation
+> workflow are implemented and pass their tests. regied has not yet run on real hardware
+> with a real uplink. The configuration schema is settled in shape; individual field
+> names may still move before the first release.
 
 ## Language
 
@@ -35,7 +37,7 @@ This split is the point of the project, so it comes first. The reasoning is in
 | **NAT: masquerade, port forwarding, hairpin** | **regied** |
 | **Policy-routing match: source ranges, destination exclusions, sets** | **regied** |
 | **Generating and supervising pppd and dnsmasq configuration** | **regied** |
-| **One declaration over all of the above, dry-run, rollback, state API** | **regied** |
+| **One declaration over all of the above: dry-run, a record of what was accepted, a loop that keeps the host at it, and applying with a deadline** | **regied** |
 
 Two consequences of that split are worth stating up front.
 
@@ -59,11 +61,27 @@ regied is being built against a working configuration with these seven areas:
 - **DHCP and DNS** — static leases, RA / DHCPv6, conditional forwarding
 - **Static routes** — IPv4 and IPv6
 
-It also exposes a read-mostly HTTP API returning apply state and link state.
+There is no HTTP API. The design for a read-only one is recorded and deferred
+([ADR 0007](docs/adr/0007-resident-process.md)); what the host is doing is answered by the
+report of the last turn and by the journal, described under [Operating](#operating).
 
 The assumed deployment has **exactly one uplink and one machine**. There is no
-redundancy. That assumption drives the safety requirements: apply is idempotent, a failed
-apply rolls back, and `--dry-run` shows what would change before anything is touched.
+redundancy, and the operator reaches the host over the line it is reconfiguring. That
+assumption drives the safety requirements
+([ADR 0016](docs/adr/0016-converging-on-the-accepted-declaration.md)):
+
+- **Apply is idempotent.** A turn that finds nothing to change runs no command.
+- **`--dry-run` shows what would change** before anything is touched.
+- **Nothing rolls back on its own.** A submission that fails stops at the step that
+  failed, leaves the host at whatever prefix of the work got done, and says so. Every
+  prefix is a safe state: the firewall goes in before forwarding is enabled. Going back is
+  a person applying the previous file.
+- **The host converges on what was accepted, not on the file.** Only `regied apply` reads
+  the configuration file. The loop and the boot unit read the declaration the host
+  accepted, so an unfinished edit never reaches the host on a timer.
+- **A change can be applied with a deadline.** `regied apply --confirm` reverts to the
+  previous declaration unless the operator, still able to reach the host, confirms it.
+  This is the one automatic revert in the design, and it exists for lockout.
 
 What regied deliberately does not do is in [docs/scope.md](docs/scope.md).
 
@@ -108,8 +126,10 @@ make build              # build for the host
 make build-arm64        # cross-compile for an arm64 SBC
 ```
 
-The deployment target is arm64 running a vendor kernel 6.1. Development and testing
-happen on amd64 Linux.
+The deployment target is an arm64 single-board computer running Debian 13
+([ADR 0011](docs/adr/0011-target-platform.md)). Development and testing happen on amd64
+Linux. The cross-build is static (`CGO_ENABLED=0`), so the binary copies onto the target
+with no runtime dependency.
 
 ## Test
 
