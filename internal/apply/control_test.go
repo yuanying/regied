@@ -3,7 +3,10 @@ package apply
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,16 +22,16 @@ func (t *fakeTimer) After(time.Duration) <-chan time.Time {
 	return t.elapsed
 }
 
-func TestUnixControlCarriesOnlyTrialConfirmAndCancel(t *testing.T) {
+func TestUnixControlCarriesExactlyFourSubmissionMessages(t *testing.T) {
 	transport := OSControl{}
 	path := filepath.Join(t.TempDir(), "control.sock")
-	requests, closeControl, err := transport.Listen(context.Background(), path, 0o660)
+	requests, closeControl, err := transport.Listen(context.Background(), path, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeControl()
 
-	for _, verb := range []ControlVerb{ControlTrial, ControlConfirm, ControlCancel} {
+	for _, verb := range []ControlVerb{ControlSubmit, ControlTrial, ControlConfirm, ControlCancel} {
 		done := make(chan error, 1)
 		go func() {
 			_, err := transport.Do(context.Background(), path, ControlRequest{Verb: verb})
@@ -46,6 +49,136 @@ func TestUnixControlCarriesOnlyTrialConfirmAndCancel(t *testing.T) {
 
 	if _, err := transport.Do(context.Background(), path, ControlRequest{Verb: "status"}); err == nil {
 		t.Fatal("an unsupported control verb was accepted")
+	}
+}
+
+func TestClientDisconnectDoesNotCancelTheDaemonsTurn(t *testing.T) {
+	host, files, _ := testHost()
+	engine := New(host, Options{StateDir: "/state"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	done := make(chan error, 1)
+	go func() { done <- ServeControl(ctx, engine, nil, nil, socket, &bytes.Buffer{}) }()
+	waitForSocket(t, socket)
+
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ControlRequest{Verb: ControlSubmit, Declaration: declarationOf(trialFixture), Source: "/tmp/config.yaml"}
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 100; i++ {
+		if got, ok := files.content("/state/accepted/declaration.yaml"); ok && got == string(request.Declaration) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the daemon abandoned the submission when its client disconnected")
+}
+
+func TestClientCanStopWaitingForADaemonThatDoesNotAnswer(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() { conn, _ := listener.Accept(); accepted <- conn }()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (OSControl{}).Do(ctx, socket, ControlRequest{Verb: ControlSubmit, Declaration: declarationOf(trialFixture)})
+		done <- err
+	}()
+	conn := <-accepted
+	defer conn.Close()
+	if err := <-done; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unanswered request returned %v, want context deadline", err)
+	}
+}
+
+func TestServeCreatesARootOnlySocket(t *testing.T) {
+	host, _, _ := testHost()
+	engine := New(host, Options{StateDir: "/state"})
+	ctx, cancel := context.WithCancel(context.Background())
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	done := make(chan error, 1)
+	go func() { done <- ServeControl(ctx, engine, nil, nil, socket, &bytes.Buffer{}) }()
+	waitForSocket(t, socket)
+	info, err := os.Stat(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("socket mode = %04o, want 0600", got)
+	}
+	cancel()
+	<-done
+}
+
+func TestSecondServeIsRefusedWhileDaemonOwnsTheLock(t *testing.T) {
+	state := t.TempDir()
+	host, _, _ := testHost()
+	host.Locker = OSLocker{}
+	first := New(host, Options{StateDir: state})
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	firstSocket := filepath.Join(t.TempDir(), "first.sock")
+	go func() { firstDone <- ServeControl(ctx, first, nil, nil, firstSocket, &bytes.Buffer{}) }()
+	waitForSocket(t, firstSocket)
+
+	second := New(host, Options{StateDir: state})
+	err := ServeControl(context.Background(), second, nil, nil, filepath.Join(t.TempDir(), "second.sock"), &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "another resident process") {
+		t.Fatalf("second serve returned %v, want ownership refusal", err)
+	}
+	cancel()
+	<-firstDone
+}
+
+func TestTrialWithoutDeadlineIsRejected(t *testing.T) {
+	host, _, _ := testHost()
+	engine := New(host, Options{StateDir: "/state"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	done := make(chan error, 1)
+	go func() { done <- ServeControl(ctx, engine, nil, nil, socket, &bytes.Buffer{}) }()
+	waitForSocket(t, socket)
+
+	_, err := (OSControl{}).Do(ctx, socket, ControlRequest{Verb: ControlTrial, Declaration: declarationOf(trialFixture)})
+	if err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("trial without a deadline returned %v, want a deadline error", err)
+	}
+}
+
+func TestSubmitReturnsTheCompleteTurnReport(t *testing.T) {
+	host, _, _ := testHost()
+	engine := New(host, Options{StateDir: "/state"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	done := make(chan error, 1)
+	go func() { done <- ServeControl(ctx, engine, nil, nil, socket, &bytes.Buffer{}) }()
+	waitForSocket(t, socket)
+
+	response, err := (OSControl{}).Do(ctx, socket, ControlRequest{
+		Verb: ControlSubmit, Declaration: declarationOf(trialFixture), Source: "/tmp/config.yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Report == nil || response.Report.Revision == "" || response.Report.Source != "/tmp/config.yaml" {
+		t.Fatalf("submit response has no complete report: %#v", response)
 	}
 }
 
@@ -205,7 +338,9 @@ func TestAPlainApplyEndsTheActiveTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := "  global:\n    ipForwarding: true\n  resources: []\n"
-	mustSubmit(t, engine, plain, "/etc/regied/config.yaml")
+	if _, err := (OSControl{}).Do(ctx, socket, ControlRequest{Verb: ControlSubmit, Declaration: declarationOf(plain), Source: "/etc/regied/config.yaml"}); err != nil {
+		t.Fatal(err)
+	}
 	events <- struct{}{}
 	for i := 0; i < 100; i++ {
 		_, err := (OSControl{}).Do(ctx, socket, ControlRequest{Verb: ControlConfirm})

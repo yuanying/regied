@@ -89,6 +89,9 @@ func New(host Host, opts Options) *Engine {
 	if host.Timer == nil {
 		host.Timer = OSTimer{}
 	}
+	if host.Notifier == nil {
+		host.Notifier = noopNotifier{}
+	}
 	return &Engine{host: host, opts: opts.withDefaults(), retries: make(map[string]retryState)}
 }
 

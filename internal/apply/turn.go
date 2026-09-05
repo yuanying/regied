@@ -469,18 +469,33 @@ func (e *Engine) Submit(ctx context.Context, plan *Plan, declaration Declaration
 
 // SubmitTrial runs a submitted turn without replacing the accepted declaration.
 func (e *Engine) SubmitTrial(ctx context.Context, declaration Declaration) (*Result, error) {
-	document, err := config.Parse(declaration.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := config.Validate(document, config.WithSecretFiles(namedFiles{}))
+	return e.submitDeclaration(ctx, declaration, false)
+}
+
+// SubmitDeclaration validates and stages bytes received by the resident process before
+// recording them and running the submitted turn.
+func (e *Engine) SubmitDeclaration(ctx context.Context, declaration Declaration) (*Result, error) {
+	return e.submitDeclaration(ctx, declaration, true)
+}
+
+// submitDeclaration is the daemon's one admission and turn path. The wire verb decides
+// explicitly whether admission records the declaration; a missing trial deadline can
+// therefore never turn a trial into a permanent submission.
+func (e *Engine) submitDeclaration(ctx context.Context, declaration Declaration, durable bool) (*Result, error) {
+	cfg, err := validateDeclaration(declaration)
 	if err != nil {
 		return nil, err
 	}
 	plan, err := e.Plan(ctx, cfg)
 	if err != nil {
+		if durable {
+			return nil, err
+		}
 		_, reportErr := e.ReportTurn(Revision(declaration.Bytes), declaration.Source, nil, err)
 		return nil, withNote(err, reportErr)
+	}
+	if durable {
+		return e.Submit(ctx, plan, declaration)
 	}
 	revision := Revision(declaration.Bytes)
 	result, err := e.ApplyPlan(ctx, plan)
@@ -493,6 +508,26 @@ func (e *Engine) SubmitTrial(ctx context.Context, declaration Declaration) (*Res
 		result.Notes = append(result.Notes, reportErr.Error())
 	}
 	return result, nil
+}
+
+func validateDeclaration(declaration Declaration) (*config.Config, error) {
+	document, err := config.Parse(declaration.Bytes)
+	if err != nil {
+		var parseErr *config.ParseError
+		if errors.As(err, &parseErr) {
+			parseErr.Path = declaration.Source
+		}
+		return nil, err
+	}
+	cfg, err := config.Validate(document, config.WithSecretFiles(namedFiles{}))
+	if err != nil {
+		var invalid *config.ValidationError
+		if errors.As(err, &invalid) {
+			invalid.Path = declaration.Source
+		}
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // ReconcileTrial runs a turn toward an in-memory trial instead of the durable record.
