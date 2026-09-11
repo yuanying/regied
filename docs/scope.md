@@ -50,6 +50,12 @@ uplink".
 regied is a daemon that looks after **one** node. It has no clustering, no leader
 election, no failover, and no integration with a cloud provider's API.
 
+The one exception is keeping DNS records at the address this host's uplink holds, so that
+a published name follows a dynamically assigned address. It tells a provider about this
+host and nothing else: no other host is managed, and no configuration is taken from the
+provider. It is decided in [ADR 0019](adr/0019-uplink-address-in-dns-records.md) and not
+built.
+
 **Distribution is explicitly out of scope.** How a configuration file reaches a node is
 someone else's problem — a configuration management tool, a Git-based delivery pipeline,
 an image build. Blurring this is the path by which a single-node daemon becomes a
