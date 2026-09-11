@@ -350,6 +350,10 @@ spec:
     - kind: DNSForwarder
       metadata: {name: lan}
       spec:
+        # loopback: the host itself asks this dnsmasq. regied points
+        # systemd-resolved at it through every addressed link's .network
+        # file, so refusing the providers' resolvers above (useDNS: false)
+        # leaves the host with a resolver (ADR 0018).
         listenOn: [lan, loopback]
         cacheSize: 150
         upstreams:

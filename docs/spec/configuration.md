@@ -109,6 +109,7 @@ applied at boot, which would enable forwarding before the firewall exists.
 | PPPoE session | `PPPoESession` | pppd |
 | The address a session dials with, into the firewall's uplink set | `PPPoESession` | pppd's ip-up and ip-down hooks |
 | Address handout, DNS | `DHCPServer`, `DNSForwarder` | dnsmasq |
+| The host's own resolver, when `listenOn` names `loopback` | `DNSForwarder` | systemd-networkd, read by systemd-resolved |
 | Firewall, NAT, policy-routing match | `FirewallZone`, `FirewallPolicy`, `IPAddressSet`, `SourceNAT`, `PortForward`, `EgressRoutePolicy` | nftables |
 | Kernel switches | `spec.global` | kernel |
 

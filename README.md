@@ -32,6 +32,7 @@ This split is the point of the project, so it comes first. The reasoning is in
 | ip6tnl tunnels (DS-Lite) | systemd-networkd |
 | DHCPv6 prefix delegation, RA / SLAAC advertisement | systemd-networkd |
 | DHCP server, RA options, conditional DNS forwarding | dnsmasq |
+| Pointing the host's own resolver at dnsmasq, when a `DNSForwarder` listens on `loopback` | systemd-networkd, read by systemd-resolved |
 | PPPoE session | pppd |
 | **nftables firewall (IPv4 / IPv6)** | **regied** |
 | **NAT: masquerade, port forwarding, hairpin** | **regied** |

@@ -63,6 +63,12 @@ here. A bridge that has to run a spanning tree or carry tagged VLANs is a differ
 requirement, and it gets fields when there is a configuration that needs them rather than
 in anticipation.
 
+A bridge is configured whether or not a member has link. It holds its addresses, and
+everything that hangs off them, with no client plugged in, and keeps them when the last
+one is unplugged. networkd's default of waiting for carrier is right for a physical port
+and wrong for a bridge, where no carrier means no client yet
+([ADR 0018](../adr/0018-loopback-forwarder-is-the-host-resolver.md)).
+
 ### `addresses[]`
 
 Each entry is either a literal address with prefix length, or an address derived from a
@@ -550,6 +556,18 @@ Backend: dnsmasq, merged with every `DHCPServer` into one configuration.
 
 `listenOn` names links, not addresses, so an interface whose address comes from a
 delegated prefix keeps being listened on after the prefix changes.
+
+`loopback` means the host itself, and it means it in both directions. dnsmasq answers on
+the loopback addresses, and regied points the host's own resolver at it: every `.network`
+it writes for an `Interface` that is not a bridge port names `127.0.0.1` as that link's
+DNS server and as the route for names no other link claims, which systemd-resolved takes
+from networkd. A host whose uplinks refuse the provider's resolvers (`useDNS: false`) is
+then not left without one. It rides on every addressed link rather than on the links
+`listenOn` names, because resolved uses a link's servers only while that link is up with
+carrier and an address, and a bridge nobody is plugged into has no carrier. A declaration
+that lists `loopback` but declares no `Interface` that could carry the entry gets a render
+warning: dnsmasq will answer on the loopback, and the host will not be told to ask it
+([ADR 0018](../adr/0018-loopback-forwarder-is-the-host-resolver.md)).
 
 **A host has at most one `DNSForwarder`, and a second one is a validation error.**
 dnsmasq is one process with one cache and one set of upstreams, so two resources could

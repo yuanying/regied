@@ -106,6 +106,7 @@ strict なリバースパスフィルタはまさにそれを落とす。有効�
 | PPPoE の回線 | `PPPoESession` | pppd |
 | 発呼したアドレスを、ファイアウォールの回線セットに入れること | `PPPoESession` | pppd の ip-up / ip-down フック |
 | アドレス配布、DNS | `DHCPServer`、`DNSForwarder` | dnsmasq |
+| ホスト自身のリゾルバ（`listenOn` に `loopback` があるとき） | `DNSForwarder` | systemd-networkd。systemd-resolved が読む |
 | ファイアウォール、NAT、ポリシールーティングの判定 | `FirewallZone`、`FirewallPolicy`、`IPAddressSet`、`SourceNAT`、`PortForward`、`EgressRoutePolicy` | nftables |
 | カーネルのスイッチ | `spec.global` | カーネル |
 

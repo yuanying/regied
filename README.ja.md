@@ -30,6 +30,7 @@ regied はそれらに指示を出し、誰も持っていない層（nftables �
 | ip6tnl トンネル（DS-Lite） | systemd-networkd |
 | DHCPv6-PD、RA / SLAAC の配布 | systemd-networkd |
 | DHCP サーバー、RA のオプション、条件付き DNS フォワード | dnsmasq |
+| `DNSForwarder` が `loopback` で聞くとき、ホスト自身のリゾルバを dnsmasq に向けること | systemd-networkd。systemd-resolved が読む |
 | PPPoE セッション | pppd |
 | **nftables のファイアウォール（IPv4 / IPv6）** | **regied** |
 | **NAT（masquerade / ポートフォワード / hairpin）** | **regied** |
