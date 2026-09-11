@@ -4,6 +4,8 @@
 Name=eth0
 
 [Network]
+DNS=127.0.0.1
+DNSDefaultRoute=yes
 DHCP=ipv6
 IPv6AcceptRA=yes
 Tunnel=dslite

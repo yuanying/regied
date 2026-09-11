@@ -104,6 +104,7 @@ func Render(cfg *config.Config, rt Runtime) (*Output, error) {
 		r.renderInterface(iface)
 	}
 	r.renderBridgeMembers()
+	r.checkHostResolverIsCarried()
 	for _, tunnel := range config.ResourcesOf[*v1alpha1.DSLiteTunnelSpec](cfg) {
 		r.renderDSLiteTunnel(tunnel)
 	}
@@ -143,6 +144,10 @@ type renderer struct {
 	// tunnelOn is the DS-Lite tunnels stacked on an interface, by the interface's
 	// resource name.
 	tunnelOn map[string][]string
+
+	// hostResolver is the DNSForwarder that listens on loopback, if there is one. It is
+	// the host's own resolver, and every addressed link's file says so (ADR 0018).
+	hostResolver string
 }
 
 // policy is one EgressRoutePolicy with the two numbers regied derived for it.
@@ -170,6 +175,12 @@ func (r *renderer) index() {
 
 	for _, tunnel := range config.ResourcesOf[*v1alpha1.DSLiteTunnelSpec](r.cfg) {
 		r.tunnelOn[tunnel.Spec.UnderlayRef] = append(r.tunnelOn[tunnel.Spec.UnderlayRef], tunnel.Name)
+	}
+
+	for _, forwarder := range config.ResourcesOf[*v1alpha1.DNSForwarderSpec](r.cfg) {
+		if slices.Contains(forwarder.Spec.ListenOn, v1alpha1.LoopbackLink) {
+			r.hostResolver = forwarder.Name
+		}
 	}
 
 	for _, p := range config.ResourcesOf[*v1alpha1.EgressRoutePolicySpec](r.cfg) {
@@ -225,6 +236,37 @@ func (r *renderer) omit(kind v1alpha1.ResourceKind, name string, waiting string,
 		Files:    files,
 		Waiting:  waiting,
 	})
+}
+
+// checkHostResolverIsCarried says so when the host's resolver has no link to ride on.
+// Listening on loopback with nothing to carry the entry is not wrong — dnsmasq answers
+// on the loopback as declared — but the host is then not told to ask it, and that is
+// worth hearing before the apply rather than after it (ADR 0018).
+func (r *renderer) checkHostResolverIsCarried() {
+	if r.hostResolver == "" {
+		return
+	}
+	for _, iface := range r.interfaces {
+		if r.carriesHostResolver(iface) {
+			return
+		}
+	}
+	r.warnf("DNSForwarder/%s: listenOn names loopback, but no Interface holds an address of its own, so no link carries the host's resolver and systemd-resolved is not pointed at dnsmasq (ADR 0018)",
+		r.hostResolver)
+}
+
+// carriesHostResolver is whether an interface's file names the host's resolver: every
+// Interface that is not a bridge port does, whether or not the forwarder listens on it.
+// resolved uses a link's servers only while that link is up with carrier and an address,
+// and a bridge nobody is plugged into has no carrier, so pinning the entry to the links
+// listenOn names would lose the host's resolver exactly when the segment is empty. A
+// port holds no address and can never carry it (ADR 0018).
+func (r *renderer) carriesHostResolver(iface config.Named[*v1alpha1.InterfaceSpec]) bool {
+	if r.hostResolver == "" {
+		return false
+	}
+	_, enslaved := r.enslavedBy[iface.Spec.Ifname]
+	return !enslaved
 }
 
 // checkNameCollisions catches two resources that would render into the same file. File

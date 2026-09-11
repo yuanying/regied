@@ -37,7 +37,9 @@ IPv6AcceptRA=no
 }
 
 // A bridge is a .netdev, a .network for the bridge itself, and one file per member that
-// enslaves it. A member does not need an Interface resource of its own.
+// enslaves it. A member does not need an Interface resource of its own. The bridge is
+// configured whether or not a member has link: its address is the segment's gateway,
+// and no carrier on a bridge only means no client yet (ADR 0018).
 func TestInterfaceBridge(t *testing.T) {
 	cfg := load(t, `
     - kind: Interface
@@ -73,6 +75,7 @@ VLANFiltering=no
 Name=br-lan
 
 [Network]
+ConfigureWithoutCarrier=yes
 Address=192.0.2.1/24
 IPv6AcceptRA=no
 `)
@@ -243,6 +246,7 @@ func TestInterfaceAddressFromDelegatedPrefix(t *testing.T) {
 Name=br-lan
 
 [Network]
+ConfigureWithoutCarrier=yes
 Address=192.0.2.1/24
 IPv6AcceptRA=no
 DHCPPrefixDelegation=yes

@@ -44,10 +44,24 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 	advertise := advertisementOf(spec)
 
 	network := u.section("Network")
+	if spec.Bridge != nil {
+		// A bridge has no carrier until a member does, and networkd would otherwise
+		// leave it unconfigured until then. Its address is the segment's gateway and
+		// the address the host's own services answer at; that must not wait for the
+		// first client, nor go when the last one is unplugged (ADR 0018).
+		network.setBool("ConfigureWithoutCarrier", true)
+	}
 	for _, address := range spec.Addresses {
 		if address.IsLiteral() {
 			network.set("Address", address.Literal.String())
 		}
+	}
+	if r.carriesHostResolver(iface) {
+		// The host asks its own dnsmasq. resolved reaches a loopback server through
+		// the loopback link whichever link named it, and DNSDefaultRoute sends it
+		// every name no other link claims (ADR 0018).
+		network.set("DNS", "127.0.0.1")
+		network.setBool("DNSDefaultRoute", true)
 	}
 	if bridge, enslaved := r.enslavedBy[spec.Ifname]; enslaved {
 		// A port of a bridge does no IP of its own. The addresses, and the name a

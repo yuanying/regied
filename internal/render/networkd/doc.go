@@ -1,7 +1,8 @@
 // Package networkd builds the systemd-networkd configuration a validated regied
 // configuration asks for: the .network and .netdev files that carry links, addresses,
 // MTUs, bridges, static routes, prefix delegation, router advertisement, the DS-Lite
-// tunnel, and the routing half of policy routing (ADR 0008).
+// tunnel, and the routing half of policy routing (ADR 0008). When a DNSForwarder
+// listens on loopback, the files also point the host's own resolver at it (ADR 0018).
 //
 // It builds their contents and nothing else. Writing the files out, reloading networkd,
 // reclaiming what an earlier apply left behind, and showing a diff belong to the apply
