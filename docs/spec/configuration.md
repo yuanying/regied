@@ -35,7 +35,7 @@ Each entry of `spec.resources` has:
 
 | Field | Required | Value |
 |---|---|---|
-| `kind` | yes | One of the eleven kinds in [`kinds.md`](kinds.md) |
+| `kind` | yes | One of the twelve kinds in [`kinds.md`](kinds.md) |
 | `metadata.name` | yes | Unique within the kind. Referred to by other resources |
 | `spec` | yes | Kind-specific |
 
@@ -111,6 +111,7 @@ applied at boot, which would enable forwarding before the firewall exists.
 | Address handout, DNS | `DHCPServer`, `DNSForwarder` | dnsmasq |
 | The host's own resolver, when `listenOn` names `loopback` | `DNSForwarder` | systemd-networkd, read by systemd-resolved |
 | Firewall, NAT, policy-routing match | `FirewallZone`, `FirewallPolicy`, `IPAddressSet`, `SourceNAT`, `PortForward`, `EgressRoutePolicy` | nftables |
+| DNS records holding an uplink's address | `DNSRecordSet` | the provider's HTTP API |
 | Kernel switches | `spec.global` | kernel |
 
 regied writes networkd files into `/etc/systemd/network/` under its own prefix, builds
@@ -224,7 +225,15 @@ which the delegated prefix silently changes — so it is not written at all.
 
 A credential is the exception and stops the turn before anything runs. Bringing an uplink
 up without authentication is not a degraded success, and there is no smaller version of a
-credentials file to write.
+credentials file to write. The API token is not in that class: it is read by the one step
+that uses it, and a token that cannot be read leaves that record *failing* rather than
+stopping a turn that has a firewall to put back.
+
+A DNS record is the one thing whose failure does not stop a turn at all. It is written
+last, from an address the kernel already holds, and nothing else in the turn depends on
+it, so a provider that is unreachable leaves that record failing under a backoff of its
+own and the rest of the turn finishes
+([ADR 0019](../adr/0019-uplink-address-in-dns-records.md)).
 
 Two hosts are left exactly as they are, and told so: one that has never accepted a
 declaration, and one whose record this version of regied no longer accepts. Converging on
@@ -236,7 +245,13 @@ on a declaration only half understood is worse than not converging.
 No field in this schema holds a secret. Credentials are named by the path of a file that
 contains them, and that file lives outside the configuration
 ([ADR 0003](../adr/0003-secrets-out-of-configuration.md)). The PPPoE user ID counts as a
-credential. A referenced file that is missing or unreadable is a validation error.
+credential, and so does a `DNSRecordSet`'s API token. A referenced file that is missing or
+unreadable is a validation error.
+
+A credential is read by the turn that needs it and dropped. The PPPoE files are read on
+every turn, because the session's options file is rendered from them; the API token is
+read only on a turn that writes a record, so a host whose records are all where they
+should be reads no token at all, and a dry run never reads one.
 
 ## Derived values
 
@@ -314,6 +329,19 @@ Beyond references resolving and required fields being present, regied rejects:
   of upstreams
 - a `FirewallZone` named `self`
 - a `FirewallPolicy` whose `from` is `self`
+- a `DNSRecordSet` whose `provider` is anything other than `cloudflare`, which is the one
+  provider there is an implementation for
+- a `DNSRecordSet` record whose `type` is `AAAA`. A record here follows an address this
+  host's uplink holds, and what an IPv6 record should hold instead is a decision that has
+  not been made
+- a `DNSRecordSet` record whose `egressRef` names a `DSLiteTunnel`, which publishes
+  nothing and therefore has no address for a record to hold
+- a `DNSRecordSet` record naming a name that is not inside the resource's `zone`
+- two `DNSRecordSet` entries asking for the same name and type, whether in one resource or
+  two: which of them the record would hold is written nowhere
+- a `DNSRecordSet` record whose `ttl` is a duration below one minute or above
+  twenty-four hours, or a duration at all on a record with `proxied: true`, whose TTL
+  belongs to the provider
 - a secret file that is missing, unreadable, or empty
 
 It warns, and continues, about:

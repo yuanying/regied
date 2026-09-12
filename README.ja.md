@@ -92,7 +92,7 @@ networkd は有効にしておく必要があり、ルーターのリンクを�
 ## 設定
 
 設定はリソースを並べた 1 つの YAML ファイルで、Kubernetes のカスタムリソース風の書式を取る。
-`kind: NetworkConfig`、ホスト全体のスイッチを `spec.global`、11 個のリソース kind を
+`kind: NetworkConfig`、ホスト全体のスイッチを `spec.global`、12 個のリソース kind を
 `spec.resources[]` に並べる。
 
 - [`docs/ja/spec/configuration.md`](docs/ja/spec/configuration.md) — 文書の形、

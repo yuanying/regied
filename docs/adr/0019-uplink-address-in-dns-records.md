@@ -363,7 +363,8 @@ content never is (ADR 0003); the file is read on the turn that writes, and dropp
 
 - `docs/scope.md` is amended: dynamic DNS for this host's own addresses is the one
   exception to "no cloud provider integration", and it points here.
-- The schema gains a twelfth kind, `DNSRecordSet`, and the worked example gains one.
+- The schema gains a twelfth kind, `DNSRecordSet`, and the worked example gains two of
+  them, so that a token per zone and the proxy flag are both visible in it.
 - regied acquires its first outbound connection to a remote service, over HTTPS. The host
   needs the CA certificates to verify it, and they are now among
   [ADR 0011](0011-target-platform.md)'s prerequisites. A host without them does not fail

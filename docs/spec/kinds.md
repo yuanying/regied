@@ -1,8 +1,9 @@
 # Resource kinds
 
-Eleven kinds. The document that contains them is described in
-[`configuration.md`](configuration.md); why these eleven and not others is in
-[ADR 0002](../adr/0002-configuration-schema.md).
+Twelve kinds. The document that contains them is described in
+[`configuration.md`](configuration.md); why these and not others is in
+[ADR 0002](../adr/0002-configuration-schema.md), which settled the first eleven, and in
+[ADR 0019](../adr/0019-uplink-address-in-dns-records.md) for the twelfth.
 
 日本語版は [docs/ja/spec/kinds.md](../ja/spec/kinds.md) にあります。
 
@@ -23,6 +24,7 @@ Throughout, a **link resource** means an `Interface`, a `PPPoESession` or a
 | [`PortForward`](#portforward) | nftables | — |
 | [`DHCPServer`](#dhcpserver) | dnsmasq | — |
 | [`DNSForwarder`](#dnsforwarder) | dnsmasq | — |
+| [`DNSRecordSet`](#dnsrecordset) | the provider's HTTP API | — |
 
 ---
 
@@ -610,3 +612,118 @@ the resolver that knows about it, while everything else goes upstream.
 An override for one name. The usual reason is a public name that should resolve to an
 internal address for clients inside, so that they reach the service directly rather than
 through the uplink and back.
+
+---
+
+## DNSRecordSet
+
+The records regied keeps in one DNS zone, so that a name published through a
+`PortForward` resolves to the address the uplink is holding now. On a dynamically
+addressed uplink that address changes, and a record still holding the old one makes the
+service unreachable from outside until somebody edits it by hand.
+
+Backend: the provider's HTTP API. It is the only thing regied talks to that is not on
+this host, and the only reason the host needs CA certificates
+([ADR 0011](../adr/0011-target-platform.md)).
+
+| Field | Required | Value |
+|---|---|---|
+| `provider` | yes | `cloudflare` |
+| `zone` | yes | The zone these records are in, e.g. `example.com` |
+| `apiTokenFile` | yes | Path to a file holding the API token to write them with |
+| `records` | yes | What regied keeps in this zone. At least one entry. See below |
+
+**This is a set of records *in* a zone, not the zone.** regied writes the names listed
+here and knows nothing about the rest of the zone: a record that leaves this list stops
+being followed and is not deleted, and no record is marked as regied's
+([ADR 0009](../adr/0009-ownership-boundary.md),
+[ADR 0019](../adr/0019-uplink-address-in-dns-records.md)).
+
+**One resource per zone is the shape to reach for**, because the token is what binds to a
+zone and a token scoped to one zone is the smaller credential. Splitting a shared token
+into per-zone tokens is then changing one path in each resource. Two resources naming the
+same zone are accepted — they are two sets of records, each with its own token — but two
+entries asking for the same name and type are a validation error whether they are in one
+resource or two: which of them the record would end up holding is written nowhere.
+
+**`provider` is required, and `cloudflare` is its only value.** There is one
+implementation and no interface admitting a second, and writing the name down is what
+keeps a declaration valid on the day there is one: the file says what it was talking to,
+so a second provider is a new value rather than an edit to every file that already exists.
+
+**`apiTokenFile` names a credential.** Its content never appears in `--dry-run` output, in
+a diff, in a log line, or in the report of a turn
+([ADR 0003](../adr/0003-secrets-out-of-configuration.md)). It is read on the turn that
+writes a record and dropped; a dry run does not read it at all, because a dry run writes
+nothing. A file that is missing, unreadable or empty is a validation error.
+
+### `records[]`
+
+| Field | Required | Value |
+|---|---|---|
+| `names` | yes | Fully qualified names, each inside `zone`. At least one |
+| `type` | no | `A`, which is the default and for now the only value |
+| `egressRef` | yes | The uplink these names follow. The address is taken from it |
+| `proxied` | no | Default `false`. Cloudflare's proxy flag |
+| `ttl` | no | Default `automatic`, which is the provider's own choice. Otherwise a duration |
+
+One entry is one set of properties over several names, which is how a zone's apex and its
+wildcard are written: they follow the same uplink and want the same flags. Each name
+becomes its own record at the provider.
+
+**Every name has to be inside the zone** — equal to it, or ending in a dot and it. A name
+outside is a validation error rather than a request the provider refuses on every turn.
+
+**`type` is `A`, and `AAAA` is refused with the reason.** A record here follows an address
+this host's uplink holds, and IPv4 is the family where that address is what the outside
+world has to reach. The IPv6 case a deployment actually wants is an address inside the
+delegated prefix, belonging to a host behind this one — *an address this host routes*,
+which is a different decision and not made (ADR 0019). The field exists so that the
+decision, when it is made, adds a value rather than a field.
+
+**`egressRef` names an uplink, and a `DSLiteTunnel` is a validation error.** The tunnel's
+IPv4 is translated by the AFTR, so nothing can be published through it and there is no
+address for a record to hold — the same refusal a `PortForward` naming the tunnel gets.
+
+**`proxied` is Cloudflare's**, and it is a plain field rather than something nested in a
+per-provider container: one provider does not need a container, and `provider` is what
+makes it checkable when there is a second. A proxied name resolves to the provider's own
+addresses, and the address regied writes is what the provider sends the traffic on to.
+
+**`ttl` is `automatic` or a duration.** `automatic` hands the choice to the provider,
+which is a declared value and not the same as leaving the field out. A duration below one
+minute or above twenty-four hours is a validation error, because it is outside what the
+provider accepts. So is a duration on a record with `proxied: true`: a proxied record's
+TTL belongs to the provider, and a declaration setting both asks for something that is
+refused on every turn.
+
+### What a turn does with a record
+
+| When | What happens |
+|---|---|
+| The uplink holds no address | Every record following it is left exactly as it is, and the turn says what it waits for |
+| The address is not what this process last wrote | The record is written |
+| The record is not at the provider | It is created |
+| The record is at the provider | Its address and declared properties are updated, and its other fields — a comment somebody wrote on it — are left alone |
+| The record was written earlier in this process and the address has not moved | Nothing is asked of the provider |
+| The write fails | That record is *failing*, under a backoff of its own. The rest of the turn finishes |
+
+**What decides is what this process last wrote, not what the provider holds.** The
+provider is not read on every turn; it is asked once per record, for the identifier that
+says whether to create or to update. That memory is in the process and not on disk, so it
+is empty after any start — and empty is *not known*, never *the same*, so the first turn
+after a start writes every record once. The cost of that is one write per record per
+start; the cost of the alternative is one read per record per resync, for an address that
+changes a few times a year.
+
+The trade-off is that a record edited at the provider by hand is not put back until the
+address changes or regied restarts.
+
+**`--dry-run` names every record it would write and the address it would write, and asks
+the provider nothing.** It does not read the token either: what a dry run has to show is
+decided by the memory and the kernel, both of which are here
+([ADR 0006](../adr/0006-dry-run-and-rendering.md)). In a fresh process that means every
+record is shown as one it would write, which is what the turn would do.
+
+**Stopping regied stops the updates.** A host whose daemon is stopped keeps whatever its
+records last held, which is what the stop lever means.

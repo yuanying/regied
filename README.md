@@ -97,7 +97,7 @@ yet.
 ## Configuration
 
 Configuration is a single YAML file listing resources, in the style of Kubernetes custom
-resources: `kind: NetworkConfig`, host-wide switches in `spec.global`, and eleven
+resources: `kind: NetworkConfig`, host-wide switches in `spec.global`, and twelve
 resource kinds in `spec.resources[]`.
 
 - [`docs/spec/configuration.md`](docs/spec/configuration.md) — the document, references
