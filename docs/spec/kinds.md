@@ -99,7 +99,9 @@ an `EgressRoutePolicy` needs, and it fills them itself.
 
 ### `dhcpv6`
 
-Set on the upstream interface, the one facing the provider.
+Set on the upstream interface, the one facing the provider. With `prefixDelegation` set, the client
+asks for the prefix whatever the provider's router advertisement says: whether one arrives
+at all, and whether it carries the managed or other-configuration flag.
 
 | Field | Required | Value |
 |---|---|---|

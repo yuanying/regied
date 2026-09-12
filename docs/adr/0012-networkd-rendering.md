@@ -66,6 +66,17 @@ own global address comes from the router advertisement. That is also what makes 
 tunnel's local address well defined: `slaac` is the only kind of address the underlay
 has.
 
+**And it asks whether or not the router advertisement invites it.** networkd starts the
+DHCPv6 client, by default, only when an advertisement carries the managed or
+other-configuration flag, and `WithoutRA=solicit` covers only the line where no
+advertisement arrives. A provider can advertise the default route with neither flag set
+and still delegate prefixes over DHCPv6; on such a line the client never sends a Solicit
+and the delegation never comes. So the upstream `.network` sets `DHCPv6Client=always`
+beside `WithoutRA=solicit`. The flags are the provider's statement about the hosts on
+that link, not about whether it delegates, and regied does not read them as one. This
+surfaced on a real line, not on the netns testbed, whose WAN-side IPv6 is placed
+statically and advertises nothing.
+
 **A declaration systemd 257 cannot render is reported, not dropped.** Rendering returns
 warnings alongside the files. Two exist today, both from
 [ADR 0011](0011-target-platform.md)'s missing directive:
