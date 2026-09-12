@@ -53,7 +53,7 @@ func (g Global) SendRedirectsEnabled() bool    { return boolOr(g.SendRedirects, 
 func (g Global) ReceiveRedirectsEnabled() bool { return boolOr(g.ReceiveRedirects, false) }
 func (g Global) SourceValidationEnabled() bool { return boolOr(g.SourceValidation, false) }
 
-// ResourceKind names one of the eleven kinds.
+// ResourceKind names one of the twelve kinds.
 type ResourceKind string
 
 const (
@@ -68,13 +68,14 @@ const (
 	KindPortForward       ResourceKind = "PortForward"
 	KindDHCPServer        ResourceKind = "DHCPServer"
 	KindDNSForwarder      ResourceKind = "DNSForwarder"
+	KindDNSRecordSet      ResourceKind = "DNSRecordSet"
 )
 
 // Kinds is every resource kind, in the order docs/spec/kinds.md lists them.
 var Kinds = []ResourceKind{
 	KindInterface, KindPPPoESession, KindDSLiteTunnel, KindEgressRoutePolicy,
 	KindIPAddressSet, KindFirewallZone, KindFirewallPolicy, KindSourceNAT,
-	KindPortForward, KindDHCPServer, KindDNSForwarder,
+	KindPortForward, KindDHCPServer, KindDNSForwarder, KindDNSRecordSet,
 }
 
 // SelfZone is the reserved zone name denoting the host itself. A FirewallPolicy may name
@@ -175,6 +176,8 @@ func (r *Resource) UnmarshalYAML(unmarshal func(any) error) error {
 		return decodeSpec[DHCPServerSpec](r, unmarshal)
 	case KindDNSForwarder:
 		return decodeSpec[DNSForwarderSpec](r, unmarshal)
+	case KindDNSRecordSet:
+		return decodeSpec[DNSRecordSetSpec](r, unmarshal)
 	case "":
 		return typeErrorf(node, "resource has no kind")
 	default:

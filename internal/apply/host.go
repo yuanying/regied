@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/yuanying/regied/internal/ddns"
 )
 
 // Host is everything the engine is allowed to touch outside itself. Every part of it is
@@ -28,6 +30,11 @@ type Host struct {
 	Links    Links
 	Sysctl   Sysctl
 	Units    Units
+
+	// DNS is the provider a DNSRecordSet's records are written at. It is an interface
+	// for the same reason the rest of this structure is: a turn in a test writes to
+	// nothing, and `make test` opens no socket (ADR 0019).
+	DNS ddns.Provider
 
 	// Clock and Locker are what a turn adds to the list (ADR 0016): the time a report
 	// records, and the lock a turn holds while it runs. Left nil, they are the ones this
@@ -48,6 +55,7 @@ func OSHost() Host {
 		Links:    OSLinks{},
 		Sysctl:   OSSysctl{},
 		Units:    OSUnits{},
+		DNS:      ddns.NewCloudflare(nil),
 		Clock:    OSClock{},
 		Locker:   OSLocker{},
 		Control:  OSControl{},

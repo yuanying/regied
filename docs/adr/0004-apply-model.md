@@ -142,6 +142,14 @@ uplink sets that do not hold what the links are holding are written — and they
 whether or not the table went in, because that is decided against the kernel and not
 against the text, the way everything else in this record is.*
 
+*Extended by [ADR 0019](0019-uplink-address-in-dns-records.md), which is built: a phase
+after the processes writes the DNS records that do not hold what their uplink holds. It
+is last because a record is written from an address the kernel already holds and nothing
+on this host depends on the write, and it is the one phase whose failure does not stop
+the turn — a provider that is unreachable leaves that record failing under a backoff of
+its own, and the turn finishes. Everything above about stopping at the first failure
+holds for every other phase.*
+
 **The firewall goes first because nothing should be able to move a packet before the
 rules that filter it exist.** Enabling forwarding and then installing the filter leaves a
 window with the opposite property, and on a host being brought up for the first time that

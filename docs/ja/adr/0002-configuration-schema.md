@@ -79,6 +79,12 @@ networkd / nftables / dnsmasq / pppd へ落ちなければならない。
 
 以前の 14 個から 11 個になった。フィールド単位の詳細は [`docs/ja/spec/`](../spec/) にある。
 
+12 個目はあとから、それ自身の決定で加わった。
+[ADR 0019](0019-uplink-address-in-dns-records.md) が `DNSRecordSet` を決めている。
+公開した名前が回線のアドレスに追従するように、regied が事業者のところで保つレコードで
+ある。上の 3 つの試金石は、その記録が反論する相手であり、議論はここではなくそちらに
+ある。
+
 ### 畳んだもの、とその理由
 
 **`StaticRoute` → `Interface.spec.routes[]`。** networkd に「ルートだけのファイル」は無く、

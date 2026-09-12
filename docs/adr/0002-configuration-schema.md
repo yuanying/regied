@@ -82,6 +82,12 @@ is the first: a thing nobody names does not need a name.
 Eleven, from the fourteen of the earlier list. The field-level detail is in
 [`docs/spec/`](../spec/).
 
+A twelfth was added later, by a decision of its own:
+[ADR 0019](0019-uplink-address-in-dns-records.md) settles `DNSRecordSet`, the records
+regied keeps at a provider so that a published name follows an uplink's address. The
+three tests above are what that record argues against, and the argument is there rather
+than here.
+
 ### What was folded away, and why
 
 **`StaticRoute` → `Interface.spec.routes[]`.** networkd has no global route file; a route

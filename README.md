@@ -38,6 +38,7 @@ This split is the point of the project, so it comes first. The reasoning is in
 | **NAT: masquerade, port forwarding, hairpin** | **regied** |
 | **Policy-routing match: source ranges, destination exclusions, sets** | **regied** |
 | **Generating and supervising pppd and dnsmasq configuration** | **regied** |
+| **DNS records at a provider, holding the address an uplink holds** | **regied** |
 | **One declaration over all of the above: dry-run, a record of what was accepted, a loop that keeps the host at it, and applying with a deadline** | **regied** |
 
 Two consequences of that split are worth stating up front.
@@ -97,7 +98,7 @@ yet.
 ## Configuration
 
 Configuration is a single YAML file listing resources, in the style of Kubernetes custom
-resources: `kind: NetworkConfig`, host-wide switches in `spec.global`, and eleven
+resources: `kind: NetworkConfig`, host-wide switches in `spec.global`, and twelve
 resource kinds in `spec.resources[]`.
 
 - [`docs/spec/configuration.md`](docs/spec/configuration.md) — the document, references

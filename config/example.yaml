@@ -221,6 +221,66 @@ spec:
           address: 192.168.10.210
 
     # ------------------------------------------------------------------
+    # DNS records that follow the uplink's address
+    #
+    # No address is written here either. A record names the uplink it
+    # follows, the way SourceNAT and PortForward do, and the resident
+    # process writes the record when that uplink's address is not what it
+    # last wrote there. Stopping regied stops the updates.
+    #
+    # One resource per zone: the API token is what binds to a zone, and a
+    # token scoped to one zone is the smaller credential. The token is
+    # named by the path of a file holding it, and its content never
+    # appears in a dry-run, a diff, a log line, or a turn's report.
+    #
+    # Records are created when they are not there and updated when they
+    # are. Nothing is ever deleted, and an existing record's other fields
+    # -- a comment somebody wrote on it -- are left alone.
+    # ------------------------------------------------------------------
+
+    - kind: DNSRecordSet
+      metadata: {name: example-com}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /etc/regied/secrets/cloudflare-example-com
+        records:
+          # The apex and the wildcard follow the same uplink and want the
+          # same properties, so they are one entry over two names. Each
+          # name is its own record at the provider.
+          #
+          # egressRef is on the record and not on the zone: which uplink a
+          # name follows is a property of the name. It has to be the PPPoE
+          # session -- nothing can be published through the tunnel, so a
+          # record naming it is a validation error.
+          - names: [example.com, "*.example.com"]
+            type: A
+            egressRef: pppoe0
+            proxied: false
+            # automatic hands the choice to the provider. It is a declared
+            # value, and not the same as leaving the field out.
+            ttl: automatic
+
+    - kind: DNSRecordSet
+      metadata: {name: example-net}
+      spec:
+        provider: cloudflare
+        zone: example.net
+        # A second zone with a token of its own. Naming one token from
+        # both zones is allowed, and is where a deployment usually starts;
+        # narrowing it later changes this path and nothing else.
+        apiTokenFile: /etc/regied/secrets/cloudflare-example-net
+        records:
+          # Proxied: the name resolves to the provider's own addresses, and
+          # the address written here is where the provider sends the
+          # traffic on. A proxied record's TTL belongs to the provider, so
+          # writing one here is a validation error.
+          - names: [example.net, "*.example.net"]
+            type: A
+            egressRef: pppoe0
+            proxied: true
+
+    # ------------------------------------------------------------------
     # Firewall
     #
     # "wan" and "lan" are names of zones, not concepts the schema knows.

@@ -23,7 +23,7 @@ func TestExampleConfiguration(t *testing.T) {
 		v1alpha1.KindInterface, v1alpha1.KindPPPoESession, v1alpha1.KindDSLiteTunnel,
 		v1alpha1.KindEgressRoutePolicy, v1alpha1.KindIPAddressSet, v1alpha1.KindFirewallZone,
 		v1alpha1.KindFirewallPolicy, v1alpha1.KindSourceNAT, v1alpha1.KindPortForward,
-		v1alpha1.KindDHCPServer, v1alpha1.KindDNSForwarder,
+		v1alpha1.KindDHCPServer, v1alpha1.KindDNSForwarder, v1alpha1.KindDNSRecordSet,
 	} {
 		if len(cfg.ByKind(kind)) == 0 {
 			t.Errorf("no %s came back from the example", kind)
@@ -82,7 +82,9 @@ func (exampleSecrets) CheckSecretFile(path string) error {
 	switch path {
 	case "/etc/regied/secrets/dhcpv6-duid",
 		"/etc/regied/secrets/pppoe-user-id",
-		"/etc/regied/secrets/pppoe-password":
+		"/etc/regied/secrets/pppoe-password",
+		"/etc/regied/secrets/cloudflare-example-com",
+		"/etc/regied/secrets/cloudflare-example-net":
 		return nil
 	}
 	return config.ErrSecretFileMissing

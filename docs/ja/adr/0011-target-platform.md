@@ -39,6 +39,15 @@ trixie は 257 であり、trixie-backports にも systemd は無い。よって
 | `dnsmasq` | DHCP サーバーと条件付き DNS フォワード |
 | `ppp` | PPPoE の回線 |
 | `nftables` | ファイアウォール、NAT、ポリシールーティングのマークを打つ側 |
+| `ca-certificates` | `DNSRecordSet` を宣言したときに、事業者の証明書を検証する |
+
+**CA 証明書が前提になるのは `DNSRecordSet` を宣言するホストだけ**であり、この表の中で
+regied が設定を渡す相手ではない唯一の項目でもある。regied は自分で外向きの HTTPS 接続を
+1 本張る。相手は DNS の事業者である（[ADR 0019](0019-uplink-address-in-dns-records.md)）。
+相手側を検証するには、ディストリビューションがこのパッケージで配っている信頼ストアが
+要る。これを入れずに作った最小のイメージは、経路もフィルタも本来どおりに動き、レコードは
+書けない。すべてのレコードが検証のエラーとともに *失敗中* になるので、何が足りないかは
+誰かが当てずに分かる。
 
 ルーターのリンクを他の何かに持たせない。`/etc/network/interfaces` は空にし、
 NetworkManager は入れない。これは運用側が満たす前提であって、regied がやることでは

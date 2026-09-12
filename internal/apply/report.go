@@ -21,6 +21,7 @@ func Report(w io.Writer, plan *Plan) {
 	reportFiles(w, plan)
 	reportFirewall(w, plan)
 	reportSwitches(w, plan)
+	reportRecords(w, plan)
 	reportSteps(w, plan)
 
 	switch {
@@ -188,6 +189,39 @@ func reportSwitches(w io.Writer, plan *Plan) {
 		lines = append(lines, fmt.Sprintf("%s: %s -> %s", change.Key, change.Before, change.Value))
 	}
 	section(w, "Kernel switches", lines)
+}
+
+// reportRecords writes what would happen to the DNS records, including the ones nothing
+// would happen to, so that a dry run shows they were considered.
+//
+// Nothing here was learned from the provider, and the last line says so: a dry run that
+// authenticated to a remote API to answer would spend somebody's rate limit to say what
+// it could have worked out from the kernel and its own memory (ADR 0006, ADR 0019).
+func reportRecords(w io.Writer, plan *Plan) {
+	if len(plan.Records) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "DNS records")
+	for _, change := range plan.Records {
+		switch {
+		case plan.Rendered:
+			fmt.Fprintf(w, "  %s %s in %s follows %s (%s)\n",
+				change.Record.Name, change.Record.Type, change.Record.Zone, change.Follows, change.Resource)
+		case change.Write:
+			fmt.Fprintf(w, "  write %s %s = %s in %s (%s)\n",
+				change.Record.Name, change.Record.Type, change.Record.Content, change.Record.Zone, change.Resource)
+		default:
+			fmt.Fprintf(w, "  %s %s in %s is %s (%s)\n",
+				change.Record.Name, change.Record.Type, change.Record.Zone, change.Record.Content, change.Resource)
+		}
+		fmt.Fprintf(w, "    %s\n", change.Reason)
+	}
+	if plan.Rendered {
+		fmt.Fprintln(w)
+		return
+	}
+	fmt.Fprintln(w, "  The provider was not asked anything to work this out, and a dry run asks it nothing.")
+	fmt.Fprintln(w)
 }
 
 func reportSteps(w io.Writer, plan *Plan) {

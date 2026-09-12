@@ -36,6 +36,7 @@ regied はそれらに指示を出し、誰も持っていない層（nftables �
 | **NAT（masquerade / ポートフォワード / hairpin）** | **regied** |
 | **ポリシールーティングの判定（送信元レンジ、宛先の除外、集合）** | **regied** |
 | **pppd と dnsmasq の設定生成と監督** | **regied** |
+| **事業者の DNS レコードを、回線が持つアドレスに保つこと** | **regied** |
 | **上記すべてを束ねる 1 つの宣言。dry-run、受け入れた宣言の記録、そこへ保ち続ける調整ループ、期限つきの適用** | **regied** |
 
 この分担から出てくる帰結を 2 つ、先に書いておく。
@@ -92,7 +93,7 @@ networkd は有効にしておく必要があり、ルーターのリンクを�
 ## 設定
 
 設定はリソースを並べた 1 つの YAML ファイルで、Kubernetes のカスタムリソース風の書式を取る。
-`kind: NetworkConfig`、ホスト全体のスイッチを `spec.global`、11 個のリソース kind を
+`kind: NetworkConfig`、ホスト全体のスイッチを `spec.global`、12 個のリソース kind を
 `spec.resources[]` に並べる。
 
 - [`docs/ja/spec/configuration.md`](docs/ja/spec/configuration.md) — 文書の形、
