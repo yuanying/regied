@@ -76,6 +76,25 @@ has. No field exposes this; should a line ever need the address request withheld
 `dhcpv6.requestAddress` is the field to add. The IAID is likewise left at networkd's
 default; a provider that binds the delegation to it would get a field, not a constant.
 
+**The IAID is carried over the same way the DUID is.** The paragraph above left the IAID
+at networkd's default and promised a field should a provider ever bind the delegation to
+it. One does. It holds the binding under the DUID and the IAID as a pair, and to a request
+carrying any other IAID it does not delegate a different prefix: it does not answer at
+all, and the client keeps soliciting. networkd derives its default IAID from the
+interface, so a host replacing a router is all but guaranteed not to match by accident,
+exactly as it would not match the DUID without `duidFile`. So `prefixDelegation.iaid`
+joins `duidFile` as the second value carried over from the replaced router's
+configuration, and this paragraph supersedes the sentence above that left it at the
+default. The field is optional: a line being brought up for the first time has nothing
+to carry over, and leaving it out still hands the choice to networkd. A declared `0`,
+which is the usual value, is distinct from leaving it out, which is why the schema holds a
+pointer. It is a field rather than a constant `0` for the same reason the DUID is read
+from a file: the value is whatever the replaced router sent, and a constant would only
+move the mismatch to the next router. This too surfaced on a real line. The replaced
+router's client software, given its DUID and IAID, drew the same delegation on the first
+Solicit; networkd with the same DUID and its own IAID drew silence, and with the IAID
+declared it drew the delegation.
+
 **And it asks whether or not the router advertisement invites it.** networkd starts the
 DHCPv6 client, by default, only when an advertisement carries the managed or
 other-configuration flag, and `WithoutRA=solicit` covers only the line where no
