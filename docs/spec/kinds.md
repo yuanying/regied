@@ -109,6 +109,7 @@ provider does hand one out, it lands on that upstream interface.
 | Field | Required | Value |
 |---|---|---|
 | `prefixDelegation.duidFile` | no | Path to a file holding the DUID to send. Some providers bind the delegation to it |
+| `prefixDelegation.iaid` | no | The IAID to send with the prefix request. Some providers bind the delegation to the DUID and the IAID as a pair and never answer a request carrying a different IAID; carry the value over from the configuration of the router being replaced. Left out, networkd sends a value derived from the interface |
 | `prefixDelegation.prefixLength` | yes | Prefix length to request, e.g. `56` |
 | `prefixDelegation.rapidCommit` | no | Default `true` |
 | `useDNS` | no | Default `false`. Whether to take resolvers from the provider |
@@ -129,6 +130,13 @@ Omitting `duidFile` is allowed and is not an error. networkd then sends a DUID o
 derived from the machine ID. For a line being brought up for the first time that is
 right; for a host replacing one that already holds a delegation, it is the thing that
 changes the delegated prefix, and nothing about it fails loudly.
+
+The same holds for `iaid`, with one difference in how the loss shows. A provider that
+binds the delegation to the DUID and the IAID together does not delegate a different
+prefix to a request with the wrong IAID: it stays silent, and the client keeps asking. The
+router being replaced usually sent `0`, and `0` is a declared value, distinct from leaving
+the field out. Omitting it hands the choice to networkd, which derives the IAID from the
+interface, so it never matches the replaced router's by accident.
 
 The DUID is not a credential, and unlike one it is shown in `--dry-run` output, in a diff
 and in the state API — the single exception in

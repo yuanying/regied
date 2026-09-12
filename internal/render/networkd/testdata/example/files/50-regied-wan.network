@@ -18,6 +18,7 @@ RapidCommit=yes
 PrefixDelegationHint=::/56
 DUIDType=link-layer
 DUIDRawData=00:01:00:00:5e:00:53:01
+IAID=0
 
 [IPv6AcceptRA]
 DHCPv6Client=always

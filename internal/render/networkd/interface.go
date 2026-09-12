@@ -157,6 +157,12 @@ func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.Inte
 		if delegation.DUIDFile != "" {
 			r.renderDUID(dhcpv6, iface.Name, delegation.DUIDFile)
 		}
+		if delegation.IAID != nil {
+			// The delegation can be bound to the DUID and the IAID together, and networkd's
+			// own IAID is derived from the interface. A declared one is carried over as is;
+			// an undeclared one is left to networkd (ADR 0012).
+			dhcpv6.set("IAID", strconv.FormatUint(uint64(*delegation.IAID), 10))
+		}
 	}
 
 	acceptRA := u.section("IPv6AcceptRA")

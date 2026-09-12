@@ -100,10 +100,17 @@ func (c DHCPv6Client) UseDNSEnabled() bool { return boolOr(c.UseDNS, false) }
 // own. For a line being brought up for the first time that is right; for a host replacing
 // one that already holds a delegation it silently changes the delegated prefix, which is
 // why leaving it out is warned about.
+//
+// IAID is the other half of the identity some providers bind the delegation to, next to
+// the DUID. It is a pointer because zero is the usual value carried over from a router
+// being replaced, and it has to be told apart from "not declared", which leaves the
+// value to networkd. networkd derives that value from the interface, so a replacing host
+// never matches the replaced one by accident.
 type PrefixDelegation struct {
-	DUIDFile     string `yaml:"duidFile"`
-	PrefixLength *int   `yaml:"prefixLength"`
-	RapidCommit  *bool  `yaml:"rapidCommit"`
+	DUIDFile     string  `yaml:"duidFile"`
+	PrefixLength *int    `yaml:"prefixLength"`
+	RapidCommit  *bool   `yaml:"rapidCommit"`
+	IAID         *uint32 `yaml:"iaid"`
 }
 
 func (d PrefixDelegation) RapidCommitEnabled() bool { return boolOr(d.RapidCommit, true) }

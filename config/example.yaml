@@ -51,6 +51,7 @@ spec:
             prefixLength: 56
             rapidCommit: true
             duidFile: /etc/regied/secrets/dhcpv6-duid
+            iaid: 0
 
     # The downstream segment. Its IPv6 address is derived from the delegated
     # prefix rather than written down, so the tunnel's local address, the
