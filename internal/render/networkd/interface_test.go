@@ -207,6 +207,7 @@ DUIDType=link-layer
 DUIDRawData=00:01:00:00:5e:00:53:01
 
 [IPv6AcceptRA]
+DHCPv6Client=always
 UseDNS=no
 `)
 }
@@ -441,6 +442,7 @@ RapidCommit=no
 PrefixDelegationHint=::/60
 
 [IPv6AcceptRA]
+DHCPv6Client=always
 UseDNS=no
 `)
 }

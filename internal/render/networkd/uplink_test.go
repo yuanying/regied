@@ -85,6 +85,7 @@ RapidCommit=yes
 PrefixDelegationHint=::/56
 
 [IPv6AcceptRA]
+DHCPv6Client=always
 UseDNS=no
 `)
 	if len(out.Warnings) != 0 {

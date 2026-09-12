@@ -138,8 +138,8 @@ func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.Inte
 	}
 	dhcpv6 := u.section("DHCPv6")
 	if delegation := client.PrefixDelegation; delegation != nil {
-		// Providers commonly advertise without the managed or other-configuration flag,
-		// and the client would then never ask. This makes it ask.
+		// A line that advertises nothing would otherwise leave the client waiting for an
+		// invitation that never comes. This makes it ask anyway.
 		dhcpv6.set("WithoutRA", "solicit")
 	}
 	dhcpv6.setBool("UseAddress", false)
@@ -155,8 +155,16 @@ func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.Inte
 		}
 	}
 
+	acceptRA := u.section("IPv6AcceptRA")
+	if client.PrefixDelegation != nil {
+		// WithoutRA covers the line that advertises nothing. This covers the line that
+		// does advertise but sets neither the managed nor the other-configuration flag,
+		// which networkd otherwise reads as "do not start the client". A provider can
+		// delegate prefixes without ever setting M, so the delegation must not hinge on it.
+		acceptRA.set("DHCPv6Client", "always")
+	}
 	// A provider's resolvers arrive by two roads, and the field means both.
-	u.section("IPv6AcceptRA").setBool("UseDNS", client.UseDNSEnabled())
+	acceptRA.setBool("UseDNS", client.UseDNSEnabled())
 }
 
 // unreadDUID is the DUID file an interface names whose contents were not supplied, if
