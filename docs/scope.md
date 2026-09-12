@@ -53,8 +53,11 @@ election, no failover, and no integration with a cloud provider's API.
 The one exception is keeping DNS records at the address this host's uplink holds, so that
 a published name follows a dynamically assigned address. It tells a provider about this
 host and nothing else: no other host is managed, and no configuration is taken from the
-provider. It is decided in [ADR 0019](adr/0019-uplink-address-in-dns-records.md) and not
-built.
+provider. It is decided in [ADR 0019](adr/0019-uplink-address-in-dns-records.md) and
+built, as the [`DNSRecordSet`](spec/kinds.md#dnsrecordset) kind. What stays out of scope is
+everything around it: a record names the uplink it follows and holds an IPv4 address,
+regied creates one that is missing and deletes none, one provider is spoken to, and no
+provider feature beyond the record's address is touched.
 
 **Distribution is explicitly out of scope.** How a configuration file reaches a node is
 someone else's problem — a configuration management tool, a Git-based delivery pipeline,

@@ -41,6 +41,16 @@ What is assumed present, from the distribution's own packages:
 | `dnsmasq` | DHCP server and conditional DNS forwarding |
 | `ppp` | The PPPoE uplink |
 | `nftables` | Firewall, NAT, and the marking half of policy routing |
+| `ca-certificates` | Verifying the provider's certificate when a `DNSRecordSet` is declared |
+
+**The CA certificates are a prerequisite only for a host that declares a `DNSRecordSet`**,
+and they are the one entry in the table that is not a program regied hands configuration
+to. regied makes one outbound HTTPS connection of its own, to the DNS provider
+([ADR 0019](0019-uplink-address-in-dns-records.md)), and verifying the far side needs the
+trust store the distribution ships in that package. A minimal image built without it
+routes and filters exactly as it should and cannot write a record: every record goes
+*failing* with the verification error, which says what is missing without anybody having
+to guess.
 
 Nothing else may own the router's links: `/etc/network/interfaces` is left empty and
 NetworkManager is not installed. This is an operator's prerequisite, not something regied
