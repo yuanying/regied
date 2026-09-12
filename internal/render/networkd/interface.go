@@ -127,10 +127,14 @@ func (r *renderer) delegatedAddress(iface config.Named[*v1alpha1.InterfaceSpec])
 
 // renderDHCPv6Client writes the client that asks the provider for the prefix.
 //
-// It asks for the prefix and nothing else: UseAddress=no keeps it from taking an address
-// nobody declared, and the interface's own global address comes from the router
-// advertisement instead. That is also what makes a tunnel's Local=slaac mean something
-// (ADR 0011).
+// It asks for an address (IA_NA) alongside the prefix (IA_PD). Some providers never
+// answer a Solicit that carries only IA_PD, and the usual answer to the IA_NA is "no
+// address" while the prefix arrives in the IA_PD. networkd ties requesting the address
+// to using it (UseAddress= drives sd_dhcp6_client_set_address_request), so the address,
+// on the rare line that hands one out, lands on the upstream link. The interface's own
+// global address still comes from the router advertisement, which is what makes a
+// tunnel's Local=slaac mean something (ADR 0011). UseAddress=yes is networkd's default,
+// written out so the intent is visible in the file (ADR 0012).
 func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.InterfaceSpec]) {
 	client := iface.Spec.DHCPv6
 	if client == nil {
@@ -142,7 +146,7 @@ func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.Inte
 		// invitation that never comes. This makes it ask anyway.
 		dhcpv6.set("WithoutRA", "solicit")
 	}
-	dhcpv6.setBool("UseAddress", false)
+	dhcpv6.setBool("UseAddress", true)
 	dhcpv6.setBool("UseDNS", client.UseDNSEnabled())
 
 	if delegation := client.PrefixDelegation; delegation != nil {

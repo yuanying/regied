@@ -88,7 +88,7 @@ IPv6AcceptRA=yes
 
 [DHCPv6]
 WithoutRA=solicit
-UseAddress=no
+UseAddress=yes
 UseDNS=no
 RapidCommit=yes
 PrefixDelegationHint=::/56
