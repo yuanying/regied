@@ -101,7 +101,10 @@ an `EgressRoutePolicy` needs, and it fills them itself.
 
 Set on the upstream interface, the one facing the provider. With `prefixDelegation` set, the client
 asks for the prefix whatever the provider's router advertisement says: whether one arrives
-at all, and whether it carries the managed or other-configuration flag.
+at all, and whether it carries the managed or other-configuration flag. It asks for an
+address (IA_NA) together with the prefix (IA_PD): some providers never answer a request
+that carries the prefix alone. The usual reply holds no address, only the prefix. If the
+provider does hand one out, it lands on that upstream interface.
 
 | Field | Required | Value |
 |---|---|---|

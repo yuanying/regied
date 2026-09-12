@@ -60,11 +60,21 @@ has to be to have any effect. The `priority` an `EgressRoutePolicy` carries orde
 nftables match, not the kernel's rules, and reusing it here would put an operator's number
 in a place where 0 replaces the local table.
 
-**The DHCPv6 client asks for the delegation and nothing else.** The schema has no field
-for taking an address from DHCPv6, so the client does not take one, and the interface's
-own global address comes from the router advertisement. That is also what makes the
-tunnel's local address well defined: `slaac` is the only kind of address the underlay
-has.
+**The DHCPv6 client asks for an address alongside the delegation.** The schema has no
+field for taking an address from DHCPv6, and the first rendering wrote `UseAddress=no` so
+the client would ask for the prefix and nothing else. In networkd, though, that setting
+also decides whether the client puts IA_NA into its Solicit at all: requesting the address
+and using it are one switch. A provider exists that never answers a Solicit carrying only
+IA_PD, while the router being replaced, which sent IA_NA and IA_PD together, held its
+delegation the whole time. So the upstream `.network` writes `UseAddress=yes`, networkd's
+default, spelled out because the file should show the intent rather than lean on it. The
+usual reply carries no address in the IA_NA and the prefix in the IA_PD; on the rare line
+that does hand out an address, it lands on the upstream link and harms nothing. The
+interface's own global address still comes from the router advertisement, which is what
+keeps the tunnel's local address well defined: `slaac` remains the address the underlay
+has. No field exposes this; should a line ever need the address request withheld,
+`dhcpv6.requestAddress` is the field to add. The IAID is likewise left at networkd's
+default; a provider that binds the delegation to it would get a field, not a constant.
 
 **And it asks whether or not the router advertisement invites it.** networkd starts the
 DHCPv6 client, by default, only when an advertisement carries the managed or
