@@ -15,6 +15,7 @@ import (
 
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
+	"github.com/yuanying/regied/internal/ddns"
 	"github.com/yuanying/regied/internal/render/networkd"
 	"github.com/yuanying/regied/internal/render/nftables"
 	"github.com/yuanying/regied/internal/render/pppd"
@@ -74,6 +75,11 @@ type Engine struct {
 	opts          Options
 	retries       map[string]retryState
 	retryRevision string
+
+	// dnsWriter remembers what this process put at the DNS provider. It lives on the
+	// engine and not on disk, so it is empty after any start and the first turn writes
+	// every record once (ADR 0019).
+	dnsWriter *ddns.Writer
 }
 
 func New(host Host, opts Options) *Engine {
@@ -92,7 +98,15 @@ func New(host Host, opts Options) *Engine {
 	if host.Notifier == nil {
 		host.Notifier = noopNotifier{}
 	}
-	return &Engine{host: host, opts: opts.withDefaults(), retries: make(map[string]retryState)}
+	if host.DNS == nil {
+		host.DNS = ddns.NewCloudflare(nil)
+	}
+	return &Engine{
+		host:      host,
+		opts:      opts.withDefaults(),
+		retries:   make(map[string]retryState),
+		dnsWriter: ddns.NewWriter(host.DNS),
+	}
 }
 
 type retryState struct {
@@ -115,6 +129,10 @@ const (
 	PhaseNetworkd
 	PhaseProcessConfig
 	PhaseProcesses
+	// PhaseDNS is last, and it is the only phase whose failure does not stop the turn.
+	// A record is written from an address the kernel already holds, and nothing on this
+	// host depends on the write (ADR 0019).
+	PhaseDNS
 )
 
 func (p Phase) String() string {
@@ -131,6 +149,8 @@ func (p Phase) String() string {
 		return "process configuration"
 	case PhaseProcesses:
 		return "processes"
+	case PhaseDNS:
+		return "dns records"
 	}
 	return "unknown"
 }
@@ -341,6 +361,10 @@ const (
 	StepSeed StepKind = "seed"
 	// StepKeep does nothing on purpose and carries the reason a turn could not act.
 	StepKeep StepKind = "keep"
+	// StepDNS puts one record at the DNS provider. It is the only step that reaches
+	// something that is not on this host, and the only one whose failure leaves the
+	// turn running (ADR 0019).
+	StepDNS StepKind = "dns"
 )
 
 // Step is one thing the commit stage does.
@@ -352,6 +376,7 @@ type Step struct {
 	Command Command
 	Switch  SwitchChange
 	File    FileChange
+	DNS     DNSChange
 }
 
 func (s Step) describe() string {
@@ -366,6 +391,8 @@ func (s Step) describe() string {
 		return "put back " + s.File.Path
 	case StepKeep:
 		return s.Reason
+	case StepDNS:
+		return s.DNS.describe()
 	}
 	return s.Command.String()
 }
@@ -398,7 +425,13 @@ type Plan struct {
 	Files    []FileChange
 	Switches []SwitchChange
 	Firewall FirewallChange
-	Steps    []Step
+
+	// Records is every DNS record the declaration asks for, and what this turn would do
+	// with each. A record it would not write is here too, so that a dry run can say the
+	// record was considered (ADR 0006).
+	Records []DNSChange
+
+	Steps []Step
 
 	// Rendered says this is a rendering rather than a plan against a host: nothing was
 	// read, so every file is shown as it would be written and nothing is compared.
@@ -408,6 +441,12 @@ type Plan struct {
 	// prints it from the configuration itself, before the plan is made, so it is not in
 	// Warnings (ADR 0006).
 	validation []string
+
+	// failedRecords is the DNS steps the commit stage tried and the provider refused,
+	// by the text that describes them. They are named among the failures and not among
+	// the things the turn did: a report is read by somebody who was not watching, and
+	// saying a write happened when it did not is the one thing it must not do.
+	failedRecords map[string]bool
 
 	// secrets is the content of the files marked Secret, which is why they are not in
 	// the FileChanges above. Nothing that prints can reach this field, so printing a
@@ -501,7 +540,7 @@ func (p *Plan) Summary() string {
 		switch step.Kind {
 		case StepCommand:
 			lines = append(lines, "run "+step.Command.String())
-		case StepSeed:
+		case StepSeed, StepDNS:
 			lines = append(lines, step.describe())
 		}
 	}
@@ -541,6 +580,7 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 	}
 	slices.SortFunc(plan.Files, func(a, b FileChange) int { return cmp.Compare(a.Path, b.Path) })
 	plan.Firewall = FirewallChange{Ruleset: rendered.ruleset, Apply: true}
+	plan.Records, _ = e.records(cfg, nil, true)
 	return plan, nil
 }
 
@@ -612,6 +652,10 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 			return nil, err
 		}
 	}
+
+	var waitingForRecords []string
+	plan.Records, waitingForRecords = e.records(cfg, runtime.UplinkAddresses, false)
+	plan.Waiting = append(plan.Waiting, waitingForRecords...)
 
 	plan.Steps = e.steps(ctx, plan, rendered)
 	return plan, nil
@@ -1003,6 +1047,18 @@ func (e *Engine) steps(ctx context.Context, plan *Plan, rendered *rendering) []S
 		steps = append(steps, service.steps()...)
 	}
 	steps = append(steps, deferredReclaim(deferredFiles(plan, ChangeRemove), "nothing runs from this unit any more")...)
+
+	for _, change := range plan.Records {
+		if !change.Write {
+			continue
+		}
+		steps = append(steps, Step{
+			Phase:  PhaseDNS,
+			Kind:   StepDNS,
+			Reason: change.Resource + ": " + change.Reason,
+			DNS:    change,
+		})
+	}
 	return steps
 }
 

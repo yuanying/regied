@@ -115,6 +115,9 @@ func (e *Engine) turn(ctx context.Context, plan *Plan, accept func() error) (*Re
 	if failure := e.commit(ctx, plan); failure != nil {
 		return nil, failure
 	}
+	// A record the provider refused is added to the plan by the commit, so the state is
+	// decided after the steps have run rather than before.
+	result.State = stateOf(plan, nil)
 
 	// Everything the configuration asked for is on the host. What follows is regied's
 	// own bookkeeping, and a failure in it is reported rather than rolled back: telling
@@ -184,11 +187,27 @@ func (e *Engine) write(change FileChange, content string) error {
 }
 
 // commit runs the steps in their safety order and stops at the first failure.
+//
+// A DNS record is the exception, and it is the last phase for that reason. It is written
+// from an address the kernel already holds, nothing on this host depends on the write,
+// and a provider that is unreachable is a condition a later turn recovers from on its
+// own. So that record is recorded as failing, under the per-target backoff an unattended
+// turn applies, and the remaining records are still tried (ADR 0019).
 func (e *Engine) commit(ctx context.Context, plan *Plan) *Error {
 	for _, step := range plan.Steps {
-		if err := e.run(ctx, step); err != nil {
-			return &Error{Phase: step.Phase, Step: step.describe(), Cause: err}
+		err := e.run(ctx, step)
+		if err == nil {
+			continue
 		}
+		if step.Kind == StepDNS {
+			plan.Failing = append(plan.Failing, fmt.Sprintf("%s: %v", step.describe(), err))
+			if plan.failedRecords == nil {
+				plan.failedRecords = make(map[string]bool)
+			}
+			plan.failedRecords[step.describe()] = true
+			continue
+		}
+		return &Error{Phase: step.Phase, Step: step.describe(), Cause: err}
 	}
 	return nil
 }
@@ -209,6 +228,8 @@ func (e *Engine) run(ctx context.Context, step Step) error {
 		return e.write(step.File, step.File.Content)
 	case StepKeep:
 		return nil
+	case StepDNS:
+		return e.writeRecord(ctx, step.DNS)
 	}
 	// StepCommand and StepSeed, both of which are one command.
 	_, err := e.host.Runner.Run(ctx, step.Command)

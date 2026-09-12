@@ -91,10 +91,18 @@ func NewWriter(provider Provider) *Writer {
 	}
 }
 
+// Last is what this writer last put at the provider under the same name and type, and
+// whether there is one. It is what lets a plan say why a record is being written — the
+// address moved, a property changed, or nothing is known yet.
+func (w *Writer) Last(record Record) (Record, bool) {
+	written, ok := w.written[record.Key()]
+	return written, ok
+}
+
 // Holds reports whether this writer has already put exactly this record at the provider.
 // A writer that has written nothing holds nothing, whatever the provider may have.
 func (w *Writer) Holds(record Record) bool {
-	written, ok := w.written[record.Key()]
+	written, ok := w.Last(record)
 	return ok && written == record
 }
 

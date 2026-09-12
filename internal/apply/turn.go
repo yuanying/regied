@@ -371,6 +371,12 @@ func phasesOf(plan *Plan, failure error) []string {
 	byPhase := make(map[Phase][]string)
 	var order []Phase
 	for _, step := range plan.Steps {
+		// A record the provider refused was attempted and did nothing. It is named
+		// among the failures, and naming it here as well would read as a write that
+		// happened.
+		if step.Kind == StepDNS && plan.failedRecords[step.describe()] {
+			continue
+		}
 		if _, seen := byPhase[step.Phase]; !seen {
 			order = append(order, step.Phase)
 		}

@@ -174,6 +174,27 @@ func TestWriterKnowsWhatItHasWritten(t *testing.T) {
 	}
 }
 
+// Last is what the plan reads to say why a record is being written: nothing known yet,
+// an address that moved, or a property that changed.
+func TestWriterSaysWhatItLastWrote(t *testing.T) {
+	provider := newFakeProvider()
+	writer := ddns.NewWriter(provider)
+
+	if _, known := writer.Last(record("192.0.2.1")); known {
+		t.Error("a writer that has written nothing knows nothing")
+	}
+	if err := writer.Write(context.Background(), "a-token", record("192.0.2.1")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	last, known := writer.Last(record("192.0.2.2"))
+	if !known {
+		t.Fatal("the record is known by its name and type, whatever address is being asked about")
+	}
+	if last.Content != "192.0.2.1" {
+		t.Errorf("last: got %q, want 192.0.2.1", last.Content)
+	}
+}
+
 func TestWriterRemembersNothingFromAFailedWrite(t *testing.T) {
 	provider := newFakeProvider()
 	provider.recordIDs["example.com A"] = "record-7"
