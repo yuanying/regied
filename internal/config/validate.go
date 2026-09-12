@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 )
@@ -23,6 +24,7 @@ func Validate(document *v1alpha1.NetworkConfig, opts ...Option) (*Config, error)
 		v.checkResource(resource)
 	}
 	v.checkLinkNames()
+	v.checkDuplicateDNSRecords()
 	v.checkBridgeMembers()
 	v.checkDerivationCycles()
 	routing := v.deriveRouting()
@@ -132,6 +134,8 @@ func (v *validator) checkResource(resource *v1alpha1.Resource) {
 		v.checkDHCPServer(resource, spec)
 	case *v1alpha1.DNSForwarderSpec:
 		v.checkDNSForwarder(resource, spec)
+	case *v1alpha1.DNSRecordSetSpec:
+		v.checkDNSRecordSet(resource, spec)
 	}
 }
 
@@ -701,6 +705,129 @@ func cyclePath(stack []*v1alpha1.Resource, back *v1alpha1.Resource) string {
 		names = append(names, resource.Ref())
 	}
 	return strings.Join(append(names, back.Ref()), " -> ")
+}
+
+// The range of TTLs the provider accepts. A duration outside it is refused here rather
+// than on every turn by the provider, which would be a configuration that looks right
+// and never takes effect.
+const (
+	minRecordTTL = time.Minute
+	maxRecordTTL = 24 * time.Hour
+)
+
+func (v *validator) checkDNSRecordSet(resource *v1alpha1.Resource, spec *v1alpha1.DNSRecordSetSpec) {
+	if v.required(resource, "spec.provider", spec.Provider != "") && spec.Provider != v1alpha1.ProviderCloudflare {
+		v.errorf(resource, "spec.provider",
+			"%q is not a provider regied writes to; %q is the only one, and naming it is what keeps this declaration valid on the day there is a second",
+			spec.Provider, v1alpha1.ProviderCloudflare)
+	}
+	hasZone := v.required(resource, "spec.zone", spec.Zone != "")
+	// The token is a credential, so the declaration holds its path and nothing else
+	// (ADR 0003). A path that leads nowhere is refused here, where it can be said once.
+	if v.required(resource, "spec.apiTokenFile", spec.APITokenFile != "") {
+		v.checkFile(resource, "spec.apiTokenFile", spec.APITokenFile)
+	}
+	if !v.required(resource, "spec.records", len(spec.Records) > 0) {
+		return
+	}
+	for i, record := range spec.Records {
+		v.checkDNSRecord(resource, spec, record, fmt.Sprintf("spec.records[%d]", i), hasZone)
+	}
+}
+
+func (v *validator) checkDNSRecord(resource *v1alpha1.Resource, set *v1alpha1.DNSRecordSetSpec, record v1alpha1.DNSRecord, field string, hasZone bool) {
+	switch recordType := record.TypeOrDefault(); {
+	case recordType == v1alpha1.DNSRecordA:
+	case recordType == "AAAA":
+		// The useful AAAA holds an address inside the delegated prefix, belonging to a
+		// host behind this one. That is an address this host routes rather than one its
+		// uplink holds, which is a different decision and not made (ADR 0019).
+		v.errorf(resource, field+".type",
+			"AAAA is not a record regied writes: a record here follows an address this host's uplink holds, and what an IPv6 record should hold instead is not decided")
+	default:
+		v.errorf(resource, field+".type", "%q is not a record type regied writes; A is the only one", recordType)
+	}
+
+	if v.required(resource, field+".egressRef", record.EgressRef != "") {
+		uplink := v.resolveUplink(resource, field+".egressRef", record.EgressRef)
+		if uplink != nil && uplink.Kind == v1alpha1.KindDSLiteTunnel {
+			// The AFTR translates at the far end, so there is no address the outside
+			// world could reach — the refusal a PortForward naming the tunnel gets.
+			v.errorf(resource, field+".egressRef",
+				"nothing can be published through the DSLiteTunnel %q: it is translated at the far end, so there is no address for this record to hold", record.EgressRef)
+		}
+	}
+
+	// A name outside its zone cannot be written there. Saying so needs the zone, and a
+	// document that has not got one has already been told; reporting it per name would
+	// bury the one problem under a repetition of it.
+	if v.required(resource, field+".names", len(record.Names) > 0) && hasZone {
+		for i, name := range record.Names {
+			if !nameInZone(name, set.Zone) {
+				v.errorf(resource, fmt.Sprintf("%s.names[%d]", field, i),
+					"%q is not inside the zone %q, so it cannot be written there", name, set.Zone)
+			}
+		}
+	}
+
+	if record.TTL.For == 0 {
+		return
+	}
+	switch {
+	case record.ProxiedEnabled():
+		v.errorf(resource, field+".ttl",
+			"a proxied record's TTL is the provider's to decide, so %s goes nowhere; leave it out", record.TTL)
+	case record.TTL.For < minRecordTTL || record.TTL.For > maxRecordTTL:
+		v.errorf(resource, field+".ttl",
+			"%s is outside what the provider accepts, which is between %s and %s", record.TTL, minRecordTTL, maxRecordTTL)
+	}
+}
+
+// nameInZone is whether a name can be written in a zone: it is the zone, or it sits under
+// it. The dot matters — notexample.com ends in the text of example.com and is a different
+// zone.
+func nameInZone(name, zone string) bool {
+	name = strings.TrimSuffix(strings.ToLower(name), ".")
+	zone = strings.TrimSuffix(strings.ToLower(zone), ".")
+	return name == zone || strings.HasSuffix(name, "."+zone)
+}
+
+// checkDuplicateDNSRecords refuses one record at the provider being declared twice,
+// whether by one resource or by two.
+//
+// The pair that identifies a record is its name and its type, so two entries agreeing on
+// both are two declarations of one thing. Which of them the record would end up holding
+// is decided by the order the turn happens to write them in, which is written nowhere.
+func (v *validator) checkDuplicateDNSRecords() {
+	type origin struct {
+		resource *v1alpha1.Resource
+		field    string
+	}
+	seen := make(map[string]origin)
+	for _, resource := range v.byKind[v1alpha1.KindDNSRecordSet] {
+		spec, ok := resource.Spec.(*v1alpha1.DNSRecordSetSpec)
+		if !ok {
+			continue
+		}
+		for i, record := range spec.Records {
+			for j, name := range record.Names {
+				field := fmt.Sprintf("spec.records[%d].names[%d]", i, j)
+				key := string(record.TypeOrDefault()) + " " + strings.TrimSuffix(strings.ToLower(name), ".")
+				first, taken := seen[key]
+				if !taken {
+					seen[key] = origin{resource: resource, field: field}
+					continue
+				}
+				where := first.resource.Ref() + " at " + first.field
+				if first.resource == resource {
+					where = first.field
+				}
+				v.errorf(resource, field,
+					"the %s record for %q is already declared by %s; which of the two it would hold is written nowhere",
+					record.TypeOrDefault(), name, where)
+			}
+		}
+	}
 }
 
 // --- reference resolution --------------------------------------------------------

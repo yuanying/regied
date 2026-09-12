@@ -691,9 +691,9 @@ makes it checkable when there is a second. A proxied name resolves to the provid
 addresses, and the address regied writes is what the provider sends the traffic on to.
 
 **`ttl` is `automatic` or a duration.** `automatic` hands the choice to the provider,
-which is a declared value and not the same as leaving the field out. A duration below one
-minute or above twenty-four hours is a validation error, because it is outside what the
-provider accepts. So is a duration on a record with `proxied: true`: a proxied record's
+which is what leaving the field out does as well; writing it says so rather than leaving
+a reader to know the default. A duration below one minute or above twenty-four hours is a
+validation error, because it is outside what the provider accepts. So is a duration on a record with `proxied: true`: a proxied record's
 TTL belongs to the provider, and a declaration setting both asks for something that is
 refused on every turn.
 

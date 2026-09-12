@@ -53,7 +53,7 @@ type Named[S v1alpha1.ResourceSpec] struct {
 }
 
 // ResourcesOf is every resource whose spec has the type S, in document order. It is the
-// typed way round the fact that spec.resources holds eleven different kinds.
+// typed way round the fact that spec.resources holds twelve different kinds.
 func ResourcesOf[S v1alpha1.ResourceSpec](c *Config) []Named[S] {
 	var out []Named[S]
 	for _, resource := range c.order {

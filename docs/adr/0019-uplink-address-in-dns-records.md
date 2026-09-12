@@ -344,8 +344,8 @@ place a person can put it is the declaration.
 The proxy flag earns its place beyond that: a deployment that proxies a published name
 through the provider and one that does not are different configurations, and which one is
 in effect should be readable in the file rather than discoverable at the provider. The
-TTL can say `automatic`, which is the provider deciding — that is a declared value, and
-distinct from the field being absent.
+TTL can say `automatic`, which is the provider deciding — the same thing an absent field
+asks for, written down so that the choice is visible in the file.
 
 #### The token is named on the set, so that a zone can have its own
 
