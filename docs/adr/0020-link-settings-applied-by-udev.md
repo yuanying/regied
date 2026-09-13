@@ -140,6 +140,11 @@ it and triggers.
   turn reads. The file is, and a file somebody edited or deleted is put back and applied again.
   This is the line [ADR 0016](0016-converging-on-the-accepted-declaration.md) draws around what
   the loop can see.
+- **A member of a bridge gets its `.link` file the same way.** The member is the NIC, and the
+  bridge above it has none, so on a host whose LAN is a bridge the setting is declared on the
+  member's own Interface. Being enslaved changes neither the name udev meets at the event nor
+  the `.network` networkd finds matching the link, so the match and the trigger above hold for
+  it unchanged.
 - The next NIC setting that reaches the schema goes in the same file, and the reasoning about
   `[Match]` and the trigger holds for it only if the NIC takes it while up. A setting that
   needs the link down is a different record.
