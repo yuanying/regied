@@ -19,7 +19,9 @@ type InterfaceSpec struct {
 func (*InterfaceSpec) ResourceKind() ResourceKind { return KindInterface }
 
 // Bridge turns an Interface into a bridge over the kernel interfaces it names. The
-// members are kernel interface names, not resource names.
+// members are kernel interface names, not resource names. A bridge may name none: its
+// ports are then attached by something else, such as a container runtime plugging veths
+// in and out, and an empty mapping still makes the Interface a bridge.
 type Bridge struct {
 	Members []string `yaml:"members"`
 }

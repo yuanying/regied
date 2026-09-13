@@ -288,6 +288,26 @@ func TestValidateNameUniqueness(t *testing.T) {
 	})
 }
 
+// A bridge whose ports something else attaches — a container runtime plugging veths in
+// and out — has no member to name. It is still a bridge.
+func TestValidateAcceptsABridgeWithoutMembers(t *testing.T) {
+	for _, bridge := range []string{`{}`, `{members: []}`} {
+		t.Run(bridge, func(t *testing.T) {
+			cfg, problems := check(t, `    - kind: Interface
+      metadata: {name: containers}
+      spec:
+        ifname: br-containers
+        bridge: `+bridge+`
+        addresses: [192.168.10.1/24]
+`, secrets())
+			if cfg == nil {
+				t.Fatalf("rejected a bridge without members:\n%s", problems)
+			}
+			assertProblems(t, problems, nil)
+		})
+	}
+}
+
 func TestValidateRequiredFields(t *testing.T) {
 	cases := []struct {
 		name      string

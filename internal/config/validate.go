@@ -143,9 +143,6 @@ func (v *validator) checkResource(resource *v1alpha1.Resource) {
 
 func (v *validator) checkInterface(resource *v1alpha1.Resource, spec *v1alpha1.InterfaceSpec) {
 	v.required(resource, "spec.ifname", spec.Ifname != "")
-	if spec.Bridge != nil {
-		v.required(resource, "spec.bridge.members", len(spec.Bridge.Members) > 0)
-	}
 
 	for i, address := range spec.Addresses {
 		field := fmt.Sprintf("spec.addresses[%d]", i)

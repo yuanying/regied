@@ -41,7 +41,7 @@ Backend: a `.network` file, and for a bridge a `.netdev` file, under regied's pr
 | Field | Required | Value |
 |---|---|---|
 | `ifname` | yes | The kernel interface name. For a bridge, the name to create |
-| `bridge.members` | no | Kernel interface names to enslave. Present means this is a bridge |
+| `bridge.members` | no | Kernel interface names to enslave. `bridge` present, even empty, means this is a bridge |
 | `mtu` | no | Bytes. Defaults to the kernel's |
 | `addresses` | no | List of addresses. See below |
 | `routes` | no | List of static routes. See below |
@@ -53,6 +53,15 @@ need an `Interface` resource of its own — regied writes the file that enslaves
 Declare a member as an `Interface` only to give it a property that is its own, such as an
 MTU, and then it must not carry addresses. The addresses belong to the bridge, and so
 does the name a `FirewallZone` names.
+
+A bridge may name no member at all: `bridge: {}`, or `bridge.members` left empty. That is
+a segment whose ports something else attaches — a container runtime plugging a veth in
+for each container and removing it when the container goes. There is no port to name, but
+the segment's addresses, the advertisement on it, and the zone it belongs to are still
+this host's to declare, and declaring them here keeps its prefix in one place rather than
+in the runtime's configuration as well. Such a bridge is the same bridge: regied writes
+its `.netdev` and its `.network`, and only the files that would enslave members are
+absent.
 
 `ifname`, and every name in `bridge.members`, is a name the kernel has to hold: at most
 15 characters, because `IFNAMSIZ` is 16 and the last byte is the terminator. A longer one
