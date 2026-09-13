@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
 )
 
@@ -181,4 +182,164 @@ func TestDeriveRejectsAReservedTable(t *testing.T) {
         table: 254
 `, secrets())
 	assertProblems(t, problems, []string{"spec.table: 254 is reserved by the kernel"})
+}
+
+// A forward published on an uplink, and one on the other family of the same uplink.
+const forwardV4 = `    - kind: PortForward
+      metadata: {name: https}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 443
+        target: {address: 192.168.10.20}
+`
+
+const forwardV6 = `    - kind: PortForward
+      metadata: {name: https-v6}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 443
+        target: {address: "2001:db8:0:1::20"}
+`
+
+func forwardReturn(t *testing.T, cfg *config.Config, uplink string, family v1alpha1.Family) config.ForwardReturn {
+	t.Helper()
+	got, ok := cfg.ForwardReturn(uplink, family)
+	if !ok {
+		t.Fatalf("no return routing derived for %s %s", uplink, family)
+	}
+	return got
+}
+
+// An uplink a port forward is published on gets a table and a mark of its own, per
+// family, so that the reply to a connection that arrived there can be sent back the same
+// way. They come after the policies' numbers, so that adding a forward moves no policy.
+func TestDeriveAllocatesAReturnTableAndMarkPerUplinkAndFamily(t *testing.T) {
+	cfg, problems := check(t, derivationBase+policyPPPoE+policyDSLite+forwardV6+forwardV4, secrets())
+	if cfg == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+
+	last := routing(t, cfg, "rest-via-dslite")
+	v4 := forwardReturn(t, cfg, "pppoe0", v1alpha1.FamilyIPv4)
+	v6 := forwardReturn(t, cfg, "pppoe0", v1alpha1.FamilyIPv6)
+
+	if v4.Table <= last.Table || v4.Mark <= last.Mark {
+		t.Errorf("the uplink's numbers %+v were not allocated after the last policy's %+v", v4, last)
+	}
+	if v6.Table <= v4.Table || v6.Mark <= v4.Mark {
+		t.Errorf("IPv6 %+v was not allocated after IPv4 %+v", v6, v4)
+	}
+	if v4.Uplink != "pppoe0" || v4.Family != v1alpha1.FamilyIPv4 {
+		t.Errorf("the entry does not say what it is for: %+v", v4)
+	}
+
+	all := cfg.ForwardReturns()
+	if len(all) != 2 || all[0] != v4 || all[1] != v6 {
+		t.Errorf("ForwardReturns is %+v, want the IPv4 entry then the IPv6 one", all)
+	}
+}
+
+// Without a forward there is no reply to put back, and an uplink gets nothing.
+func TestDeriveGivesNoReturnRoutingToAnUplinkWithoutAForward(t *testing.T) {
+	cfg, problems := check(t, derivationBase+policyPPPoE+policyDSLite+forwardV4, secrets())
+	if cfg == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+	if _, ok := cfg.ForwardReturn("dslite", v1alpha1.FamilyIPv4); ok {
+		t.Error("the tunnel got return routing with no forward published on it")
+	}
+	if _, ok := cfg.ForwardReturn("pppoe0", v1alpha1.FamilyIPv6); ok {
+		t.Error("pppoe0 got IPv6 return routing with only an IPv4 forward")
+	}
+	if all := cfg.ForwardReturns(); len(all) != 1 {
+		t.Errorf("ForwardReturns is %+v, want one entry", all)
+	}
+}
+
+// The return routing does not depend on a policy being there. A host with one uplink and
+// a forward gets it too, and it is harmless there.
+func TestDeriveReturnRoutingWithoutAnyPolicy(t *testing.T) {
+	cfg, problems := check(t, derivationBase+forwardV4, secrets())
+	if cfg == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+	got := forwardReturn(t, cfg, "pppoe0", v1alpha1.FamilyIPv4)
+	if got.Table == 0 || got.Mark == 0 {
+		t.Errorf("nothing allocated: %+v", got)
+	}
+}
+
+// Two forwards on the same uplink and family share the one entry: the mark says which
+// uplink the connection arrived on, not which forward readdressed it.
+func TestDeriveReturnRoutingIsPerUplinkNotPerForward(t *testing.T) {
+	cfg, problems := check(t, derivationBase+forwardV4+`    - kind: PortForward
+      metadata: {name: ssh}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 10022
+        target: {address: 192.168.10.30, port: 22}
+`, secrets())
+	if cfg == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+	if all := cfg.ForwardReturns(); len(all) != 1 {
+		t.Errorf("ForwardReturns is %+v, want one entry for the one uplink", all)
+	}
+}
+
+// A pinned policy value the allocator would otherwise have reached is skipped for the
+// uplink as it is for a policy.
+func TestDeriveReturnRoutingAvoidsPinnedValues(t *testing.T) {
+	first, problems := check(t, derivationBase+policyPPPoE+policyDSLite+forwardV4, secrets())
+	if first == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+	taken := forwardReturn(t, first, "pppoe0", v1alpha1.FamilyIPv4)
+
+	cfg, problems := check(t, derivationBase+policyPPPoE+strings.Replace(policyDSLite,
+		"        sourceRanges: [192.168.10.0/24]\n",
+		"        sourceRanges: [192.168.10.0/24]\n        table: "+strconv.Itoa(taken.Table)+"\n        mark: "+strconv.Itoa(int(taken.Mark))+"\n", 1)+forwardV4, secrets())
+	if cfg == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+	pinned := routing(t, cfg, "rest-via-dslite")
+	got := forwardReturn(t, cfg, "pppoe0", v1alpha1.FamilyIPv4)
+	if got.Table == pinned.Table {
+		t.Errorf("table %d handed out twice", got.Table)
+	}
+	if got.Mark == pinned.Mark {
+		t.Errorf("mark %d handed out twice", got.Mark)
+	}
+}
+
+// The same document in another order derives the same numbers for the uplink, as it does
+// for the policies.
+func TestDeriveReturnRoutingIsStableAcrossResourceOrder(t *testing.T) {
+	forward, problems := check(t, derivationBase+policyPPPoE+policyDSLite+forwardV4+forwardV6, secrets())
+	if forward == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+	reversed, problems := check(t, forwardV6+forwardV4+policyDSLite+policyPPPoE+dslite+pppoe+ifaceLAN+ifaceWAN, secrets())
+	if reversed == nil {
+		t.Fatalf("rejected the same document written in another order:\n%s", problems)
+	}
+	for _, family := range []v1alpha1.Family{v1alpha1.FamilyIPv4, v1alpha1.FamilyIPv6} {
+		a, b := forwardReturn(t, forward, "pppoe0", family), forwardReturn(t, reversed, "pppoe0", family)
+		if a != b {
+			t.Errorf("%s: %+v in one order, %+v in the other", family, a, b)
+		}
+	}
+}
+
+// A target outside every policy's range used to be warned about. The reply now leaves by
+// the uplink it arrived on whatever the policies say, so there is nothing to warn about.
+func TestValidateDoesNotWarnAboutAForwardTargetOutsideThePolicyRanges(t *testing.T) {
+	cfg, problems := check(t, derivationBase+policyPPPoE+policyDSLite+forwardV4, secrets())
+	if cfg == nil {
+		t.Fatalf("rejected a valid document:\n%s", problems)
+	}
+	assertProblems(t, problems, nil)
 }
