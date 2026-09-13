@@ -210,7 +210,9 @@ func TestParseRejectsMalformedValues(t *testing.T) {
 		{"next hop", "ifname: eth0\n        routes: [{destination: 172.16.0.0/16, via: 192.0.2}]", `"192.0.2"`},
 		{"duration", "ifname: eth0\n        ipv6: {advertise: {mode: slaac, validLifetime: 24hours}}", `"24hours"`},
 		{"router advertisement mode", "ifname: eth0\n        ipv6: {advertise: {mode: managed}}", `"managed"`},
-		{"an address written as a mapping without fromDelegatedPrefix", "ifname: eth0\n        addresses: [{}]", "fromDelegatedPrefix"},
+		{"an address written as a mapping without a form", "ifname: eth0\n        addresses: [{}]", "exactly one of fromDelegatedPrefix and fromRouterAdvertisement"},
+		{"an address written as a mapping with two forms", "ifname: eth0\n        addresses: [{fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1}, fromRouterAdvertisement: {token: \"::1\"}}]", "exactly one of fromDelegatedPrefix and fromRouterAdvertisement"},
+		{"an unknown key in fromRouterAdvertisement", "ifname: eth0\n        addresses: [{fromRouterAdvertisement: {token: \"::1\", prefix: \"2001:db8::/64\"}}]", "prefix"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -330,6 +332,7 @@ func TestParseAcceptsEveryWrittenForm(t *testing.T) {
         addresses:
           - 192.168.10.1/24
           - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::1"}
+          - fromRouterAdvertisement: {token: "::53"}
     - kind: PortForward
       metadata: {name: single}
       spec:
@@ -372,6 +375,11 @@ func TestParseAcceptsEveryWrittenForm(t *testing.T) {
 	derived := iface.Addresses[1].FromDelegatedPrefix
 	if derived == nil || derived.InterfaceRef != "wan" || derived.SubnetID == nil || *derived.SubnetID != 1 || derived.Token != "::1" {
 		t.Errorf("derived address: %+v", iface.Addresses[1])
+	}
+	advertised := iface.Addresses[2]
+	if advertised.IsLiteral() || advertised.FromDelegatedPrefix != nil ||
+		advertised.FromRouterAdvertisement == nil || advertised.FromRouterAdvertisement.Token != "::53" {
+		t.Errorf("address from the router advertisement: %+v", advertised)
 	}
 
 	single := cfgDoc.Spec.Resources[1].Spec.(*v1alpha1.PortForwardSpec)
