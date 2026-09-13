@@ -10,6 +10,7 @@ type InterfaceSpec struct {
 	Ifname    string             `yaml:"ifname"`
 	Bridge    *Bridge            `yaml:"bridge"`
 	MTU       int                `yaml:"mtu"`
+	WakeOnLan WakeOnLan          `yaml:"wakeOnLan"`
 	Addresses []InterfaceAddress `yaml:"addresses"`
 	Routes    []Route            `yaml:"routes"`
 	DHCPv6    *DHCPv6Client      `yaml:"dhcpv6"`
@@ -17,6 +18,59 @@ type InterfaceSpec struct {
 }
 
 func (*InterfaceSpec) ResourceKind() ResourceKind { return KindInterface }
+
+// WakeOnLan is the modes a NIC wakes the host in, as networkd's WakeOnLan= takes them.
+//
+// Nil means the field was left out, and the NIC is left as it is; that is a different
+// answer from off, which turns Wake-on-LAN off. A list written empty is neither, and is
+// kept apart from nil so that validation can refuse it rather than read it as one of them.
+type WakeOnLan []WakeOnLanMode
+
+// WakeOnLanMode is one of networkd's WakeOnLan= words.
+type WakeOnLanMode string
+
+const (
+	WakeOnLanOff       WakeOnLanMode = "off"
+	WakeOnLanPhy       WakeOnLanMode = "phy"
+	WakeOnLanUnicast   WakeOnLanMode = "unicast"
+	WakeOnLanMulticast WakeOnLanMode = "multicast"
+	WakeOnLanBroadcast WakeOnLanMode = "broadcast"
+	WakeOnLanARP       WakeOnLanMode = "arp"
+	WakeOnLanMagic     WakeOnLanMode = "magic"
+	WakeOnLanSecureOn  WakeOnLanMode = "secureon"
+)
+
+func (m *WakeOnLanMode) UnmarshalYAML(node *yaml.Node) error {
+	return enum(node, m, "a Wake-on-LAN mode", WakeOnLanOff, WakeOnLanPhy, WakeOnLanUnicast,
+		WakeOnLanMulticast, WakeOnLanBroadcast, WakeOnLanARP, WakeOnLanMagic, WakeOnLanSecureOn)
+}
+
+// UnmarshalYAML accepts one mode or a list of them. The single form is what a host with
+// one reason to be woken writes, and it means the same as a list holding that mode.
+func (w *WakeOnLan) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var mode WakeOnLanMode
+		if err := mode.UnmarshalYAML(node); err != nil {
+			return err
+		}
+		*w = WakeOnLan{mode}
+		return nil
+	case yaml.SequenceNode:
+		modes := make(WakeOnLan, 0, len(node.Content))
+		for _, item := range node.Content {
+			var mode WakeOnLanMode
+			if err := mode.UnmarshalYAML(item); err != nil {
+				return err
+			}
+			modes = append(modes, mode)
+		}
+		*w = modes
+		return nil
+	default:
+		return typeErrorf(node, "expected a Wake-on-LAN mode or a list of them")
+	}
+}
 
 // Bridge turns an Interface into a bridge over the kernel interfaces it names. The
 // members are kernel interface names, not resource names. A bridge may name none: its

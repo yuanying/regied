@@ -105,6 +105,25 @@ func TestValidateAcceptsAnAddressFromTheRouterAdvertisement(t *testing.T) {
 	assertProblems(t, problems, nil)
 }
 
+// Wake-on-LAN is a property of a physical link that stands on its own, written as one
+// mode or as several. off is the one mode that stands alone.
+func TestValidateAcceptsWakeOnLan(t *testing.T) {
+	for _, value := range []string{"magic", "[magic, unicast]", "off"} {
+		t.Run(value, func(t *testing.T) {
+			cfg, problems := check(t, `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        wakeOnLan: `+value+`
+`, secrets())
+			if cfg == nil {
+				t.Fatalf("rejected wakeOnLan: %s\n%s", value, problems)
+			}
+			assertProblems(t, problems, nil)
+		})
+	}
+}
+
 func TestValidateResolvesReferences(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -566,6 +585,62 @@ func TestValidateRejectsWhatTheSpecSaysItRejects(t *testing.T) {
 		want      []string
 	}{
 		{
+			name: "Wake-on-LAN on a bridge",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        bridge: {members: [eth1]}
+        wakeOnLan: magic
+`,
+			want: []string{"spec.wakeOnLan: a bridge has no NIC to wake"},
+		},
+		{
+			name: "Wake-on-LAN on a member of a bridge",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        bridge: {members: [eth1]}
+    - kind: Interface
+      metadata: {name: lan-port}
+      spec:
+        ifname: eth1
+        wakeOnLan: magic
+`,
+			want: []string{`spec.wakeOnLan: "eth1" is a member of the bridge "br-lan"`},
+		},
+		{
+			name: "off listed with a mode that wakes",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        wakeOnLan: [off, magic]
+`,
+			want: []string{`spec.wakeOnLan: "off" turns Wake-on-LAN off and cannot be listed with other modes`},
+		},
+		{
+			name: "a Wake-on-LAN mode listed twice",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        wakeOnLan: [magic, unicast, magic]
+`,
+			want: []string{`spec.wakeOnLan: "magic" is listed twice`},
+		},
+		{
+			name: "an empty list of Wake-on-LAN modes",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        wakeOnLan: []
+`,
+			want: []string{`spec.wakeOnLan: names no mode; write "off" to turn Wake-on-LAN off`},
+		},
+		{
 			name:   "reverse path filtering together with policy routing",
 			global: "    sourceValidation: true\n",
 			resources: ifaceWAN + ifaceLAN + pppoe + `    - kind: EgressRoutePolicy
@@ -794,6 +869,19 @@ func TestValidateWarns(t *testing.T) {
 			t.Fatalf("a missing duidFile is a warning, not an error:\n%s", problems)
 		}
 		assertProblems(t, problems, []string{"spec.dhcpv6.prefixDelegation.duidFile: not set"})
+	})
+
+	t.Run("SecureOn with no password to hold", func(t *testing.T) {
+		cfg, problems := check(t, `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        wakeOnLan: secureon
+`, secrets())
+		if cfg == nil {
+			t.Fatalf("secureon is a warning, not an error:\n%s", problems)
+		}
+		assertProblems(t, problems, []string{"spec.wakeOnLan: secureon is set with no password"})
 	})
 
 	t.Run("stateless DHCPv6 nothing will ask for", func(t *testing.T) {

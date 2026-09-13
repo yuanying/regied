@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -213,6 +214,9 @@ func TestParseRejectsMalformedValues(t *testing.T) {
 		{"an address written as a mapping without a form", "ifname: eth0\n        addresses: [{}]", "exactly one of fromDelegatedPrefix and fromRouterAdvertisement"},
 		{"an address written as a mapping with two forms", "ifname: eth0\n        addresses: [{fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1}, fromRouterAdvertisement: {token: \"::1\"}}]", "exactly one of fromDelegatedPrefix and fromRouterAdvertisement"},
 		{"an unknown key in fromRouterAdvertisement", "ifname: eth0\n        addresses: [{fromRouterAdvertisement: {token: \"::1\", prefix: \"2001:db8::/64\"}}]", "prefix"},
+		{"a Wake-on-LAN mode networkd does not have", "ifname: eth0\n        wakeOnLan: always", `"always"`},
+		{"a Wake-on-LAN mode networkd does not have, in a list", "ifname: eth0\n        wakeOnLan: [magic, never]", `"never"`},
+		{"Wake-on-LAN written as a mapping", "ifname: eth0\n        wakeOnLan: {magic: true}", "a Wake-on-LAN mode or a list of them"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,6 +314,33 @@ func TestParseRejectsMalformedValuesInOtherKinds(t *testing.T) {
 			_, err := config.Parse(doc(tc.resource + "\n"))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want an error mentioning %s, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// Wake-on-LAN is written as one mode or as a list of them, and leaving it out is a third
+// answer: the NIC is left as it is. An empty list is not the same as leaving it out, so
+// that validation can refuse it rather than read it as either.
+func TestParseAcceptsWakeOnLanAsOneModeOrAList(t *testing.T) {
+	cases := []struct {
+		name, spec string
+		want       v1alpha1.WakeOnLan
+	}{
+		{"left out", "ifname: eth0", nil},
+		{"one mode", "ifname: eth0\n        wakeOnLan: magic", v1alpha1.WakeOnLan{v1alpha1.WakeOnLanMagic}},
+		{"a list", "ifname: eth0\n        wakeOnLan: [magic, unicast]", v1alpha1.WakeOnLan{v1alpha1.WakeOnLanMagic, v1alpha1.WakeOnLanUnicast}},
+		{"an empty list", "ifname: eth0\n        wakeOnLan: []", v1alpha1.WakeOnLan{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := config.Parse(doc("    - kind: Interface\n      metadata: {name: lan}\n      spec:\n        " + tc.spec + "\n"))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			got := parsed.Spec.Resources[0].Spec.(*v1alpha1.InterfaceSpec).WakeOnLan
+			if (got == nil) != (tc.want == nil) || !slices.Equal(got, tc.want) {
+				t.Errorf("wakeOnLan is %#v, want %#v", got, tc.want)
 			}
 		})
 	}
