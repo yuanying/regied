@@ -88,6 +88,23 @@ func TestValidateAcceptsACoherentDocument(t *testing.T) {
 	assertProblems(t, problems, nil)
 }
 
+// A host below a router takes its prefix from the wire and keeps only the token. It may
+// sit next to a literal address, and it refers to nothing.
+func TestValidateAcceptsAnAddressFromTheRouterAdvertisement(t *testing.T) {
+	cfg, problems := check(t, `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        addresses:
+          - 192.168.10.153/24
+          - fromRouterAdvertisement: {token: "::153"}
+`, secrets())
+	if cfg == nil {
+		t.Fatalf("rejected an address from the router advertisement:\n%s", problems)
+	}
+	assertProblems(t, problems, nil)
+}
+
 func TestValidateResolvesReferences(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -321,6 +338,17 @@ func TestValidateRequiredFields(t *testing.T) {
       spec: {mtu: 1500}
 `,
 			want: []string{"spec.ifname: required"},
+		},
+		{
+			name: "an address from the router advertisement without a token",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        addresses:
+          - fromRouterAdvertisement: {}
+`,
+			want: []string{"spec.addresses[0].fromRouterAdvertisement.token: required"},
 		},
 		{
 			name: "PPPoESession without credentials",
@@ -615,6 +643,51 @@ func TestValidateRejectsWhatTheSpecSaysItRejects(t *testing.T) {
           - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1}
 `,
 			want: []string{`spec.addresses[0].fromDelegatedPrefix.interfaceRef: the Interface "wan" has no prefix-delegation client`},
+		},
+		{
+			name: "a router advertisement token that is not an interface identifier",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        addresses:
+          - fromRouterAdvertisement: {token: "2001:db8::153"}
+`,
+			want: []string{`spec.addresses[0].fromRouterAdvertisement.token: "2001:db8::153" is not an interface identifier`},
+		},
+		{
+			name: "a router advertisement token that is an IPv4 address",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        addresses:
+          - fromRouterAdvertisement: {token: "192.0.2.153"}
+`,
+			want: []string{`spec.addresses[0].fromRouterAdvertisement.token: "192.0.2.153" is not an interface identifier`},
+		},
+		{
+			name: "a router advertisement token of all zeros",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        addresses:
+          - fromRouterAdvertisement: {token: "::"}
+`,
+			want: []string{`spec.addresses[0].fromRouterAdvertisement.token: "::" is not an interface identifier`},
+		},
+		{
+			name: "two addresses from the router advertisement on one Interface",
+			resources: `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        addresses:
+          - fromRouterAdvertisement: {token: "::53"}
+          - fromRouterAdvertisement: {token: "::54"}
+`,
+			want: []string{`spec.addresses[1].fromRouterAdvertisement: an Interface takes at most one token from the router advertisement`},
 		},
 		{
 			name: "a port forward through a DS-Lite tunnel",

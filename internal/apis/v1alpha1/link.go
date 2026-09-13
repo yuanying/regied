@@ -26,11 +26,13 @@ type Bridge struct {
 	Members []string `yaml:"members"`
 }
 
-// InterfaceAddress is one entry of an interface's addresses: either a literal address
-// with a prefix length, or an address derived from a delegated prefix.
+// InterfaceAddress is one entry of an interface's addresses: a literal address with a
+// prefix length, an address derived from a delegated prefix, or one derived from the
+// prefix a router advertises. Exactly one of the three is set.
 type InterfaceAddress struct {
-	Literal             Prefix               // set when written as a string
-	FromDelegatedPrefix *DelegatedPrefixAddr // set when written as a mapping
+	Literal                 Prefix                   // set when written as a string
+	FromDelegatedPrefix     *DelegatedPrefixAddr     // set when written as a mapping
+	FromRouterAdvertisement *RouterAdvertisementAddr // set when written as a mapping
 }
 
 // IsLiteral reports whether the address was written out rather than derived.
@@ -46,7 +48,15 @@ type DelegatedPrefixAddr struct {
 	Token        string `yaml:"token"`
 }
 
-// UnmarshalYAML accepts either form. It takes the unmarshal-function form so that the
+// RouterAdvertisementAddr takes the prefix from the router advertisement received on the
+// link and combines it with a fixed interface identifier. A host that is not the router
+// keeps only the part it chose, the token, so the prefix the router advertises is not
+// written down a second time and a prefix change reaches the host from the wire.
+type RouterAdvertisementAddr struct {
+	Token string `yaml:"token"`
+}
+
+// UnmarshalYAML accepts any of the forms. It takes the unmarshal-function form so that the
 // mapping half is still decoded strictly; see Resource.UnmarshalYAML.
 func (a *InterfaceAddress) UnmarshalYAML(unmarshal func(any) error) error {
 	var capture nodeCapture
@@ -64,18 +74,22 @@ func (a *InterfaceAddress) UnmarshalYAML(unmarshal func(any) error) error {
 		return nil
 	case yaml.MappingNode:
 		var derived struct {
-			FromDelegatedPrefix *DelegatedPrefixAddr `yaml:"fromDelegatedPrefix"`
+			FromDelegatedPrefix     *DelegatedPrefixAddr     `yaml:"fromDelegatedPrefix"`
+			FromRouterAdvertisement *RouterAdvertisementAddr `yaml:"fromRouterAdvertisement"`
 		}
 		if err := unmarshal(&derived); err != nil {
 			return err
 		}
-		if derived.FromDelegatedPrefix == nil {
-			return typeErrorf(node, "an address written as a mapping needs fromDelegatedPrefix")
+		// One entry is one address with one source. A mapping naming both would leave
+		// which of them the address comes from to the reader.
+		if (derived.FromDelegatedPrefix == nil) == (derived.FromRouterAdvertisement == nil) {
+			return typeErrorf(node, "an address written as a mapping needs exactly one of fromDelegatedPrefix and fromRouterAdvertisement")
 		}
 		a.FromDelegatedPrefix = derived.FromDelegatedPrefix
+		a.FromRouterAdvertisement = derived.FromRouterAdvertisement
 		return nil
 	default:
-		return typeErrorf(node, "expected an address or a fromDelegatedPrefix mapping")
+		return typeErrorf(node, "expected an address, or a fromDelegatedPrefix or fromRouterAdvertisement mapping")
 	}
 }
 

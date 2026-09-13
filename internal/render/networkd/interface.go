@@ -41,6 +41,7 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 	}
 
 	delegated := r.delegatedAddress(iface)
+	advertised := advertisedAddress(spec)
 	advertise := advertisementOf(spec)
 
 	network := u.section("Network")
@@ -72,11 +73,12 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 	if spec.DHCPv6 != nil {
 		network.set("DHCP", "ipv6")
 	}
-	// There is no field for accepting router advertisements, and the interface facing
-	// the provider is the one that has to: it is where the default route and the
-	// interface's own global address come from. Everywhere else an advertisement would
-	// install routing nobody declared, so it is refused.
-	network.setBool("IPv6AcceptRA", spec.DHCPv6 != nil)
+	// There is no field for accepting router advertisements. Two declarations need them:
+	// the interface facing the provider, where the default route and the interface's own
+	// global address come from, and an address taken from the advertisement, which exists
+	// to take both from the router above. Everywhere else an advertisement would install
+	// routing nobody declared, so it is refused.
+	network.setBool("IPv6AcceptRA", spec.DHCPv6 != nil || advertised != nil)
 	if advertise != nil {
 		network.setBool("IPv6SendRA", true)
 	}
@@ -87,7 +89,16 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 		network.set("Tunnel", tunnel)
 	}
 
-	r.renderDHCPv6Client(u, iface)
+	acceptRA := r.renderDHCPv6Client(u, iface)
+	if advertised != nil {
+		// Only the token is written. The default route the advertisement carries, and the
+		// DHCPv6 information request its other-configuration flag asks for, are
+		// networkd's defaults, and no configuration has needed them otherwise.
+		if acceptRA == nil {
+			acceptRA = u.section("IPv6AcceptRA")
+		}
+		acceptRA.set("Token", "static:"+advertised.Token)
+	}
 	if delegated != nil {
 		r.renderPrefixDelegation(u, iface, delegated, advertise != nil)
 	}
@@ -112,7 +123,7 @@ func advertisementOf(spec *v1alpha1.InterfaceSpec) *v1alpha1.RouterAdvertisement
 func (r *renderer) delegatedAddress(iface config.Named[*v1alpha1.InterfaceSpec]) *v1alpha1.DelegatedPrefixAddr {
 	var found *v1alpha1.DelegatedPrefixAddr
 	for _, address := range iface.Spec.Addresses {
-		if address.IsLiteral() {
+		if address.FromDelegatedPrefix == nil {
 			continue
 		}
 		if found != nil {
@@ -125,7 +136,19 @@ func (r *renderer) delegatedAddress(iface config.Named[*v1alpha1.InterfaceSpec])
 	return found
 }
 
-// renderDHCPv6Client writes the client that asks the provider for the prefix.
+// advertisedAddress is the interface's address taken from the router advertisement, or
+// nil. The validation allows at most one.
+func advertisedAddress(spec *v1alpha1.InterfaceSpec) *v1alpha1.RouterAdvertisementAddr {
+	for _, address := range spec.Addresses {
+		if address.FromRouterAdvertisement != nil {
+			return address.FromRouterAdvertisement
+		}
+	}
+	return nil
+}
+
+// renderDHCPv6Client writes the client that asks the provider for the prefix, and hands
+// back the [IPv6AcceptRA] section it opened, or nil when there is no client.
 //
 // It asks for an address (IA_NA) alongside the prefix (IA_PD). Some providers never
 // answer a Solicit that carries only IA_PD, and the usual answer to the IA_NA is "no
@@ -135,10 +158,10 @@ func (r *renderer) delegatedAddress(iface config.Named[*v1alpha1.InterfaceSpec])
 // global address still comes from the router advertisement, which is what makes a
 // tunnel's Local=slaac mean something (ADR 0011). UseAddress=yes is networkd's default,
 // written out so the intent is visible in the file (ADR 0012).
-func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.InterfaceSpec]) {
+func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.InterfaceSpec]) *section {
 	client := iface.Spec.DHCPv6
 	if client == nil {
-		return
+		return nil
 	}
 	dhcpv6 := u.section("DHCPv6")
 	if delegation := client.PrefixDelegation; delegation != nil {
@@ -175,6 +198,7 @@ func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.Inte
 	}
 	// A provider's resolvers arrive by two roads, and the field means both.
 	acceptRA.setBool("UseDNS", client.UseDNSEnabled())
+	return acceptRA
 }
 
 // unreadDUID is the DUID file an interface names whose contents were not supplied, if

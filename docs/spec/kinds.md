@@ -82,8 +82,9 @@ and wrong for a bridge, where no carrier means no client yet
 
 ### `addresses[]`
 
-Each entry is either a literal address with prefix length, or an address derived from a
-delegated prefix.
+Each entry is a literal address with prefix length, an address derived from a delegated
+prefix, or an address derived from the prefix a router advertises on this link. A
+mapping names exactly one of `fromDelegatedPrefix` and `fromRouterAdvertisement`.
 
 | Field | Required | Value |
 |---|---|---|
@@ -91,11 +92,26 @@ delegated prefix.
 | `fromDelegatedPrefix.interfaceRef` | yes | The interface running the prefix-delegation client |
 | `fromDelegatedPrefix.subnetID` | yes | Which subnet of the delegated prefix to take |
 | `fromDelegatedPrefix.token` | no | The host part, e.g. `::1`. Defaults to the interface identifier |
+| `fromRouterAdvertisement.token` | yes | The host part, e.g. `::153`. The upper 64 bits must be zero, and it must not be `::` |
 
 A derived address changes when the delegation changes, and everything built on it —
 the tunnel's local address, the advertised prefix, the addresses DNS listens on — changes
 with it. That propagation is the reason the derivation is declared rather than the result
 being written down.
+
+`fromRouterAdvertisement` is the same idea for a host that is not the router. It takes
+the prefix from the advertisement received on the link and keeps only the part the host
+chose, the token, so the prefix the router advertises is not written down a second time.
+The link accepts router advertisements, and so also takes the default route the
+advertisement carries and, when its other-configuration flag is set, asks DHCPv6 for the
+rest, as networkd does by default. There are no fields for either until a configuration
+needs them.
+
+An Interface holds at most one `fromRouterAdvertisement`; a second is a validation error.
+networkd takes one token per link, and the address's source is meant to be readable in
+one place. It may sit next to a literal address, typically an IPv4 one. The address it
+yields is not advertised onward by `ipv6.advertise`, which advertises only literal
+prefixes and the delegated one.
 
 ### `routes[]`
 

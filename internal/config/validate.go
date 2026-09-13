@@ -144,9 +144,25 @@ func (v *validator) checkResource(resource *v1alpha1.Resource) {
 func (v *validator) checkInterface(resource *v1alpha1.Resource, spec *v1alpha1.InterfaceSpec) {
 	v.required(resource, "spec.ifname", spec.Ifname != "")
 
+	fromAdvertisement := false
 	for i, address := range spec.Addresses {
 		field := fmt.Sprintf("spec.addresses[%d]", i)
 		if address.IsLiteral() {
+			continue
+		}
+		if advertised := address.FromRouterAdvertisement; advertised != nil {
+			// networkd takes one token per link, and the address's source is meant to be
+			// readable in one place.
+			if fromAdvertisement {
+				v.errorf(resource, field+".fromRouterAdvertisement",
+					"an Interface takes at most one token from the router advertisement")
+			}
+			fromAdvertisement = true
+			if v.required(resource, field+".fromRouterAdvertisement.token", advertised.Token != "") &&
+				!isInterfaceIdentifier(advertised.Token) {
+				v.errorf(resource, field+".fromRouterAdvertisement.token",
+					"%q is not an interface identifier; write the host part of an IPv6 address, e.g. \"::1\"", advertised.Token)
+			}
 			continue
 		}
 		derived := address.FromDelegatedPrefix
@@ -619,6 +635,27 @@ func (v *validator) checkBridgeMembers() {
 		bridgeSpec := bridge.Spec.(*v1alpha1.InterfaceSpec)
 		v.errorf(resource, "spec.addresses", "%q is a member of the bridge %q and cannot carry addresses of its own", spec.Ifname, bridgeSpec.Ifname)
 	}
+}
+
+// isInterfaceIdentifier reports whether a token is the host part of an IPv6 address: an
+// IPv6 address whose upper 64 bits, where the advertised prefix goes, are zero, and that
+// is not zero altogether. A token with prefix bits set would have them silently replaced.
+func isInterfaceIdentifier(token string) bool {
+	addr, err := netip.ParseAddr(token)
+	if err != nil || !addr.Is6() || addr.Is4In6() || addr.Zone() != "" {
+		return false
+	}
+	bytes := addr.As16()
+	var host bool
+	for i, b := range bytes {
+		if i < 8 && b != 0 {
+			return false
+		}
+		if i >= 8 && b != 0 {
+			host = true
+		}
+	}
+	return host
 }
 
 // checkDerivationCycles refuses a value derived, directly or through others, from itself.
