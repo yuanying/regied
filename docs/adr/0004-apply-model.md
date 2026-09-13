@@ -150,6 +150,11 @@ the turn — a provider that is unreachable leaves that record failing under a b
 its own, and the turn finishes. Everything above about stopping at the first failure
 holds for every other phase.*
 
+*Extended by [ADR 0020](0020-link-settings-applied-by-udev.md): phase 3 also covers the
+`.link` files udev reads. A changed `.link` reloads udevd rather than networkd, and one that
+was written is applied to its link, if the link is on the host, with a synthetic `add` event
+that takes nothing down.*
+
 **The firewall goes first because nothing should be able to move a packet before the
 rules that filter it exist.** Enabling forwarding and then installing the filter leaves a
 window with the opposite property, and on a host being brought up for the first time that
