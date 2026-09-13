@@ -55,12 +55,24 @@ type Output struct {
 	Files    []File
 	Warnings []string
 
+	// LinkFiles is every .link file in Files and the link it is written for. networkd
+	// does not read a .link file; udev does, when the device appears, so the apply engine
+	// needs to know which link to ask udev to apply one to when the link is already up
+	// (ADR 0020).
+	LinkFiles []LinkFile
+
 	// Omitted is what was not rendered because a value it depends on was not supplied:
 	// a tunnel whose AFTR name has not been resolved, a link whose DUID file has not
 	// been read. What is left out is the whole artifact, never a smaller version of it,
 	// and the caller is told so that it can wait for the value and leave what an earlier
 	// rendering put on the host as it is (ADR 0016).
 	Omitted []Omission
+}
+
+// LinkFile is one .link file and the kernel name of the link it matches.
+type LinkFile struct {
+	Name   string
+	Ifname string
 }
 
 // Omission is one artifact left out for want of a value that exists only at apply time.
@@ -118,17 +130,18 @@ func Render(cfg *config.Config, rt Runtime) (*Output, error) {
 	if len(r.errors) > 0 {
 		return nil, &Error{Messages: r.errors}
 	}
-	return &Output{Files: r.files, Warnings: r.warnings, Omitted: r.omitted}, nil
+	return &Output{Files: r.files, Warnings: r.warnings, LinkFiles: r.linkFiles, Omitted: r.omitted}, nil
 }
 
 type renderer struct {
 	cfg *config.Config
 	rt  Runtime
 
-	files    []File
-	warnings []string
-	errors   []string
-	omitted  []Omission
+	files     []File
+	warnings  []string
+	errors    []string
+	omitted   []Omission
+	linkFiles []LinkFile
 
 	// interfaces is every Interface by resource name, for the references that name one.
 	interfaces map[string]config.Named[*v1alpha1.InterfaceSpec]

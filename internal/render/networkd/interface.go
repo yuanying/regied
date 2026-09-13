@@ -19,13 +19,17 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 	if spec.Bridge != nil {
 		r.renderBridgeNetDev(iface)
 	}
+	if spec.WakeOnLan != nil {
+		r.renderLinkFile(iface)
+	}
 
-	// A link whose DUID has not been read gets no file at all. Written without the
+	// A link whose DUID has not been read gets no .network at all. Written without the
 	// DUID, the prefix delegation would send networkd's own identifier, and the
 	// delegated prefix would change under a host that already holds one: that is not a
 	// smaller version of what was declared but a different configuration, so nothing of
-	// the file is written and the DUID is waited for (ADR 0004, ADR 0016). The bridge
-	// above depends on nothing that is read at apply time and is rendered as usual.
+	// the file is written and the DUID is waited for (ADR 0004, ADR 0016). The bridge and
+	// the .link above depend on nothing that is read at apply time and are rendered as
+	// usual.
 	if path, unread := r.unreadDUID(iface); unread {
 		r.omit(v1alpha1.KindInterface, iface.Name,
 			"the DUID file "+path+" to be read",
@@ -308,6 +312,29 @@ func (r *renderer) renderBridgeNetDev(iface config.Named[*v1alpha1.InterfaceSpec
 	bridge.setBool("VLANFiltering", false)
 
 	r.add(fileName(iface.Name, ".netdev"), u)
+}
+
+// renderLinkFile writes what udev sets on the NIC itself. It is a .link file because
+// networkd takes WakeOnLan= nowhere else, and udev, not networkd, applies it.
+//
+// It matches the declared name as OriginalName=. At the add event a NIC still has the name
+// the kernel gave it and this file does not match, so the distribution's default file names
+// the device; the rename sends a move event, the device then has the declared name, and this
+// file is the first match. Names are given on add only, so nothing the default gave is lost
+// (ADR 0020). The declaration holds no MAC, and there is no Name= match in a .link file.
+func (r *renderer) renderLinkFile(iface config.Named[*v1alpha1.InterfaceSpec]) {
+	u := newUnit(v1alpha1.KindInterface, iface.Name)
+	u.section("Match").set("OriginalName", iface.Spec.Ifname)
+
+	modes := make([]string, len(iface.Spec.WakeOnLan))
+	for i, mode := range iface.Spec.WakeOnLan {
+		modes[i] = string(mode)
+	}
+	u.section("Link").set("WakeOnLan", strings.Join(modes, " "))
+
+	name := fileName(iface.Name, ".link")
+	r.add(name, u)
+	r.linkFiles = append(r.linkFiles, LinkFile{Name: name, Ifname: iface.Spec.Ifname})
 }
 
 // renderBridgeMembers enslaves the members that are not Interface resources of their
