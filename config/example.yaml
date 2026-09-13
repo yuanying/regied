@@ -185,11 +185,12 @@ spec:
     # openFirewall defaults to true, so each of these also gets the accept
     # that lets the translated traffic through the wan-to-lan policy below.
     #
-    # Every target is in the range the policy above sends out this uplink, and
-    # that is not a coincidence. The reply to a connection that arrived here is
-    # routed by the source address of the host that answers, not by the uplink
-    # it arrived on, so a target that policy routing sends out the tunnel would
-    # be reached and would never answer.
+    # The targets happen to be in the range the policy above sends out this
+    # uplink, but nothing depends on that. A connection that arrives here is
+    # marked with the uplink it arrived on and its reply leaves by the same
+    # uplink, whatever the policies say about the target's own traffic. A
+    # target below 192.168.10.128 would be reached and would answer just the
+    # same; only what it starts itself would leave by the tunnel.
     - kind: PortForward
       metadata: {name: https}
       spec:

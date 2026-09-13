@@ -128,3 +128,8 @@ address.
   name one uplink, and nothing says which mark such a connection should carry. That is a
   decision about `EgressRoutePolicy`, not about rendering, so it is recorded here and
   left to the schema. `config/example.yaml` is one of the configurations affected.
+  *(Amended by [ADR 0020](0020-port-forward-reply-on-arrival-uplink.md), which is built:
+  the mark is per uplink and family, derived for every uplink a `PortForward` is
+  published on, saved on the connection when it arrives and restored on the reply at the
+  head of `prerouting_mark`. The reply leaves by the uplink it arrived on whatever the
+  policies say about the target's address.)*
