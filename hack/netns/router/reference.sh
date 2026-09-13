@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # The reference implementation of the device under test. Out of hand-written ip / nft
-# it assembles, inside the router netns, a router that satisfies the seven checks the
-# testbed makes.
+# it assembles, inside the router netns, a router that satisfies the checks the testbed
+# makes.
 #
 # This is not part of the testbed; it is the replaceable side. Point
 # REGIED_NETNS_ROUTER_SETUP at any script that honours the same contract (the handover
@@ -119,6 +119,12 @@ setup_routing() {
 # The address handed out over PPPoE can differ on every connection, so it is read here
 # and baked into the rules. Application replaces whole tables, so running this twice
 # leaves the same state.
+#
+# A connection that arrived over PPPoE has the PPPoE mark saved on the connection, and a
+# reply from the LAN restores it before the source ranges are looked at. That is what
+# puts the reply to a forwarded connection back on PPPoE when the target's own traffic
+# leaves by DS-Lite. The marking here runs before translation, so the save is not
+# limited to forwarded connections; the restore is limited to what comes in from the LAN.
 setup_nftables() {
   local global_ip
   global_ip="$(r ip -4 -oneline addr show dev "${PPP_IF}" | awk '{print $4}' | cut -d/ -f1)"
@@ -131,6 +137,8 @@ delete table ip pbr
 table ip pbr {
 	chain prerouting {
 		type filter hook prerouting priority mangle; policy accept;
+		iifname "${ROUTER_LAN_IF}" ct direction reply ct mark != 0 meta mark set ct mark return
+		iifname "${PPP_IF}" ct state new ct mark set ${MARK_PPPOE}
 		iifname "${ROUTER_LAN_IF}" ip saddr ${PBR_PPPOE_RANGE_START}-${PBR_PPPOE_RANGE_END} meta mark set ${MARK_PPPOE} return
 		iifname "${ROUTER_LAN_IF}" ip saddr ${LAN_CIDR} meta mark set ${MARK_DSLITE}
 	}
@@ -143,11 +151,14 @@ table ip nat {
 		type nat hook prerouting priority dstnat; policy accept;
 		iifname "${PPP_IF}" tcp dport ${FORWARD_WAN_PORT} dnat to ${CLIENT_SERVER_IP}:${FORWARD_LAN_PORT}
 		iifname "${ROUTER_LAN_IF}" ip daddr ${global_ip} tcp dport ${FORWARD_WAN_PORT} dnat to ${CLIENT_SERVER_IP}:${FORWARD_LAN_PORT}
+		iifname "${PPP_IF}" tcp dport ${FORWARD_DSLITE_HOST_WAN_PORT} dnat to ${CLIENT_DSLITE_IP}:${FORWARD_DSLITE_HOST_LAN_PORT}
+		iifname "${ROUTER_LAN_IF}" ip daddr ${global_ip} tcp dport ${FORWARD_DSLITE_HOST_WAN_PORT} dnat to ${CLIENT_DSLITE_IP}:${FORWARD_DSLITE_HOST_LAN_PORT}
 	}
 
 	chain postrouting {
 		type nat hook postrouting priority srcnat; policy accept;
 		oifname "${ROUTER_LAN_IF}" ip saddr ${LAN_CIDR} ip daddr ${CLIENT_SERVER_IP} tcp dport ${FORWARD_LAN_PORT} snat to ${ROUTER_LAN_IP}
+		oifname "${ROUTER_LAN_IF}" ip saddr ${LAN_CIDR} ip daddr ${CLIENT_DSLITE_IP} tcp dport ${FORWARD_DSLITE_HOST_LAN_PORT} snat to ${ROUTER_LAN_IP}
 		oifname "${PPP_IF}" masquerade
 	}
 }

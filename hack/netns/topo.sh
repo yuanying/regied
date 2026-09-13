@@ -130,8 +130,27 @@ setup_aftr() {
   # the destination is a private LAN address again.
   nse "${NS_WAN}" ip route add "${LAN_CIDR}" dev aftr0
 
+  # A real AFTR is a separate box with a connection table of its own. Here it shares
+  # this namespace, and its conntrack, with the PPPoE server. Without the zone below, a
+  # reply that arrived over PPPoE and was sent back through the tunnel by mistake would
+  # be matched to the connection the PPPoE side had already seen, skip the NAT44, and
+  # reach the client untranslated -- and a wrong return path would look right from
+  # outside. So everything the tunnel carries is tracked in a zone of its own, and a
+  # packet the AFTR cannot attribute to a connection of its own is dropped, which is
+  # what a separate box would do.
   nse "${NS_WAN}" nft -f - <<NFT
 table ip aftr {
+	chain zone {
+		type filter hook prerouting priority raw; policy accept;
+		iifname "aftr0" ct zone set 1
+		iifname "${WAN_UPLINK_IF}" ip daddr ${AFTR_NAT_IP} ct zone set 1
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		iifname "aftr0" ct state invalid drop
+	}
+
 	chain postrouting {
 		type nat hook postrouting priority srcnat; policy accept;
 		iifname "aftr0" oifname "${WAN_UPLINK_IF}" snat to ${AFTR_NAT_IP}
@@ -204,6 +223,13 @@ start_services() {
   nse "${NS_CLIENT}" socat \
     "TCP4-LISTEN:${FORWARD_LAN_PORT},bind=${CLIENT_SERVER_IP},reuseaddr,fork" \
     "SYSTEM:echo \"${SSH_STUB_BANNER} \$SOCAT_PEERADDR\"" </dev/null >>"${RUNTIME_DIR}/ssh-stub.log" 2>&1 &
+  record_pid "$!"
+
+  # The same again on the host policy routing sends out DS-Lite. A forward to it is
+  # reachable only if the reply goes back by the uplink the connection arrived on.
+  nse "${NS_CLIENT}" socat \
+    "TCP4-LISTEN:${FORWARD_DSLITE_HOST_LAN_PORT},bind=${CLIENT_DSLITE_IP},reuseaddr,fork" \
+    "SYSTEM:echo \"${DSLITE_HOST_STUB_BANNER} \$SOCAT_PEERADDR\"" </dev/null >>"${RUNTIME_DIR}/ssh-stub.log" 2>&1 &
   record_pid "$!"
 }
 
