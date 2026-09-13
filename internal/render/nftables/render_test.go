@@ -691,3 +691,82 @@ func TestUnusableName(t *testing.T) {
 		t.Error("a zone whose name has a space in it rendered without complaint")
 	}
 }
+
+// A port forward's reply leaves by the uplink it arrived on. The head of the mark chain
+// restores a connection's mark onto its reply packets and returns, so that no policy
+// behind it can send the reply somewhere else; then, per uplink and family, the first
+// packet of a connection a forward readdressed has the uplink's mark saved on the
+// connection (ADR 0020).
+func TestPortForwardRepliesAreMarkedForTheUplink(t *testing.T) {
+	ruleset := render(t, links+`    - kind: EgressRoutePolicy
+      metadata: {name: rest-via-pppoe}
+      spec:
+        family: ipv4
+        priority: 20
+        egressRef: pppoe0
+        sourceRanges: [192.168.10.0/24]
+        excludeDestinations: [192.168.10.0/24]
+    - kind: PortForward
+      metadata: {name: https}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 443
+        target: {address: 192.168.10.20}
+    - kind: PortForward
+      metadata: {name: ssh}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 10022
+        target: {address: 192.168.10.30, port: 22}
+    - kind: PortForward
+      metadata: {name: https-v6}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 443
+        target: {address: "2001:db8:0:1::20"}
+`)
+
+	// One restore rule, one save rule per uplink and family, and only then the policies.
+	// The two IPv4 forwards on pppoe0 share one save rule: the mark says where the
+	// connection arrived, not which forward it hit.
+	assertRules(t, rulesOf(t, ruleset, "prerouting_mark"), []string{
+		`ct direction reply ct mark != 0 meta mark set ct mark return comment "PortForward: a reply leaves by the uplink the connection arrived on"`,
+		`iifname "pppoe0" meta nfproto ipv4 ct state new ct status dnat ct mark set 0x101 comment "PortForward: replies leave by pppoe0"`,
+		`iifname "pppoe0" meta nfproto ipv6 ct state new ct status dnat ct mark set 0x102 comment "PortForward: replies leave by pppoe0"`,
+		`ip saddr 192.168.10.0/24 ip daddr != 192.168.10.0/24 meta mark set 0x100 return comment "EgressRoutePolicy/rest-via-pppoe"`,
+	})
+}
+
+// The chain is there for a forward whether or not any policy is declared: a host with one
+// uplink gets the same rules, and they are harmless there.
+func TestPortForwardMarksWithoutAPolicy(t *testing.T) {
+	ruleset := render(t, links+`    - kind: PortForward
+      metadata: {name: https}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: 443
+        target: {address: 192.168.10.20}
+`)
+
+	assertRules(t, rulesOf(t, ruleset, "prerouting_mark"), []string{
+		`ct direction reply ct mark != 0 meta mark set ct mark return comment "PortForward: a reply leaves by the uplink the connection arrived on"`,
+		`iifname "pppoe0" meta nfproto ipv4 ct state new ct status dnat ct mark set 0x100 comment "PortForward: replies leave by pppoe0"`,
+	})
+	for _, c := range ruleset.Chains {
+		if c.Name == "prerouting_mark" && (c.Base.Hook != "prerouting" || c.Base.Priority != "filter") {
+			t.Errorf("the mark chain is not after nat prerouting: %+v", c.Base)
+		}
+	}
+}
+
+// With neither a policy nor a forward there is nothing to mark, and no chain.
+func TestNoMarkChainWithoutAPolicyOrAForward(t *testing.T) {
+	ruleset := render(t, links)
+	if hasChain(ruleset, "prerouting_mark") {
+		t.Error("a mark chain was rendered with nothing to put in it")
+	}
+}
