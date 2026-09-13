@@ -1023,7 +1023,7 @@ func (e *Engine) steps(ctx context.Context, plan *Plan, rendered *rendering) []S
 		})
 	}
 
-	if changedIn(plan, e.opts.NetworkdDir+"/") {
+	if changedWhere(plan, func(path string) bool { return e.readByNetworkd(path) }) {
 		// Reload, never restart: restarting networkd takes the links down, and the
 		// PPPoE link's file is only safe to reload because it says KeepConfiguration
 		// (ADR 0012).
@@ -1035,6 +1035,7 @@ func (e *Engine) steps(ctx context.Context, plan *Plan, rendered *rendering) []S
 			Command: reload,
 		})
 	}
+	steps = append(steps, e.udevSteps(plan, rendered)...)
 
 	// A unit that was written is one systemd has to be told about before anything is
 	// started from it. A unit that goes away is told about afterwards, because it is
@@ -1060,6 +1061,67 @@ func (e *Engine) steps(ctx context.Context, plan *Plan, rendered *rendering) []S
 		})
 	}
 	return steps
+}
+
+// linkFileExtension is the files in networkd's directory that udev reads and networkd
+// does not (ADR 0020).
+const linkFileExtension = ".link"
+
+// readByNetworkd is whether a file regied owns is one networkd reads: a .network or a
+// .netdev in its directory, and not a .link, which is udev's.
+func (e *Engine) readByNetworkd(file string) bool {
+	return path.Dir(file) == e.opts.NetworkdDir && path.Ext(file) != linkFileExtension
+}
+
+func (e *Engine) readByUdev(file string) bool {
+	return path.Dir(file) == e.opts.NetworkdDir && path.Ext(file) == linkFileExtension
+}
+
+// udevSteps is what makes a .link file take effect, in the networkd phase after networkd
+// has been reloaded (ADR 0020).
+//
+// udevd is told to read the files whenever one was written or reclaimed: its own check for
+// changed files runs at most every few seconds, and an event handled right after a write
+// could otherwise see the old ones. A file that was written is then applied to its link
+// with a synthetic add event, which sets what the file says on the NIC, renames nothing, and
+// leaves networkd's configuration of the link as it is. A reclaimed file is applied to
+// nothing: taking it away turns no setting off, and there is nothing to apply.
+func (e *Engine) udevSteps(plan *Plan, rendered *rendering) []Step {
+	if !changedWhere(plan, e.readByUdev) {
+		return nil
+	}
+	steps := []Step{{
+		Phase:   PhaseNetworkd,
+		Kind:    StepCommand,
+		Reason:  "a .link file changed",
+		Command: Command{Name: "udevadm", Args: []string{"control", "--reload"}},
+	}}
+	for _, link := range rendered.linkFiles {
+		if !wasWritten(changeFor(plan, link.path)) {
+			continue
+		}
+		// There is no device to give the event to, and asking for one fails. udev applies
+		// the file when the link appears, which is the declaration holding as far as this
+		// host can hold it, so it is a note and not something the turn waits for.
+		if _, err := e.host.Links.Addresses(link.ifname); errors.Is(err, ErrLinkNotFound) {
+			plan.Notes = append(plan.Notes, fmt.Sprintf(
+				"%s is not on this host, so %s was not applied to it; udev applies it when the link appears",
+				link.ifname, link.path))
+			continue
+		}
+		steps = append(steps, Step{
+			Phase:   PhaseNetworkd,
+			Kind:    StepCommand,
+			Reason:  "the .link file for " + link.ifname + " was written",
+			Command: udevTriggerCommand(link.ifname),
+		})
+	}
+	return steps
+}
+
+// udevTriggerCommand gives a link a synthetic add event and waits for udev to finish it.
+func udevTriggerCommand(ifname string) Command {
+	return Command{Name: "udevadm", Args: []string{"trigger", "--settle", "--action=add", "/sys/class/net/" + ifname}}
 }
 
 func firewallReason(change FirewallChange) string {
@@ -1100,9 +1162,11 @@ func wasWritten(change FileChange) bool {
 	return change.Kind == ChangeCreate || change.Kind == ChangeUpdate
 }
 
-func changedIn(plan *Plan, prefix string) bool {
+// changedWhere is whether any file the plan would write or reclaim is one the question
+// picks out.
+func changedWhere(plan *Plan, picks func(path string) bool) bool {
 	for _, change := range plan.Files {
-		if strings.HasPrefix(change.Path, prefix) && change.Kind != ChangeNone {
+		if change.Kind != ChangeNone && picks(change.Path) {
 			return true
 		}
 	}
