@@ -35,14 +35,15 @@ carries everything that is a property of that link — its addresses, its MTU, t
 routes that leave by it, whether it runs a prefix-delegation client, and whether it
 advertises to the segment below it.
 
-Backend: a `.network` file, and for a bridge a `.netdev` file, under regied's prefix in
-`/etc/systemd/network/`.
+Backend: a `.network` file, for a bridge a `.netdev` file, and for a link with
+`wakeOnLan` a `.link` file, under regied's prefix in `/etc/systemd/network/`.
 
 | Field | Required | Value |
 |---|---|---|
 | `ifname` | yes | The kernel interface name. For a bridge, the name to create |
 | `bridge.members` | no | Kernel interface names to enslave. `bridge` present, even empty, means this is a bridge |
 | `mtu` | no | Bytes. Defaults to the kernel's |
+| `wakeOnLan` | no | The NIC's Wake-on-LAN mode. See below |
 | `addresses` | no | List of addresses. See below |
 | `routes` | no | List of static routes. See below |
 | `dhcpv6` | no | DHCPv6 client settings. See below |
@@ -79,6 +80,38 @@ everything that hangs off them, with no client plugged in, and keeps them when t
 one is unplugged. networkd's default of waiting for carrier is right for a physical port
 and wrong for a bridge, where no carrier means no client yet
 ([ADR 0018](../adr/0018-loopback-forwarder-is-the-host-resolver.md)).
+
+### `wakeOnLan`
+
+The mode the NIC wakes the host in: one of the values below, or a list of them.
+
+| Value | Wakes on |
+|---|---|
+| `off` | Nothing. Wake-on-LAN is turned off |
+| `phy` | PHY activity |
+| `unicast` | Unicast frames |
+| `multicast` | Multicast frames |
+| `broadcast` | Broadcast frames |
+| `arp` | ARP |
+| `magic` | The magic packet |
+| `secureon` | The magic packet with the SecureOn password |
+
+**Omitted means regied leaves the NIC as it is.** It is not the same as `off`, and it does not
+turn off what another tool, or the firmware, set. A list holds each value at most once, and
+`off` stands alone: turning Wake-on-LAN off and waking on something are not one mode. An empty
+list is an error; to turn it off, write `off`. There is no field for the SecureOn password, so
+`secureon` leaves the NIC with whatever password it already holds, and is warned about.
+
+It is a property of a physical link that stands on its own. A bridge has no NIC to wake, and
+setting it there is a validation error. So is setting it on an Interface that is a member of a
+bridge: that would be the first property of a member that is not about how it joins the
+bridge, and no configuration has needed one.
+
+The value goes in a `.link` file whose `[Match]` names `ifname`, and udev, not networkd,
+applies it — when the device appears at boot, and on an apply to a link that is already up.
+Removing the field takes the file away but does not turn Wake-on-LAN off: the NIC keeps its
+mode until the device is added again, typically at the next boot. What the file matches on and
+why is in [ADR 0020](../adr/0020-link-settings-applied-by-udev.md).
 
 ### `addresses[]`
 
