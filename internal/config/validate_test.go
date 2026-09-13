@@ -105,6 +105,27 @@ func TestValidateAcceptsAnAddressFromTheRouterAdvertisement(t *testing.T) {
 	assertProblems(t, problems, nil)
 }
 
+// A member of a bridge is the physical NIC under it, so Wake-on-LAN is declared there. It is
+// the one property a member may carry beside how it joins the bridge; addresses stay the
+// bridge's.
+func TestValidateAcceptsWakeOnLanOnAMemberOfABridge(t *testing.T) {
+	cfg, problems := check(t, `    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        bridge: {members: [eth1]}
+        addresses: [192.168.10.1/24]
+    - kind: Interface
+      metadata: {name: lan-port}
+      spec:
+        ifname: eth1
+        wakeOnLan: magic
+`, nil)
+	if cfg == nil {
+		t.Fatalf("rejected wakeOnLan on a member of a bridge\n%s", problems)
+	}
+}
+
 // Wake-on-LAN is a property of a physical link that stands on its own, written as one
 // mode or as several. off is the one mode that stands alone.
 func TestValidateAcceptsWakeOnLan(t *testing.T) {
@@ -594,21 +615,6 @@ func TestValidateRejectsWhatTheSpecSaysItRejects(t *testing.T) {
         wakeOnLan: magic
 `,
 			want: []string{"spec.wakeOnLan: a bridge has no NIC to wake"},
-		},
-		{
-			name: "Wake-on-LAN on a member of a bridge",
-			resources: `    - kind: Interface
-      metadata: {name: lan}
-      spec:
-        ifname: br-lan
-        bridge: {members: [eth1]}
-    - kind: Interface
-      metadata: {name: lan-port}
-      spec:
-        ifname: eth1
-        wakeOnLan: magic
-`,
-			want: []string{`spec.wakeOnLan: "eth1" is a member of the bridge "br-lan"`},
 		},
 		{
 			name: "off listed with a mode that wakes",

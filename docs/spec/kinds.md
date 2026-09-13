@@ -52,7 +52,7 @@ Backend: a `.network` file, for a bridge a `.netdev` file, and for a link with
 `bridge.members` holds kernel interface names, not resource names. A member does not
 need an `Interface` resource of its own — regied writes the file that enslaves it.
 Declare a member as an `Interface` only to give it a property that is its own, such as an
-MTU, and then it must not carry addresses. The addresses belong to the bridge, and so
+MTU or `wakeOnLan`, and then it must not carry addresses. The addresses belong to the bridge, and so
 does the name a `FirewallZone` names.
 
 A bridge may name no member at all: `bridge: {}`, or `bridge.members` left empty. That is
@@ -102,10 +102,11 @@ turn off what another tool, or the firmware, set. A list holds each value at mos
 list is an error; to turn it off, write `off`. There is no field for the SecureOn password, so
 `secureon` leaves the NIC with whatever password it already holds, and is warned about.
 
-It is a property of a physical link that stands on its own. A bridge has no NIC to wake, and
-setting it there is a validation error. So is setting it on an Interface that is a member of a
-bridge: that would be the first property of a member that is not about how it joins the
-bridge, and no configuration has needed one.
+It is a property of a physical link. A bridge has no NIC to wake, and setting it there is a
+validation error. When the link is a bridge over a NIC, the setting belongs to the member:
+declare the member as an `Interface` of its own, with `ifname` and `wakeOnLan` and no
+addresses. regied writes the member's `.link` file beside the `.network` that enslaves it, and
+being enslaved does not change how udev applies it.
 
 The value goes in a `.link` file whose `[Match]` names `ifname`, and udev, not networkd,
 applies it — when the device appears at boot, and on an apply to a link that is already up.
