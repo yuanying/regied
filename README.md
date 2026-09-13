@@ -453,7 +453,7 @@ Tests are split by the privileges they need.
 
 The integration tests build a pseudo-WAN out of network namespaces — a PPPoE server,
 a DS-Lite AFTR, and reachability servers — run a router inside it, and check the
-following seven things from the outside.
+following nine things from the outside.
 
 1. Outbound traffic gets through over PPPoE
 2. Outbound traffic gets through over DS-Lite
@@ -462,6 +462,9 @@ following seven things from the outside.
 5. Hairpin NAT reaches it from inside, against the router's own global address
 6. The firewall drops traffic it does not allow
 7. NAT mapping is endpoint-independent
+8. A port forward to a host whose own traffic leaves by the other uplink still answers
+   from outside: the reply goes back by the uplink the connection arrived on
+9. The same forward hairpins from inside
 
 They need root and commands that a development environment normally lacks, so they
 sit behind the `netns` build tag; `go test ./...` does not pick them up. Use
