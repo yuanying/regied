@@ -211,8 +211,7 @@ func (v *validator) checkInterface(resource *v1alpha1.Resource, spec *v1alpha1.I
 }
 
 // checkWakeOnLan refuses what networkd would not read as one mode, and a link with no NIC
-// to wake. Whether a member of a bridge declares it is a question across resources, and
-// checkBridgeMembers asks it.
+// to wake. A member of a bridge is a NIC, and declares it like any other.
 func (v *validator) checkWakeOnLan(resource *v1alpha1.Resource, spec *v1alpha1.InterfaceSpec) {
 	const field = "spec.wakeOnLan"
 	if len(spec.WakeOnLan) == 0 {
@@ -566,8 +565,9 @@ func (v *validator) checkLinkName(resource *v1alpha1.Resource, field, name, beca
 // carries an address. The addresses belong to the bridge, and so does the name a
 // FirewallZone names.
 //
-// It refuses a port that sets Wake-on-LAN as well. That would be the first property of a
-// member that is not about how it joins the bridge, and no configuration has needed one.
+// A port may set Wake-on-LAN. The port is the physical NIC, and the bridge above it has
+// none, so a host whose LAN is a bridge declares it nowhere else. It goes in the port's
+// .link file, which udev applies to the device whether or not it is enslaved (ADR 0020).
 func (v *validator) checkBridgeMembers() {
 	memberOf := make(map[string]*v1alpha1.Resource)
 	for _, resource := range v.byKind[v1alpha1.KindInterface] {
@@ -591,9 +591,6 @@ func (v *validator) checkBridgeMembers() {
 		bridgeSpec := bridge.Spec.(*v1alpha1.InterfaceSpec)
 		if len(spec.Addresses) > 0 {
 			v.errorf(resource, "spec.addresses", "%q is a member of the bridge %q and cannot carry addresses of its own", spec.Ifname, bridgeSpec.Ifname)
-		}
-		if spec.WakeOnLan != nil {
-			v.errorf(resource, "spec.wakeOnLan", "%q is a member of the bridge %q, and a member takes no Wake-on-LAN setting of its own", spec.Ifname, bridgeSpec.Ifname)
 		}
 	}
 }

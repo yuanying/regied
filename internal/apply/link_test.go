@@ -60,6 +60,40 @@ func TestALinkFileIsAppliedToTheLinkThatIsUp(t *testing.T) {
 	}
 }
 
+// A member of a bridge is the NIC that wakes the host, and its .link file is applied to it
+// the same way. Being enslaved changes nothing about how udev reaches the device.
+func TestALinkFileIsAppliedToAMemberOfABridge(t *testing.T) {
+	engine, files, runner, host := planFixture(t)
+	linkIsUp(host, "br0")
+	linkIsUp(host, "eno1")
+
+	mustApply(t, engine, load(t, `  resources:
+    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br0
+        bridge: {members: [eno1]}
+        addresses: [192.168.10.153/24]
+    - kind: Interface
+      metadata: {name: lan-port}
+      spec:
+        ifname: eno1
+        wakeOnLan: magic
+`))
+
+	const memberLinkFile = "/etc/systemd/network/50-regied-lan-port.link"
+	if content, ok := files.content(memberLinkFile); !ok || !strings.Contains(content, "WakeOnLan=magic") {
+		t.Fatalf("%s was not written with the mode:\n%s", memberLinkFile, content)
+	}
+	commands := runner.commands()
+	if !slices.Contains(commands, udevReload) || !slices.Contains(commands, udevTriggerEno) {
+		t.Errorf("udev was not asked to apply the member's .link file:\n%s", strings.Join(commands, "\n"))
+	}
+	if slices.Contains(commands, "udevadm trigger --settle --action=add /sys/class/net/br0") {
+		t.Errorf("udev was asked to apply a .link file to the bridge, which has none:\n%s", strings.Join(commands, "\n"))
+	}
+}
+
 // An apply that changes nothing runs nothing, and udev is no exception (ADR 0004).
 func TestAnUnchangedLinkFileAsksUdevForNothing(t *testing.T) {
 	engine, _, runner, host := planFixture(t)
