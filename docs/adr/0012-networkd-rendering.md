@@ -26,6 +26,10 @@ so the links regied declares are configured the way regied says; behind the 10- 
 hand-written overrides and other renderers conventionally use, so an operator can put a
 file in front of one of ours without editing it.
 
+*Extended by [ADR 0020](0020-link-settings-applied-by-udev.md): an Interface that declares a
+setting of its NIC also gets a `.link` file under the same prefix. udev reads it, not networkd,
+and that record says what it matches on and how an apply makes it take effect.*
+
 **Rendering is a pure function of the configuration and of the values that exist only at
 apply time.** Those values — the address a provider's AFTR name resolved to, and the
 contents of a DUID file — are arguments, not something the renderer goes and fetches.

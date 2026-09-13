@@ -56,12 +56,22 @@ type rendering struct {
 	// wrote there is left alone: not compared, not rewritten, not reclaimed.
 	withheld []string
 
+	// linkFiles is every .link file among the artifacts, and the link it is for. udev
+	// applies one to a link that is already up only when it is asked to (ADR 0020).
+	linkFiles []udevLink
+
 	// ruleset is the text to hand to nft.
 	ruleset string
 	// sessions is every PPPoESession's name, in the order the document lists them.
 	sessions []string
 	// dnsmasq is whether this host needs one at all.
 	dnsmasq bool
+}
+
+// udevLink is one .link file and the kernel name of the link it matches.
+type udevLink struct {
+	path   string
+	ifname string
 }
 
 // render turns a validated configuration and the values read from the host into every
@@ -89,6 +99,9 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 			DirMode: 0o755,
 			Content: file.Content,
 		})
+	}
+	for _, file := range links.LinkFiles {
+		out.linkFiles = append(out.linkFiles, udevLink{path: e.opts.NetworkdDir + "/" + file.Name, ifname: file.Ifname})
 	}
 
 	out.ruleset, err = renderRuleset(cfg)

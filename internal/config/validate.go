@@ -204,6 +204,44 @@ func (v *validator) checkInterface(resource *v1alpha1.Resource, spec *v1alpha1.I
 	if spec.IPv6 != nil && spec.IPv6.Advertise != nil {
 		v.required(resource, "spec.ipv6.advertise.mode", spec.IPv6.Advertise.Mode != "")
 	}
+
+	if spec.WakeOnLan != nil {
+		v.checkWakeOnLan(resource, spec)
+	}
+}
+
+// checkWakeOnLan refuses what networkd would not read as one mode, and a link with no NIC
+// to wake. Whether a member of a bridge declares it is a question across resources, and
+// checkBridgeMembers asks it.
+func (v *validator) checkWakeOnLan(resource *v1alpha1.Resource, spec *v1alpha1.InterfaceSpec) {
+	const field = "spec.wakeOnLan"
+	if len(spec.WakeOnLan) == 0 {
+		v.errorf(resource, field, `names no mode; write "off" to turn Wake-on-LAN off`)
+		return
+	}
+	if spec.Bridge != nil {
+		v.errorf(resource, field, "a bridge has no NIC to wake")
+	}
+
+	seen := make(map[v1alpha1.WakeOnLanMode]bool, len(spec.WakeOnLan))
+	for _, mode := range spec.WakeOnLan {
+		if seen[mode] {
+			v.errorf(resource, field, "%q is listed twice", mode)
+			continue
+		}
+		seen[mode] = true
+	}
+	// networkd reads off only as the whole value. Written beside another word it is an
+	// unknown word, and the line is ignored with a warning in udev's log, not here.
+	if seen[v1alpha1.WakeOnLanOff] && len(seen) > 1 {
+		v.errorf(resource, field, "%q turns Wake-on-LAN off and cannot be listed with other modes", v1alpha1.WakeOnLanOff)
+	}
+	// The password is what SecureOn is for, and it would be a secret the declaration may
+	// only name a file for (ADR 0003). Until a configuration needs one, the NIC keeps
+	// whatever it holds, which is worth hearing before the apply.
+	if seen[v1alpha1.WakeOnLanSecureOn] {
+		v.warnf(resource, field, "secureon is set with no password; the NIC keeps whatever SecureOn password it already holds, and there is no field for one")
+	}
 }
 
 func (v *validator) checkPPPoESession(resource *v1alpha1.Resource, spec *v1alpha1.PPPoESessionSpec) {
@@ -527,6 +565,9 @@ func (v *validator) checkLinkName(resource *v1alpha1.Resource, field, name, beca
 // checkBridgeMembers refuses an Interface that describes a port of a bridge and also
 // carries an address. The addresses belong to the bridge, and so does the name a
 // FirewallZone names.
+//
+// It refuses a port that sets Wake-on-LAN as well. That would be the first property of a
+// member that is not about how it joins the bridge, and no configuration has needed one.
 func (v *validator) checkBridgeMembers() {
 	memberOf := make(map[string]*v1alpha1.Resource)
 	for _, resource := range v.byKind[v1alpha1.KindInterface] {
@@ -540,7 +581,7 @@ func (v *validator) checkBridgeMembers() {
 	}
 	for _, resource := range v.byKind[v1alpha1.KindInterface] {
 		spec, ok := resource.Spec.(*v1alpha1.InterfaceSpec)
-		if !ok || len(spec.Addresses) == 0 {
+		if !ok {
 			continue
 		}
 		bridge, isMember := memberOf[spec.Ifname]
@@ -548,7 +589,12 @@ func (v *validator) checkBridgeMembers() {
 			continue
 		}
 		bridgeSpec := bridge.Spec.(*v1alpha1.InterfaceSpec)
-		v.errorf(resource, "spec.addresses", "%q is a member of the bridge %q and cannot carry addresses of its own", spec.Ifname, bridgeSpec.Ifname)
+		if len(spec.Addresses) > 0 {
+			v.errorf(resource, "spec.addresses", "%q is a member of the bridge %q and cannot carry addresses of its own", spec.Ifname, bridgeSpec.Ifname)
+		}
+		if spec.WakeOnLan != nil {
+			v.errorf(resource, "spec.wakeOnLan", "%q is a member of the bridge %q, and a member takes no Wake-on-LAN setting of its own", spec.Ifname, bridgeSpec.Ifname)
+		}
 	}
 }
 
