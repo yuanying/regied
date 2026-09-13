@@ -430,7 +430,7 @@ DUID ファイル。たいてい勝手に解消する。`failing` は失敗し�
 | netns 統合テスト（regied を被試験機に） | `make test-netns-regied REGIED_NETNS_MGMT_IF=<管理 IF 名>` | systemd のあるホスト（Debian 13 の VM など）の root。本物の systemd-networkd / pppd / nftables |
 
 netns 統合テストは network namespace で擬似 WAN（PPPoE サーバー、DS-Lite の
-AFTR、到達確認用のサーバー）を組み、その中でルーターを動かして次の 7 点を
+AFTR、到達確認用のサーバー）を組み、その中でルーターを動かして次の 9 点を
 外側から確かめる。
 
 1. PPPoE 経由で外向き疎通ができる
@@ -440,6 +440,9 @@ AFTR、到達確認用のサーバー）を組み、その中でルーターを�
 5. hairpin NAT が内から自分のグローバル宛に通る
 6. ファイアウォールが許可していない通信を落とす
 7. NAT のマッピングが endpoint-independent である
+8. 自身の通信がもう一方の回線から出るホストへのポートフォワードが、外から見て答える。
+   戻りは接続が届いた回線から出ていく
+9. 同じフォワードが内側から hairpin で通る
 
 root と、開発環境には入っていない外部コマンドが要るので、build tag `netns` の
 後ろに分離してある。`go test ./...` はこれを拾わない。通常は

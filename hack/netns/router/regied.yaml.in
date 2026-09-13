@@ -80,6 +80,17 @@ spec:
         target:
           address: ${CLIENT_SERVER_IP}
           port: ${FORWARD_LAN_PORT}
+    # The target is outside the range pppoe-range sends out PPPoE, so its own traffic
+    # leaves by DS-Lite. The reply to this forward still has to leave by PPPoE.
+    - kind: PortForward
+      metadata: {name: ssh-stub-dslite-host}
+      spec:
+        egressRef: pppoe0
+        protocol: tcp
+        port: ${FORWARD_DSLITE_HOST_WAN_PORT}
+        target:
+          address: ${CLIENT_DSLITE_IP}
+          port: ${FORWARD_DSLITE_HOST_LAN_PORT}
     - kind: FirewallZone
       metadata: {name: outside}
       spec:

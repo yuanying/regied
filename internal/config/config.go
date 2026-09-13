@@ -1,6 +1,8 @@
 package config
 
 import (
+	"slices"
+
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 )
 
@@ -15,6 +17,7 @@ type Config struct {
 	byKind   map[v1alpha1.ResourceKind][]*v1alpha1.Resource
 	index    map[v1alpha1.ResourceKind]map[string]*v1alpha1.Resource
 	routing  map[string]PolicyRouting
+	returns  []ForwardReturn
 	warnings Problems
 }
 
@@ -40,6 +43,24 @@ func (c *Config) Lookup(kind v1alpha1.ResourceKind, name string) *v1alpha1.Resou
 func (c *Config) PolicyRouting(name string) (PolicyRouting, bool) {
 	routing, ok := c.routing[name]
 	return routing, ok
+}
+
+// ForwardReturn is the routing table and firewall mark that put a port forward's reply
+// back on one uplink, in one family. There is one only for an uplink and family some
+// PortForward is published on.
+func (c *Config) ForwardReturn(uplink string, family v1alpha1.Family) (ForwardReturn, bool) {
+	for _, r := range c.returns {
+		if r.Uplink == uplink && r.Family == family {
+			return r, true
+		}
+	}
+	return ForwardReturn{}, false
+}
+
+// ForwardReturns is every uplink's return routing, in the order it was allocated in: by
+// family, then by the uplink's name.
+func (c *Config) ForwardReturns() []ForwardReturn {
+	return slices.Clone(c.returns)
 }
 
 // Warnings is what validation said out loud without refusing the configuration.

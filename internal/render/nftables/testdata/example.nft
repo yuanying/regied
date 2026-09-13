@@ -88,12 +88,16 @@ table inet regied {
 		log prefix "regied wan-to-self default " counter drop comment "wan-to-self default"
 	}
 
-	# the matching half of policy routing: which uplink a class of traffic leaves by.
+	# which uplink a packet leaves by. First the reply to a port forward, which goes
+	# back by the uplink the connection arrived on: the mark saved on the connection
+	# is restored ahead of every policy. Then the matching half of policy routing.
 	# It runs after nat prerouting, so a packet a port forward readdressed to a host
 	# inside already carries that address when the exclusions below are considered,
 	# and stays local. Nothing here has to know the uplink's global address
 	chain prerouting_mark {
 		type filter hook prerouting priority filter; policy accept;
+		ct direction reply ct mark != 0 meta mark set ct mark return comment "PortForward: a reply leaves by the uplink the connection arrived on"
+		iifname "pppoe0" meta nfproto ipv4 ct state new ct status dnat ct mark set 0x102 comment "PortForward: replies leave by pppoe0"
 		ip saddr 192.168.10.128-192.168.10.255 ip daddr != { 172.16.0.0/16, 192.168.10.0/24 } meta mark set 0x100 return comment "EgressRoutePolicy/upper-half-via-pppoe"
 		ip saddr 192.168.10.0/24 ip daddr != { 172.16.0.0/16, 192.168.10.0/24 } meta mark set 0x101 return comment "EgressRoutePolicy/rest-via-dslite"
 	}

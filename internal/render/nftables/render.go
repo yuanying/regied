@@ -312,11 +312,17 @@ func (r *renderer) firewallRule(policyName string, rule v1alpha1.FirewallRule) [
 
 // --- the matching half of policy routing -----------------------------------------
 
+// renderMarkChain writes the chain that decides which uplink a packet leaves by.
+//
+// It opens with what puts a port forward's reply back on the uplink the connection
+// arrived on, and only then lists the policies. The order is the point: a policy that
+// covers the answering host's address would otherwise mark the reply for the uplink that
+// host's own traffic leaves by, and the restore rule returns before any policy is
+// consulted (ADR 0020).
 func (r *renderer) renderMarkChain(ruleset *Ruleset) {
+	rules := r.forwardReturnRules()
+
 	policies := config.ResourcesOf[*v1alpha1.EgressRoutePolicySpec](r.cfg)
-	if len(policies) == 0 {
-		return
-	}
 	// In the order the policies are evaluated in — by family, then by priority — which
 	// is the order internal/config allocated their marks in.
 	slices.SortFunc(policies, func(a, b config.Named[*v1alpha1.EgressRoutePolicySpec]) int {
@@ -329,7 +335,6 @@ func (r *renderer) renderMarkChain(ruleset *Ruleset) {
 		return cmp.Compare(a.Name, b.Name)
 	})
 
-	var rules []Rule
 	for _, policy := range policies {
 		family := policy.Spec.FamilyOrDefault()
 		routing, ok := r.cfg.PolicyRouting(policy.Name)
@@ -357,11 +362,50 @@ func (r *renderer) renderMarkChain(ruleset *Ruleset) {
 		Name:  chainMark,
 		Base:  &BaseChain{Type: "filter", Hook: "prerouting", Priority: "filter", Policy: "accept"},
 		Rules: rules,
-		Comment: "the matching half of policy routing: which uplink a class of traffic leaves by.\n" +
+		Comment: "which uplink a packet leaves by. First the reply to a port forward, which goes\n" +
+			"back by the uplink the connection arrived on: the mark saved on the connection\n" +
+			"is restored ahead of every policy. Then the matching half of policy routing.\n" +
 			"It runs after nat prerouting, so a packet a port forward readdressed to a host\n" +
 			"inside already carries that address when the exclusions below are considered,\n" +
 			"and stays local. Nothing here has to know the uplink's global address",
 	})
+}
+
+// forwardReturnRules is what puts a port forward's reply back on the uplink it arrived
+// on: one rule restoring a connection's mark onto its reply packets, then one rule per
+// uplink and family saving the uplink's mark on every connection a forward readdressed.
+//
+// The restore matches the reply direction only. The packets from outside, readdressed
+// to the host inside, must not carry the uplink's mark: the uplink's table holds a
+// default route and nothing else, and a packet routed by it would be sent back out. A
+// reply is addressed to the peer outside, for which that default route is right.
+//
+// The save matches ct status dnat, which is what limits it to port forwards: a
+// connection to the host itself is not marked (ADR 0020). It does not return; the packet
+// goes on to the policies, where an outside source matches nothing.
+func (r *renderer) forwardReturnRules() []Rule {
+	returns := r.cfg.ForwardReturns()
+	if len(returns) == 0 {
+		return nil
+	}
+	rules := []Rule{{
+		Text: `ct direction reply ct mark != 0 meta mark set ct mark return comment "PortForward: a reply leaves by the uplink the connection arrived on"`,
+	}}
+	for _, ret := range returns {
+		link, ok := r.linkName(ret.Uplink)
+		if !ok {
+			r.failf("a PortForward leaves by %q, which is not a link", ret.Uplink)
+			continue
+		}
+		parts := newParts()
+		parts.addf("iifname %q", link)
+		parts.addf("meta nfproto %s", ret.Family)
+		parts.add("ct state new", "ct status dnat")
+		parts.addf("ct mark set 0x%x", ret.Mark)
+		parts.addf("comment %q", "PortForward: replies leave by "+link)
+		rules = append(rules, Rule{Text: parts.String()})
+	}
+	return rules
 }
 
 // sourceAlternatives is the source match of a policy routing rule, which is written

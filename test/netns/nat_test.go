@@ -105,3 +105,57 @@ func TestNATMappingIsEndpointIndependent(t *testing.T) {
 			first.Port, internetA, second.Port, internetB, srcPort)
 	}
 }
+
+// Check 8. A port forward whose target is a host that policy routing sends out the other
+// uplink is still reachable from outside. The reply is answered by 192.168.1.200, whose
+// own traffic leaves by DS-Lite, and only a reply put back on PPPoE reaches the client
+// that asked. What is observed is the TCP exchange itself: the banner comes back, and
+// the target still sees the outside peer.
+//
+// TestPolicyRoutingSplitsBySourceRange is the other half of this: it keeps showing that a
+// connection 192.168.1.200 starts on its own leaves by DS-Lite, so the return path fixed
+// here is fixed for connections that arrived on PPPoE and for nothing else.
+func TestPortForwardRepliesLeaveByTheUplinkTheyArrivedOn(t *testing.T) {
+	var banner string
+	eventuallyPeer(t, "the port forward to the host outside the PPPoE range", func() (peerAddr, error) {
+		got, err := dialStub(t, nsInternet, internetA, pppoeGlobalIP, forwardDSLiteHostWANPort)
+		if err != nil {
+			return peerAddr{}, err
+		}
+		banner = got
+		return peerAddr{IP: internetA, Port: forwardDSLiteHostWANPort}, nil
+	})
+
+	if !strings.HasPrefix(banner, dsliteHostStubBanner) {
+		t.Fatalf("connecting to %s:%d did not land on %s:%d inside the LAN: the response was %q",
+			pppoeGlobalIP, forwardDSLiteHostWANPort, clientDSLiteSrc, forwardDSLiteHostLANPort, banner)
+	}
+	if !strings.Contains(banner, internetA) {
+		t.Errorf("the peer seen from the LAN side is not the outside address: the response was %q, expected it to contain %s",
+			banner, internetA)
+	}
+}
+
+// Check 9. The same forward hairpins. A connection from inside arrives on the LAN link,
+// not on the uplink, so nothing remembers an uplink for it: the reply has to stay inside
+// the LAN, through the router's LAN address, the way the first forward's does.
+func TestHairpinNATToAHostOutsideThePPPoERange(t *testing.T) {
+	var banner string
+	eventuallyPeer(t, "hairpin NAT to the host outside the PPPoE range", func() (peerAddr, error) {
+		got, err := dialStub(t, nsClient, clientPPPoESrc, pppoeGlobalIP, forwardDSLiteHostWANPort)
+		if err != nil {
+			return peerAddr{}, err
+		}
+		banner = got
+		return peerAddr{IP: clientPPPoESrc, Port: forwardDSLiteHostWANPort}, nil
+	})
+
+	if !strings.HasPrefix(banner, dsliteHostStubBanner) {
+		t.Fatalf("connecting from the LAN to %s:%d did not land on %s:%d inside the LAN: the response was %q",
+			pppoeGlobalIP, forwardDSLiteHostWANPort, clientDSLiteSrc, forwardDSLiteHostLANPort, banner)
+	}
+	if !strings.Contains(banner, routerLANIP) {
+		t.Errorf("the hairpin source was not rewritten to the router's LAN address: "+
+			"the response was %q, expected it to contain %s", banner, routerLANIP)
+	}
+}

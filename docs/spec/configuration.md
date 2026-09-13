@@ -264,6 +264,8 @@ Some things the operator would otherwise have to keep consistent by hand are der
 | The default route inside a policy's table | the policy's `egressRef` | no |
 | The routing policy rule mapping mark to table | the policy | no |
 | The firewall opening for a port forward | `PortForward` | yes, `spec.openFirewall: false` |
+| A routing table and a firewall mark per uplink and family that a port forward is published on | `PortForward` | no |
+| The default route inside that table, the routing policy rule selecting it, and the rules that save the mark on a forwarded connection and restore it on the reply | `PortForward` | no |
 | The stateful accept and invalid drop at the top of a policy | `FirewallPolicy` | yes, `spec.stateful: false` |
 
 Derived numbers are visible in `regied render`. Nothing outside regied should depend on
@@ -274,7 +276,9 @@ in the order the policies are evaluated in — by family, then by priority — a
 order the document happens to list them, so moving a resource within the file changes no
 number and an apply that changed nothing changes nothing. A pinned value is left where it
 was put and the allocation works around it. The tables the kernel keeps for itself, `main`,
-`local` and `default`, are refused as pins.
+`local` and `default`, are refused as pins. After the policies come the uplinks that port
+forwards are published on, by family and then by name; their table and mark cannot be
+pinned ([ADR 0020](../adr/0020-port-forward-reply-on-arrival-uplink.md)).
 
 Those two starting points are where the allocation begins, not a promise about what any
 particular policy gets. The sentence above still holds.
@@ -296,6 +300,14 @@ address has already had its destination rewritten to the internal address by the
 mark is considered, so it matches the policy's local-destination exclusion and is routed
 locally. The uplink's global address never has to be written down, which is why no field
 in this schema accepts one — `PortForward` and `SourceNAT` take an `egressRef`.
+
+3. A `PortForward` adds the third piece: the reply to a connection that arrived on an
+   uplink leaves by that uplink. The first packet a forward readdresses has the uplink's
+   mark saved on the connection, and a packet in the reply direction has it restored
+   before any policy is consulted, so a policy that would send the target's own traffic
+   out the other uplink does not touch the reply. The uplink gets a table and a mark of
+   its own for this, derived like a policy's
+   ([ADR 0020](../adr/0020-port-forward-reply-on-arrival-uplink.md)).
 
 ## Validation
 
@@ -352,11 +364,3 @@ It warns, and continues, about:
   will quietly be delegated a different prefix.
 - a `DHCPServer` with an `ipv6` block whose interface does not advertise
   `otherInformation`. Nothing would ever ask for what is configured there.
-- a `PortForward` whose `target.address` is outside every source range an
-  `EgressRoutePolicy` sends out the uplink the forward is published on. The reply to a
-  connection that arrived on an uplink is routed by the source address of the host that
-  answers it, not by the uplink it arrived on, so the translation happens, the packet
-  reaches the host, and the reply leaves by another uplink: the connection is never
-  established, and nothing in the configuration looks wrong. Putting the reply back on
-  the uplink the connection arrived on needs a mark per uplink rather than a mark per
-  policy, so regied says this and continues rather than rewriting the routing.

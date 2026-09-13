@@ -122,7 +122,8 @@ prefixes and the delegated one.
 | `metric` | no | Lower wins |
 
 There is no table field. The only additional routing tables regied creates are the ones
-an `EgressRoutePolicy` needs, and it fills them itself.
+an `EgressRoutePolicy` needs and the one per uplink a `PortForward` sends its replies
+back by, and it fills them itself.
 
 ### `dhcpv6`
 
@@ -476,8 +477,10 @@ A `SourceNAT` on a `DSLiteTunnel` is a validation error: the AFTR already transl
 Rewriting the destination of traffic arriving on an uplink, so that a host inside can be
 reached from outside.
 
-Backend: a destination-NAT rule, a source-NAT rule for the hairpin case, and — unless
-switched off — the firewall opening that lets the translated traffic through.
+Backend: a destination-NAT rule, a source-NAT rule for the hairpin case, the connection
+mark that puts the reply back on the uplink, with a routing table and a routing policy
+rule for it in systemd-networkd, and — unless switched off — the firewall opening that
+lets the translated traffic through.
 
 | Field | Required | Value |
 |---|---|---|
@@ -520,11 +523,12 @@ width by construction, and is the usual way to write it.
 A `PortForward` whose `egressRef` names a `DSLiteTunnel` is a validation error: nothing
 can be published through it.
 
-**The target has to be a host that leaves by the uplink it is published on.** The reply
-to a connection that arrived on an uplink is routed by the source address of the host
-answering it, so on a host with policy routing the target must fall in a source range
-that an `EgressRoutePolicy` sends out that uplink. A target outside every such range is
-reached and never answers, and regied warns about it.
+**The reply leaves by the uplink the connection arrived on.** regied marks every
+connection a forward readdresses with the uplink it arrived on and restores the mark on
+the reply before any `EgressRoutePolicy` looks at it, so the target can be any host
+inside, whatever uplink its own traffic leaves by. Only connections that arrived on the
+uplink are pinned to it: a connection the target starts itself follows the policies as
+before ([ADR 0020](../adr/0020-port-forward-reply-on-arrival-uplink.md)).
 
 ---
 

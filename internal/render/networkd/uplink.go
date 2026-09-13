@@ -43,6 +43,7 @@ func (r *renderer) renderDSLiteTunnel(tunnel config.Named[*v1alpha1.DSLiteTunnel
 	}
 	renderRoutes(u, spec.Routes)
 	r.renderPolicyRouting(u, tunnel.Name)
+	r.renderForwardReturnRouting(u, tunnel.Name)
 
 	r.add(fileName(tunnel.Name, ".network"), u)
 }
@@ -128,21 +129,22 @@ func (r *renderer) unresolvedAFTR(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec
 // renderPPPoESession writes the routes that leave by a link networkd does not own.
 //
 // pppd creates the link, names it and addresses it; networkd is here because a route has
-// to live on the link it leaves by, and pppd's option file cannot carry one. Both kinds
-// of route go the same way, so that how a route is installed does not depend on which
+// to live on the link it leaves by, and pppd's option file cannot carry one. Every kind
+// of route goes the same way, so that how a route is installed does not depend on which
 // kind of uplink it leaves by: the static routes the session declares, which are the
-// same thing an Interface's are, and the default route a policy's table needs. A session
-// that declares neither gets no file at all, and its link stays unmanaged.
+// same thing an Interface's are, the default route a policy's table needs, and the one
+// a port forward's replies go back by. A session that has none of them gets no file at
+// all, and its link stays unmanaged.
 func (r *renderer) renderPPPoESession(session config.Named[*v1alpha1.PPPoESessionSpec]) {
-	if len(session.Spec.Routes) == 0 && len(r.policies[session.Name]) == 0 {
+	if len(session.Spec.Routes) == 0 && len(r.policies[session.Name]) == 0 && len(r.returns[session.Name]) == 0 {
 		return
 	}
 	u := newUnit(v1alpha1.KindPPPoESession, session.Name)
 	u.header += `#
 # pppd creates this link, names it and addresses it. regied writes this file only for
-# the routes that leave by it: the static ones declared on the session, and the table an
-# EgressRoutePolicy needs. KeepConfiguration keeps networkd from dropping what pppd
-# installed.
+# the routes that leave by it: the static ones declared on the session, the table an
+# EgressRoutePolicy needs, and the table a PortForward's replies go back by.
+# KeepConfiguration keeps networkd from dropping what pppd installed.
 `
 	u.section("Match").set("Name", session.Name)
 	// Everything on this link — the address, the peer, the default route in the main
@@ -151,6 +153,7 @@ func (r *renderer) renderPPPoESession(session config.Named[*v1alpha1.PPPoESessio
 
 	renderRoutes(u, session.Spec.Routes)
 	r.renderPolicyRouting(u, session.Name)
+	r.renderForwardReturnRouting(u, session.Name)
 
 	r.add(fileName(session.Name, ".network"), u)
 }
@@ -164,19 +167,36 @@ func (r *renderer) renderPPPoESession(session config.Named[*v1alpha1.PPPoESessio
 // be to have any effect.
 func (r *renderer) renderPolicyRouting(u *unit, egress string) {
 	for _, p := range r.policies[egress] {
-		destination := defaultRouteV4
-		if p.spec.FamilyOrDefault() == v1alpha1.FamilyIPv6 {
-			destination = defaultRouteV6
-		}
-
-		route := u.section("Route")
-		route.set("Destination", destination)
-		route.setInt("Table", p.routing.Table)
-
-		rule := u.section("RoutingPolicyRule")
-		rule.set("Family", string(p.spec.FamilyOrDefault()))
-		rule.setInt("FirewallMark", int(p.routing.Mark))
-		rule.setInt("Table", p.routing.Table)
-		rule.setInt("Priority", p.routing.Table)
+		renderTableAndRule(u, p.spec.FamilyOrDefault(), p.routing.Table, p.routing.Mark)
 	}
+}
+
+// renderForwardReturnRouting writes the table a port forward's reply goes back by, and
+// the rule that selects it by the mark saved on the connection, for every family a
+// forward is published on this uplink in. It is the same shape as a policy's, after the
+// policies, and it is what makes the reply leave by the uplink the connection arrived on
+// rather than by the one the answering host's own traffic does (ADR 0020).
+func (r *renderer) renderForwardReturnRouting(u *unit, egress string) {
+	for _, ret := range r.returns[egress] {
+		renderTableAndRule(u, ret.Family, ret.Table, ret.Mark)
+	}
+}
+
+// renderTableAndRule is one routing table holding this link's default route, and the
+// rule selecting that table by mark.
+func renderTableAndRule(u *unit, family v1alpha1.Family, table int, mark uint32) {
+	destination := defaultRouteV4
+	if family == v1alpha1.FamilyIPv6 {
+		destination = defaultRouteV6
+	}
+
+	route := u.section("Route")
+	route.set("Destination", destination)
+	route.setInt("Table", table)
+
+	rule := u.section("RoutingPolicyRule")
+	rule.set("Family", string(family))
+	rule.setInt("FirewallMark", int(mark))
+	rule.setInt("Table", table)
+	rule.setInt("Priority", table)
 }

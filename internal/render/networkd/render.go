@@ -141,6 +141,10 @@ type renderer struct {
 	// resource name, in the order the policies are evaluated in.
 	policies map[string][]policy
 
+	// returns is the return routing of every uplink a PortForward is published on, by
+	// the uplink's resource name, in the order it was allocated in.
+	returns map[string][]config.ForwardReturn
+
 	// tunnelOn is the DS-Lite tunnels stacked on an interface, by the interface's
 	// resource name.
 	tunnelOn map[string][]string
@@ -161,7 +165,12 @@ func (r *renderer) index() {
 	r.interfaces = make(map[string]config.Named[*v1alpha1.InterfaceSpec])
 	r.enslavedBy = make(map[string]config.Named[*v1alpha1.InterfaceSpec])
 	r.policies = make(map[string][]policy)
+	r.returns = make(map[string][]config.ForwardReturn)
 	r.tunnelOn = make(map[string][]string)
+
+	for _, ret := range r.cfg.ForwardReturns() {
+		r.returns[ret.Uplink] = append(r.returns[ret.Uplink], ret)
+	}
 
 	for _, iface := range config.ResourcesOf[*v1alpha1.InterfaceSpec](r.cfg) {
 		r.interfaces[iface.Name] = iface

@@ -83,6 +83,13 @@ export FORWARD_WAN_PORT="8022"
 export FORWARD_LAN_PORT="22"
 export SSH_STUB_BANNER="sshd-stub"
 
+# A second forward, published on PPPoE like the first, whose target is the host that
+# policy routing sends out DS-Lite. Its reply has to leave by the uplink the connection
+# arrived on, not by the uplink the target's own traffic leaves by.
+export FORWARD_DSLITE_HOST_WAN_PORT="8023"
+export FORWARD_DSLITE_HOST_LAN_PORT="22"
+export DSLITE_HOST_STUB_BANNER="sshd-stub-dslite-host"
+
 # ---- Run-time state -------------------------------------------------------
 
 export RUNTIME_DIR="${RUNTIME_DIR:-/run/regied-netns}"

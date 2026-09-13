@@ -45,7 +45,13 @@ const (
 	forwardLANPort = 22
 	blockedWANPort = 9999 // neither forwarded nor allowed
 
-	sshStubBanner = "sshd-stub"
+	// A second forward, to the host outside the PPPoE range. Its own traffic leaves by
+	// DS-Lite, so this is the forward whose reply has to be put back on PPPoE.
+	forwardDSLiteHostWANPort = 8023 // from outside, forwarded to 192.168.1.200:22
+	forwardDSLiteHostLANPort = 22
+
+	sshStubBanner        = "sshd-stub"
+	dsliteHostStubBanner = "sshd-stub-dslite-host"
 )
 
 // Timeouts. Connectivity is retried for a while, to allow for a PPPoE reconnection or
