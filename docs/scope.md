@@ -40,6 +40,12 @@ No BGP, OSPF, or RIP. If dynamic routing is needed, it belongs to FRR, BIRD, or 
 is to not fight with it: it removes only routes it installed, so learned routes survive
 ([ADR 0009](adr/0009-ownership-boundary.md)).
 
+The load balancer for Kubernetes clusters ([ADR 0021](adr/0021-load-balancer-for-kubernetes-clusters.md),
+proposed) installs routes that change at run time — a service address routed to the
+cluster nodes that pass a health check. That is not a routing protocol: regied speaks to
+no peer and learns no route from one. It computes the routes from a cluster's API and its
+own health checks, and marks them as its own, as it does every route it installs.
+
 ### Overlay networking
 
 No VXLAN, no VRF. These belong to a different class of deployment than "one host, one
@@ -48,16 +54,30 @@ uplink".
 ### Multi-node, high availability, and cloud integration
 
 regied is a daemon that looks after **one** node. It has no clustering, no leader
-election, no failover, and no integration with a cloud provider's API.
+election, no failover of itself, and no integration with a cloud provider's API.
 
-The one exception is keeping DNS records at the address this host's uplink holds, so that
-a published name follows a dynamically assigned address. It tells a provider about this
+Two exceptions let it speak to another system's API, and both are about this host.
+
+The first is keeping DNS records at the address this host's uplink holds, so that a
+published name follows a dynamically assigned address. It tells a provider about this
 host and nothing else: no other host is managed, and no configuration is taken from the
 provider. It is decided in [ADR 0019](adr/0019-uplink-address-in-dns-records.md) and
 built, as the [`DNSRecordSet`](spec/kinds.md#dnsrecordset) kind. What stays out of scope is
 everything around it: a record names the uplink it follows and holds an IPv4 address,
 regied creates one that is missing and deletes none, one provider is spoken to, and no
 provider feature beyond the record's address is touched.
+
+The second is being the load balancer for the Kubernetes clusters behind this host,
+proposed in [ADR 0021](adr/0021-load-balancer-for-kubernetes-clusters.md). regied reads
+each declared cluster's API, read-only apart from the status of the services it serves,
+and makes those services reachable within bounds the declaration sets per cluster: it
+allocates their addresses, routes them to healthy nodes, translates the uplink's ports to
+them, opens the firewall for what is published, and holds the cluster's control-plane
+endpoint. Health-checking a backend and moving traffic off it is what a load balancer
+does; it is not failover of regied, which remains a single point. What stays out of scope:
+joining a cluster, managing its nodes, taking any configuration from it beyond the
+services and nodes it is asked about, and writing anything in it but those services'
+load-balancer status.
 
 **Distribution is explicitly out of scope.** How a configuration file reaches a node is
 someone else's problem — a configuration management tool, a Git-based delivery pipeline,
