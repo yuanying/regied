@@ -554,6 +554,17 @@ the file would stop describing what the host does, which is the failure the rest
 schema is arranged to avoid. Leaving `target.port` and `target.portRange` out keeps the
 width by construction, and is the usual way to write it.
 
+**Two forwards may not listen on the same port.** What a forward matches is the uplink in
+`egressRef`, the `protocol`, the family of `target.address`, and the port or range it
+listens on — the listening address is the uplink's, so there is nothing else. Two
+forwards that agree on the uplink, the protocol and the family, and whose ports share at
+least one port, are a validation error, reported on the later of the two with the ports
+they share. Otherwise the destination-NAT rule evaluated first would take every packet
+and the other would never match, so which host is reached would be decided by rule
+order, which the file does not say. The same port is fine for `tcp` and `udp`, for an
+IPv4 target and an IPv6 one, and on two different uplinks; ranges that only meet end to
+end, such as `60000-60004` and `60005-60010`, do not overlap.
+
 A `PortForward` whose `egressRef` names a `DSLiteTunnel` is a validation error: nothing
 can be published through it.
 

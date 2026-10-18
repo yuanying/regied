@@ -1024,6 +1024,110 @@ func TestValidatePortForwardRangeWidths(t *testing.T) {
 	}
 }
 
+// Two forwards that listen on the same port of the same uplink for the same protocol are
+// two answers to one question. The first destination-NAT rule nftables evaluates wins and
+// the other one silently never matches, so which host a packet reaches would be decided
+// by rule order rather than by anything the file says.
+func TestValidatePortForwardOverlaps(t *testing.T) {
+	forwardTo := func(name, egress, protocol, listen, target string) string {
+		return `    - kind: PortForward
+      metadata: {name: ` + name + `}
+      spec:
+        egressRef: ` + egress + `
+        protocol: ` + protocol + `
+        ` + listen + `
+        target:
+          address: "` + target + `"
+`
+	}
+	forward := func(name, egress, protocol, listen string) string {
+		return forwardTo(name, egress, protocol, listen, "192.168.10.30")
+	}
+	uplinks := ifaceWAN + pppoe + `    - kind: PPPoESession
+      metadata: {name: pppoe1}
+      spec:
+        interfaceRef: wan
+        userIDFile: /secrets/user-id
+        passwordFile: /secrets/password
+`
+
+	cases := []struct {
+		name     string
+		forwards string
+		want     []string
+	}{
+		{
+			name: "the same single port twice",
+			forwards: forward("https", "pppoe0", "tcp", "port: 443") +
+				forward("https-again", "pppoe0", "tcp", "port: 443"),
+			want: []string{`spec.port: 443/tcp on pppoe0 overlaps PortForward/https, which listens on 443/tcp; they share 443`},
+		},
+		{
+			name: "two ranges that cross",
+			forwards: forward("mosh", "pppoe0", "udp", "portRange: 60000-60010") +
+				forward("game", "pppoe0", "udp", "portRange: 60005-60020"),
+			want: []string{`spec.portRange: 60005-60020/udp on pppoe0 overlaps PortForward/mosh, which listens on 60000-60010/udp; they share 60005-60010`},
+		},
+		{
+			name: "a single port inside a range",
+			forwards: forward("mosh", "pppoe0", "udp", "portRange: 60000-60010") +
+				forward("voice", "pppoe0", "udp", "port: 60003"),
+			want: []string{`spec.port: 60003/udp on pppoe0 overlaps PortForward/mosh, which listens on 60000-60010/udp; they share 60003`},
+		},
+		{
+			name: "one forward overlapping two earlier ones",
+			forwards: forward("low", "pppoe0", "udp", "portRange: 60000-60004") +
+				forward("high", "pppoe0", "udp", "portRange: 60005-60010") +
+				forward("wide", "pppoe0", "udp", "portRange: 60000-60010"),
+			want: []string{
+				`spec.portRange: 60000-60010/udp on pppoe0 overlaps PortForward/low, which listens on 60000-60004/udp; they share 60000-60004`,
+				`spec.portRange: 60000-60010/udp on pppoe0 overlaps PortForward/high, which listens on 60005-60010/udp; they share 60005-60010`,
+			},
+		},
+		{
+			name: "ranges that only touch",
+			forwards: forward("low", "pppoe0", "udp", "portRange: 60000-60004") +
+				forward("high", "pppoe0", "udp", "portRange: 60005-60010"),
+		},
+		{
+			name: "the same port for tcp and for udp",
+			forwards: forward("dns-tcp", "pppoe0", "tcp", "port: 53") +
+				forward("dns-udp", "pppoe0", "udp", "port: 53"),
+		},
+		{
+			name: "the same port onto two hosts of one family",
+			forwards: forwardTo("https", "pppoe0", "tcp", "port: 443", "192.168.10.30") +
+				forwardTo("https-other", "pppoe0", "tcp", "port: 443", "192.168.10.31"),
+			want: []string{`spec.port: 443/tcp on pppoe0 overlaps PortForward/https, which listens on 443/tcp; they share 443`},
+		},
+		{
+			name: "the same port for ipv4 and for ipv6",
+			forwards: forwardTo("https", "pppoe0", "tcp", "port: 443", "192.168.10.30") +
+				forwardTo("https-v6", "pppoe0", "tcp", "port: 443", "2001:db8:0:1::30"),
+		},
+		{
+			name: "the same port on two uplinks",
+			forwards: forward("https", "pppoe0", "tcp", "port: 443") +
+				forward("https-1", "pppoe1", "tcp", "port: 443"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, problems := check(t, uplinks+tc.forwards, secrets())
+			if len(tc.want) == 0 {
+				if cfg == nil {
+					t.Fatalf("rejected forwards that do not overlap:\n%s", problems)
+				}
+				return
+			}
+			if cfg != nil {
+				t.Fatal("accepted forwards that overlap")
+			}
+			assertProblems(t, problems, tc.want)
+		})
+	}
+}
+
 func TestValidateDHCPPools(t *testing.T) {
 	base := ifaceLAN + `    - kind: DHCPServer
       metadata: {name: lan}
