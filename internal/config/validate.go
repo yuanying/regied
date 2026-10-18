@@ -25,6 +25,7 @@ func Validate(document *v1alpha1.NetworkConfig, opts ...Option) (*Config, error)
 	}
 	v.checkLinkNames()
 	v.checkDuplicateDNSRecords()
+	v.checkPortForwardOverlaps()
 	v.checkBridgeMembers()
 	v.checkDerivationCycles()
 	routing := v.deriveRouting()
@@ -425,6 +426,46 @@ func (v *validator) checkPortForward(resource *v1alpha1.Resource, spec *v1alpha1
 	}
 	v.errorf(resource, field, "%s covers %s, but the forward listens on %s, which covers %d",
 		target, ports(target.Width()), listen, listen.Width())
+}
+
+// checkPortForwardOverlaps refuses two forwards that would listen on the same port of
+// the same uplink for the same protocol and family. The listening address is the
+// uplink's, and the family is the target's, so the uplink, the family, the protocol and
+// the ports are the whole of what a forward matches on. Where
+// two of them share a port, the destination-NAT rule evaluated first takes every packet
+// and the other never matches: which host is reached is decided by rule order, which is
+// written nowhere. Forwards that touch end to end, or differ in protocol or uplink, do
+// not compete.
+func (v *validator) checkPortForwardOverlaps() {
+	var seen []*v1alpha1.Resource
+	for _, resource := range v.byKind[v1alpha1.KindPortForward] {
+		spec, ok := resource.Spec.(*v1alpha1.PortForwardSpec)
+		if !ok || spec.EgressRef == "" || spec.Protocol.IsZero() || (spec.Port == nil) == (spec.PortRange == nil) ||
+			spec.Target == nil || !spec.Target.Address.IsValid() {
+			continue
+		}
+		listen := spec.Ports()
+		for _, earlier := range seen {
+			other := earlier.Spec.(*v1alpha1.PortForwardSpec)
+			if other.EgressRef != spec.EgressRef || other.Protocol.Name != spec.Protocol.Name ||
+				familyOf(other.Target.Address.Addr) != familyOf(spec.Target.Address.Addr) {
+				continue
+			}
+			theirs := other.Ports()
+			shared := v1alpha1.PortSpec{From: max(listen.From, theirs.From), To: min(listen.To, theirs.To)}
+			if shared.From > shared.To {
+				continue
+			}
+			field := "spec.port"
+			if spec.PortRange != nil {
+				field = "spec.portRange"
+			}
+			v.errorf(resource, field,
+				"%s/%s on %s overlaps %s, which listens on %s/%s; they share %s, and which of the two a packet would reach is decided by rule order, which is written nowhere",
+				listen, spec.Protocol.Name, spec.EgressRef, earlier.Ref(), theirs, other.Protocol.Name, shared)
+		}
+		seen = append(seen, resource)
+	}
 }
 
 func ports(n int) string {
