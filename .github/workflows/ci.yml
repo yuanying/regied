@@ -1,0 +1,29 @@
+# Runs the checks that need nothing but the Go toolchain on every pull request and on main. Renovate merges
+# patches and digest updates only once these pass, so they are what stands between an update and main.
+# The netns integration tests (make test-netns*) need root / CAP_NET_ADMIN and external commands, and are not run here.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The Go comes from the go directive, so the checks run the Go that go.mod names.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # make vet runs fmt-check first, then go vet with and without the netns tag.
+      - run: make vet
+      - run: make test
+      - run: make build
