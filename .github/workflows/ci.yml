@@ -1,0 +1,42 @@
+# Runs the checks that need no privileges on every pull request and on main: vet, the unit tests and the build,
+# and a build of the netns testbed's image. Renovate merges patches and digest updates only once these pass, so they
+# are what stands between an update and main. The netns integration tests (make test-netns*) need root /
+# CAP_NET_ADMIN and external commands, and are not run here.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # The Go comes from the go directive, so the checks run the Go that go.mod names.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # make vet runs fmt-check first, then go vet with and without the netns tag.
+      - run: make vet
+      - run: make test
+      - run: make build
+
+  # The netns testbed's image is built, not run: running it needs a privileged container. Building it is what
+  # tells a digest or version update of its golang base apart from one that no longer installs the testbed's tools,
+  # and Renovate merges such an update only once this passes. Nothing is pushed.
+  netns-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: make netns-image
