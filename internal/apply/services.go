@@ -210,6 +210,7 @@ func daemonReload(phase Phase, reason string) Step {
 		Kind:    StepCommand,
 		Reason:  reason,
 		Command: reload,
+		Owed:    true,
 	}
 }
 

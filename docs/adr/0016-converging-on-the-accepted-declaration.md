@@ -441,6 +441,31 @@ The cheap half of a turn — render, read the host, compare — runs regardless.
 suppresses the command, not the comparison, so the report of what is wrong stays current
 while the retrying is slowed.
 
+**Implementation note: what the comparison found is part of the comparison.** Some steps
+exist only to make files that were written take effect: reloading networkd, telling udev
+and the systemd manager to read their files again, applying a `.link` file to its NIC. The
+comparison asks for them because a file differs, and once the file is written the
+comparison has nothing left to find. The first implementation lost them that way. A
+delegation that moved twice inside a second had the first turn write the files and reload
+networkd, and the second write them again with its reload held back by the backoff; the
+third found the files as they should be and ran nothing, and networkd kept the version of
+the first turn — routes from the vanished delegation, or a tunnel's old local address —
+for as long as the host ran. The backoff had suppressed the comparison after all.
+
+So a turn that wrote the files and did not run such a step — the backoff held it back, the
+turn stopped on a failure before reaching it, or the step itself failed — leaves it
+**owed**, and every later turn runs it until it has run to success, whether or not that
+turn writes anything itself. An owed step is an ordinary step of the plan: it keeps its
+place in the phase order, it is under the same per-target backoff in an unattended turn, a
+submitted turn runs it at once, and the dry-run shows it with the reason it is owed. What
+is owed is written under the state directory beside the report, so a resident process that
+is restarted in between still runs it; after a reboot it runs once more than it needed to,
+which costs nothing, because each of these steps only makes a daemon read files that are
+already there. Only the steps a turn can owe are ever run from that file. Applying a `.link` file to a link that has gone is no longer owed: udev
+applies the file when the link appears. A restart is never owed. An unattended turn does
+not restart, by the line above, and a submitted turn decides a restart from the files it
+writes itself.
+
 ### Applying with a deadline
 
 This is the answer to lockout, and it is the mechanism the operator already knows from

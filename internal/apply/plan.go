@@ -380,6 +380,11 @@ type Step struct {
 	Switch  SwitchChange
 	File    FileChange
 	DNS     DNSChange
+
+	// Owed says the step makes files that were written take effect. The comparison that
+	// asked for it finds nothing once the files are written, so a step like this that did
+	// not run is owed by the turn and run by a later one (owed.go).
+	Owed bool
 }
 
 func (s Step) describe() string {
@@ -455,6 +460,12 @@ type Plan struct {
 	// the things the turn did: a report is read by somebody who was not watching, and
 	// saying a write happened when it did not is the one thing it must not do.
 	failedRecords map[string]bool
+
+	// owed is every step of this plan that makes written files take effect, whether or
+	// not this turn runs it, and ran is the steps the commit stage ran to success. What
+	// is in the first and not in the second is left owed (owed.go).
+	owed []owedStep
+	ran  map[string]bool
 
 	// secrets is the content of the files marked Secret, which is why they are not in
 	// the FileChanges above. Nothing that prints can reach this field, so printing a
@@ -680,6 +691,7 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 	plan.Waiting = append(plan.Waiting, waitingForRecords...)
 
 	plan.Steps = e.steps(ctx, plan, rendered)
+	e.addOwed(plan)
 	return plan, nil
 }
 
@@ -1095,6 +1107,7 @@ func (e *Engine) steps(ctx context.Context, plan *Plan, rendered *rendering) []S
 			Kind:    StepCommand,
 			Reason:  "the systemd-networkd configuration changed",
 			Command: reload,
+			Owed:    true,
 		})
 	}
 	steps = append(steps, e.udevSteps(plan, rendered)...)
@@ -1157,6 +1170,7 @@ func (e *Engine) udevSteps(plan *Plan, rendered *rendering) []Step {
 		Kind:    StepCommand,
 		Reason:  "a .link file changed",
 		Command: Command{Name: "udevadm", Args: []string{"control", "--reload"}},
+		Owed:    true,
 	}}
 	for _, link := range rendered.linkFiles {
 		if !wasWritten(changeFor(plan, link.path)) {
@@ -1176,6 +1190,7 @@ func (e *Engine) udevSteps(plan *Plan, rendered *rendering) []Step {
 			Kind:    StepCommand,
 			Reason:  "the .link file for " + link.ifname + " was written",
 			Command: udevTriggerCommand(link.ifname),
+			Owed:    true,
 		})
 	}
 	return steps

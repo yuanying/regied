@@ -93,6 +93,19 @@ const acceptingStep = "recording the declaration as accepted"
 // a declaration its record does not hold is exactly the drift the record rules out — and
 // nothing has run yet, so refusing costs nothing.
 func (e *Engine) turn(ctx context.Context, plan *Plan, accept func() error) (*Result, error) {
+	result, err := e.stageAndCommit(ctx, plan, accept)
+	// Whatever the turn reached, what it did not run of the steps that make written files
+	// take effect is owed by the next one (owed.go).
+	if owedErr := e.settleOwed(plan); owedErr != nil {
+		if err != nil {
+			return nil, withNote(err, owedErr)
+		}
+		result.Notes = append(result.Notes, owedErr.Error())
+	}
+	return result, err
+}
+
+func (e *Engine) stageAndCommit(ctx context.Context, plan *Plan, accept func() error) (*Result, error) {
 	result := &Result{Plan: plan, Changed: !plan.Empty(), State: stateOf(plan, nil)}
 	if plan.Empty() {
 		if accept != nil {
@@ -197,6 +210,10 @@ func (e *Engine) commit(ctx context.Context, plan *Plan) *Error {
 	for _, step := range plan.Steps {
 		err := e.run(ctx, step)
 		if err == nil {
+			if plan.ran == nil {
+				plan.ran = make(map[string]bool)
+			}
+			plan.ran[owedKey(step)] = true
 			continue
 		}
 		if step.Kind == StepDNS {
