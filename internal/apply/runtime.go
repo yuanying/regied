@@ -64,8 +64,9 @@ func CollectRuntime(ctx context.Context, cfg *config.Config, host Host) (*Runtim
 		host: host,
 		runtime: Runtime{
 			Networkd: networkd.Runtime{
-				AFTRAddresses: make(map[string]netip.Addr),
-				DUIDs:         make(map[string]string),
+				AFTRAddresses:     make(map[string]netip.Addr),
+				DUIDs:             make(map[string]string),
+				DelegatedPrefixes: make(config.Delegations),
 			},
 			UplinkAddresses: make(map[string][]netip.Addr),
 			Credentials:     make(map[string]pppd.Credentials),
@@ -75,6 +76,7 @@ func CollectRuntime(ctx context.Context, cfg *config.Config, host Host) (*Runtim
 	c.collectDUIDs()
 	c.collectCredentials()
 	c.resolveAFTRs(ctx)
+	c.readDelegations(ctx)
 	c.readLinkAddresses()
 
 	if len(c.problems) > 0 {
@@ -185,6 +187,31 @@ func (c *collector) resolveAFTRs(ctx context.Context) {
 			continue
 		}
 		c.runtime.Networkd.AFTRAddresses[tunnel.Name] = chosen
+	}
+}
+
+// readDelegations reads the prefix every prefix-delegation client holds, from networkd's
+// description of the link it runs on (ADR 0021).
+//
+// None of this fails the turn. A client still soliciting holds nothing yet, and a
+// networkd that does not answer leaves the same gap: what is derived from the delegation
+// waits for it, and the next turn reads again.
+func (c *collector) readDelegations(ctx context.Context) {
+	if c.host.Delegations == nil {
+		return
+	}
+	for _, iface := range config.ResourcesOf[*v1alpha1.InterfaceSpec](c.cfg) {
+		if iface.Spec.DHCPv6 == nil || iface.Spec.DHCPv6.PrefixDelegation == nil {
+			continue
+		}
+		prefixes, err := c.host.Delegations.DelegatedPrefixes(ctx, iface.Spec.Ifname)
+		if err != nil {
+			c.notef("Interface/%s: the delegated prefix cannot be read from networkd: %v", iface.Name, err)
+			continue
+		}
+		if len(prefixes) > 0 {
+			c.runtime.Networkd.DelegatedPrefixes[iface.Name] = prefixes
+		}
 	}
 }
 

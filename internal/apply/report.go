@@ -49,6 +49,7 @@ func ReportWarnings(w io.Writer, plan *Plan) {
 	section(w, "Warnings", plan.Warnings)
 	section(w, "What this host could not answer", plan.Notes)
 	section(w, "Left out for want of a value", plan.Waiting)
+	section(w, "Derived from the delegated prefix", plan.Delegations)
 }
 
 func section(w io.Writer, title string, lines []string) {

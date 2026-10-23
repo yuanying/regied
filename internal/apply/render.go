@@ -49,6 +49,10 @@ type rendering struct {
 	artifacts []artifact
 	warnings  []string
 
+	// derived is every value the renderers computed from the delegated prefix and wrote
+	// as a literal, with where it came from (ADR 0021).
+	derived []string
+
 	// waiting is what was left out for want of a value that exists only at apply time,
 	// one line per artifact, naming the value it waits for (ADR 0016).
 	waiting []string
@@ -85,6 +89,7 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 		return nil, err
 	}
 	out.warnings = append(out.warnings, links.Warnings...)
+	out.derived = append(out.derived, links.Resolved...)
 	for _, omission := range links.Omitted {
 		for _, name := range omission.Files {
 			out.withheld = append(out.withheld, e.opts.NetworkdDir+"/"+name)

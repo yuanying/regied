@@ -11,8 +11,9 @@ import (
 
 // renderCommand prints what a configuration means, without reading the host.
 //
-// The values that exist only at apply time are given on the command line, and what
-// depends on one that was not given is left out exactly as an apply would leave it out.
+// The values that exist only at apply time — the AFTR's address, a DUID, the prefix a
+// delegation client holds — are given on the command line, and what depends on one that
+// was not given is left out exactly as an apply would leave it out.
 // The nftables ruleset needs none of them: it names a set per uplink where an address
 // would be, so it is whole here (ADR 0015). Nothing here opens a credential file: the
 // file that holds one is reported by path and mode, which is all it could be reported by
@@ -22,8 +23,10 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 	path := flags.String("config", DefaultConfigPath, "the configuration to render")
 	aftr := pairs{}
 	duid := pairs{}
+	delegated := pairs{}
 	flags.Var(aftr, "aftr", "a DS-Lite tunnel's resolved AFTR address, as name=address (repeatable)")
 	flags.Var(duid, "duid", "the contents of a DUID file, as path=value (repeatable)")
+	flags.Var(delegated, "delegated-prefix", "the prefix an Interface's prefix-delegation client holds, as name=prefix (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return parseExit(err)
 	}
@@ -34,7 +37,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	reportConfigWarnings(stderr, cfg)
 
-	runtime, err := runtimeFromFlags(aftr, duid)
+	runtime, err := runtimeFromFlags(aftr, duid, delegated)
 	if err != nil {
 		return reportError(stderr, err)
 	}
@@ -49,10 +52,11 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 
 // runtimeFromFlags builds the apply-time values out of what was written on the command
 // line. Credentials are deliberately not among them.
-func runtimeFromFlags(aftr, duid pairs) (*apply.Runtime, error) {
+func runtimeFromFlags(aftr, duid, delegated pairs) (*apply.Runtime, error) {
 	runtime := &apply.Runtime{}
 	runtime.Networkd.AFTRAddresses = map[string]netip.Addr{}
 	runtime.Networkd.DUIDs = map[string]string{}
+	runtime.Networkd.DelegatedPrefixes = config.Delegations{}
 
 	for name, value := range aftr {
 		address, err := netip.ParseAddr(value)
@@ -63,6 +67,13 @@ func runtimeFromFlags(aftr, duid pairs) (*apply.Runtime, error) {
 	}
 	for path, value := range duid {
 		runtime.Networkd.DUIDs[path] = value
+	}
+	for name, value := range delegated {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil || !prefix.Addr().Is6() || prefix != prefix.Masked() {
+			return nil, fmt.Errorf("-delegated-prefix %s=%s: not an IPv6 prefix with its host bits clear", name, value)
+		}
+		runtime.Networkd.DelegatedPrefixes[name] = []netip.Prefix{prefix}
 	}
 	return runtime, nil
 }

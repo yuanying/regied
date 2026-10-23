@@ -67,6 +67,12 @@ type Output struct {
 	// and the caller is told so that it can wait for the value and leave what an earlier
 	// rendering put on the host as it is (ADR 0016).
 	Omitted []Omission
+
+	// Resolved is every value the rendering computed from a runtime value and wrote into
+	// a file as a literal, with where it came from: a tunnel's local address cut from the
+	// delegated prefix. A dry-run shows it, because the value in effect is the first thing
+	// a diagnosis needs (ADR 0021).
+	Resolved []string
 }
 
 // LinkFile is one .link file and the kernel name of the link it matches.
@@ -95,6 +101,10 @@ type Runtime struct {
 	// DUIDs is what each duidFile holds, by the path the configuration named. The DUID
 	// is not a credential and is shown in dry-run output and in diagnostics (ADR 0003).
 	DUIDs map[string]string
+
+	// DelegatedPrefixes is the prefix each prefix-delegation client holds, by the name
+	// of the Interface running it, as networkd describes the link (ADR 0021).
+	DelegatedPrefixes config.Delegations
 }
 
 // Error is what Render returns for a configuration it cannot turn into files. It reports
@@ -130,7 +140,7 @@ func Render(cfg *config.Config, rt Runtime) (*Output, error) {
 	if len(r.errors) > 0 {
 		return nil, &Error{Messages: r.errors}
 	}
-	return &Output{Files: r.files, Warnings: r.warnings, LinkFiles: r.linkFiles, Omitted: r.omitted}, nil
+	return &Output{Files: r.files, Warnings: r.warnings, LinkFiles: r.linkFiles, Omitted: r.omitted, Resolved: r.resolved}, nil
 }
 
 type renderer struct {
@@ -142,6 +152,7 @@ type renderer struct {
 	errors    []string
 	omitted   []Omission
 	linkFiles []LinkFile
+	resolved  []string
 
 	// interfaces is every Interface by resource name, for the references that name one.
 	interfaces map[string]config.Named[*v1alpha1.InterfaceSpec]

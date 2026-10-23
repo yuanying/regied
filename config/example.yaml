@@ -118,9 +118,10 @@ spec:
       spec:
         underlayRef: wan
         # The address the tunnel sends from is taken from an interface rather
-        # than written down. systemd 257 can only take it from the link the
-        # tunnel is stacked on, so naming another interface is reported and the
-        # tunnel sends from the underlay's global address (ADR 0011).
+        # than written down: the one IPv6 address lan declares, which is cut
+        # from the delegated prefix. regied resolves it from the delegation
+        # networkd holds and writes it into the tunnel, so a prefix change
+        # moves the tunnel with it (ADR 0022).
         localAddressFrom:
           interfaceRef: lan
         aftrHost: aftr.example.net

@@ -67,6 +67,13 @@ that already exists, rather than only to one it creates, is to be confirmed in t
 by the first implementation unit; its reload replaces its own record of the netdev, and
 that alone does not say the kernel link is changed.
 
+*Confirmed by the first implementation unit on systemd 257.13 (Debian 13): after `Local=`
+in an `ip6tnl` netdev is changed and networkd is reloaded, the link already up carries the
+new local address, under the same interface index — networkd changes the link in place
+rather than creating another. `networkctl reconfigure` is not needed. The recreation below
+is therefore not built, and the tier table of [ADR 0016](0016-converging-on-the-accepted-declaration.md)
+is unchanged.*
+
 **If it does not, regied removes the tunnel link and lets networkd create it again from
 the new file.** That is a link being taken down, and an unattended turn may not take down
 something that is up ([ADR 0016](0016-converging-on-the-accepted-declaration.md)). The rule

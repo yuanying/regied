@@ -34,7 +34,7 @@ const uplinkFixture = `  resources:
       metadata: {name: dslite}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddressFrom: {interfaceRef: wan}
         aftrHost: aftr.example.net
 `
 
@@ -222,7 +222,7 @@ func TestCollectRuntimeDoesNotResolveATunnelWrittenWithAnAddress(t *testing.T) {
       metadata: {name: dslite}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddressFrom: {interfaceRef: wan}
         aftrAddress: 2001:db8:53::1
 `)
 	host, _, _ := testHost()

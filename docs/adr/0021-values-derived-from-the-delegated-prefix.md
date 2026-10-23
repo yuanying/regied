@@ -77,6 +77,14 @@ returns: in systemd 257 the link's `DHCPv6Client` object carries `Prefixes`, eac
 prefix, its length and its preferred and valid lifetimes. What it reports on a real line is
 the first thing the first implementation unit confirms.
 
+*Confirmed by the first implementation unit on systemd 257.13 (Debian 13), against a
+DHCPv6 server delegating a /56: `networkctl status --json` describes the link's
+`DHCPv6Client` with `Prefixes`, each carrying `Prefix` as an array of its sixteen bytes
+(not a string), `PrefixLength`, and the two lifetimes. A client that holds nothing yet has
+no `Prefixes`, or no `DHCPv6Client` at all. The netlink subscription was already on every
+link's address events, not only the uplinks': the multicast groups a turn subscribes to
+are not filtered by link, so nothing had to be widened.*
+
 Three sources were weighed.
 
 | Source | Verdict |

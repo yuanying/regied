@@ -133,6 +133,13 @@ warnings alongside the files. Two exist today, both from
 - `validLifetime` and `preferredLifetime` on an interface that advertises only a
   delegated prefix, whose lifetimes come from the delegation
 
+*Amended by [ADR 0022](0022-dslite-local-address-follows-the-delegation.md), which is
+built: the first warning is gone. A `localAddressFrom` naming another interface renders as
+that interface's one IPv6 address — resolved from the current delegation, or its literal —
+and an interface that states no single IPv6 address is a validation error instead. While
+the delegation the address is cut from is not held, the tunnel's files are left as they
+are and the turn waits ([ADR 0021](0021-values-derived-from-the-delegated-prefix.md)).*
+
 ## Consequences
 
 - Reclaiming what an earlier apply left behind is a glob over the prefix. The apply

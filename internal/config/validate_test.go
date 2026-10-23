@@ -34,7 +34,7 @@ const (
       metadata: {name: dslite}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddressFrom: {interfaceRef: wan}
         aftrHost: aftr.example.net
 `
 	zones = `    - kind: FirewallZone
@@ -168,7 +168,7 @@ func TestValidateResolvesReferences(t *testing.T) {
       metadata: {name: dslite}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddress: 2001:db8:0:1::1
         aftrHost: aftr.example.net
 `,
 			want: []string{`spec.underlayRef: no Interface named "wan"`},
@@ -523,7 +523,7 @@ func TestValidateExclusivePairs(t *testing.T) {
       metadata: {name: dslite}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddressFrom: {interfaceRef: wan}
         aftrHost: aftr.example.net
         aftrAddress: 2001:db8:ffff::1
 `,
@@ -535,7 +535,7 @@ func TestValidateExclusivePairs(t *testing.T) {
       metadata: {name: dslite}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddressFrom: {interfaceRef: wan}
 `,
 			want: []string{"spec: exactly one of aftrHost and aftrAddress is required; neither is set"},
 		},
@@ -545,7 +545,7 @@ func TestValidateExclusivePairs(t *testing.T) {
       metadata: {name: dslite}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddressFrom: {interfaceRef: wan}
         localAddress: 2001:db8:0:1::1
         aftrHost: aftr.example.net
 `,
@@ -1277,7 +1277,7 @@ func TestValidateLinkNameLength(t *testing.T) {
       metadata: {name: dslite-upstream-1}
       spec:
         underlayRef: wan
-        localAddressFrom: {interfaceRef: lan}
+        localAddressFrom: {interfaceRef: wan}
         aftrHost: aftr.example.net
 `,
 			want: []string{`metadata.name: "dslite-upstream-1" is 17 characters; the link this puts on the host is named after it, and a link name the kernel takes is at most 15`},
@@ -1305,6 +1305,92 @@ func TestValidateLinkNameLength(t *testing.T) {
 				t.Fatal("accepted a link name the kernel cannot hold")
 			}
 			assertProblems(t, problems, tc.want)
+		})
+	}
+}
+
+// A tunnel's local address may be taken from any Interface that declares exactly one
+// IPv6 address of its own: an address cut from the delegation, or a literal. The
+// underlay itself keeps meaning networkd's own address of that link (ADR 0022).
+func TestValidateAcceptsATunnelTakingItsLocalAddressFromAnotherInterface(t *testing.T) {
+	for _, address := range []string{
+		`fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::1"}`,
+		`"2001:db8:0:1::1/64"`,
+	} {
+		t.Run(address, func(t *testing.T) {
+			cfg, problems := check(t, ifaceWAN+`    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        addresses:
+          - 192.168.10.1/24
+          - `+address+`
+    - kind: DSLiteTunnel
+      metadata: {name: dslite}
+      spec:
+        underlayRef: wan
+        localAddressFrom: {interfaceRef: lan}
+        aftrHost: aftr.example.net
+`, secrets())
+			if cfg == nil {
+				t.Fatalf("rejected a tunnel sending from the address of another interface:\n%s", problems)
+			}
+			assertProblems(t, problems, nil)
+		})
+	}
+}
+
+// Naming an interface whose IPv6 address the declaration does not state leaves the choice
+// of the tunnel's local address unstated. An address from the router advertisement is a
+// host that is not the router, which has no tunnel of its own. A delegated address with no
+// token is one networkd makes up from the link's hardware address, which regied cannot
+// know, so it cannot write it into the tunnel (ADR 0022).
+func TestValidateRejectsATunnelLocalAddressThatIsNotStated(t *testing.T) {
+	cases := []struct {
+		name      string
+		addresses string
+		want      string
+	}{
+		{
+			name:      "no IPv6 address",
+			addresses: `[192.168.10.1/24]`,
+			want:      `spec.localAddressFrom.interfaceRef: the Interface "lan" declares no IPv6 address`,
+		},
+		{
+			name: "two IPv6 addresses",
+			addresses: `
+          - "2001:db8:0:1::1/64"
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::1"}`,
+			want: `spec.localAddressFrom.interfaceRef: the Interface "lan" declares 2 IPv6 addresses`,
+		},
+		{
+			name: "an address from the router advertisement",
+			addresses: `
+          - fromRouterAdvertisement: {token: "::1"}`,
+			want: `spec.localAddressFrom.interfaceRef: the Interface "lan" takes its IPv6 address from the router advertisement`,
+		},
+		{
+			name: "a delegated address without a token",
+			addresses: `
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1}`,
+			want: `spec.localAddressFrom.interfaceRef: the Interface "lan" derives its IPv6 address without a token`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, problems := check(t, ifaceWAN+`    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: br-lan
+        addresses: `+tc.addresses+`
+    - kind: DSLiteTunnel
+      metadata: {name: dslite}
+      spec:
+        underlayRef: wan
+        localAddressFrom: {interfaceRef: lan}
+        aftrHost: aftr.example.net
+`, secrets())
+			assertProblems(t, problems, []string{tc.want})
 		})
 	}
 }
