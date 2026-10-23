@@ -50,6 +50,11 @@ uplink".
 regied is a daemon that looks after **one** node. It has no clustering, no leader
 election, no failover, and no integration with a cloud provider's API.
 
+That includes failing over between the uplinks of one host. A host with two uplinks does
+not move traffic from one to the other when one stops carrying it: noticing that belongs to
+monitoring, and switching is a person submitting a declaration that names the other uplink
+([ADR 0026](adr/0026-no-uplink-failover-inside-regied.md)).
+
 The one exception is keeping DNS records at the address this host's uplink holds, so that
 a published name follows a dynamically assigned address. It tells a provider about this
 host and nothing else: no other host is managed, and no configuration is taken from the
