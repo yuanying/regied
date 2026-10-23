@@ -866,26 +866,13 @@ func (v *validator) checkDNSRecordSet(resource *v1alpha1.Resource, spec *v1alpha
 }
 
 func (v *validator) checkDNSRecord(resource *v1alpha1.Resource, set *v1alpha1.DNSRecordSetSpec, record v1alpha1.DNSRecord, field string, hasZone bool) {
-	switch recordType := record.TypeOrDefault(); {
-	case recordType == v1alpha1.DNSRecordA:
-	case recordType == "AAAA":
-		// The useful AAAA holds an address inside the delegated prefix, belonging to a
-		// host behind this one. That is an address this host routes rather than one its
-		// uplink holds, which is a different decision and not made (ADR 0019).
-		v.errorf(resource, field+".type",
-			"AAAA is not a record regied writes: a record here follows an address this host's uplink holds, and what an IPv6 record should hold instead is not decided")
+	switch recordType := record.TypeOrDefault(); recordType {
+	case v1alpha1.DNSRecordA:
+		v.checkUplinkRecord(resource, record, field)
+	case v1alpha1.DNSRecordAAAA:
+		v.checkDelegatedRecord(resource, record, field)
 	default:
-		v.errorf(resource, field+".type", "%q is not a record type regied writes; A is the only one", recordType)
-	}
-
-	if v.required(resource, field+".egressRef", record.EgressRef != "") {
-		uplink := v.resolveUplink(resource, field+".egressRef", record.EgressRef)
-		if uplink != nil && uplink.Kind == v1alpha1.KindDSLiteTunnel {
-			// The AFTR translates at the far end, so there is no address the outside
-			// world could reach — the refusal a PortForward naming the tunnel gets.
-			v.errorf(resource, field+".egressRef",
-				"nothing can be published through the DSLiteTunnel %q: it is translated at the far end, so there is no address for this record to hold", record.EgressRef)
-		}
+		v.errorf(resource, field+".type", "%q is not a record type regied writes; it writes A and AAAA", recordType)
 	}
 
 	// A name outside its zone cannot be written there. Saying so needs the zone, and a
@@ -911,6 +898,43 @@ func (v *validator) checkDNSRecord(resource *v1alpha1.Resource, set *v1alpha1.DN
 		v.errorf(resource, field+".ttl",
 			"%s is outside what the provider accepts, which is between %s and %s", record.TTL, minRecordTTL, maxRecordTTL)
 	}
+}
+
+// checkUplinkRecord checks an A record, which follows the IPv4 address an uplink holds
+// (ADR 0019).
+func (v *validator) checkUplinkRecord(resource *v1alpha1.Resource, record v1alpha1.DNSRecord, field string) {
+	if record.Address != nil {
+		v.errorf(resource, field+".address",
+			"an A record follows an uplink and takes its address from it; address is for an AAAA record")
+	}
+	if !v.required(resource, field+".egressRef", record.EgressRef != "") {
+		return
+	}
+	uplink := v.resolveUplink(resource, field+".egressRef", record.EgressRef)
+	if uplink != nil && uplink.Kind == v1alpha1.KindDSLiteTunnel {
+		// The AFTR translates at the far end, so there is no address the outside
+		// world could reach — the refusal a PortForward naming the tunnel gets.
+		v.errorf(resource, field+".egressRef",
+			"nothing can be published through the DSLiteTunnel %q: it is translated at the far end, so there is no address for this record to hold", record.EgressRef)
+	}
+}
+
+// checkDelegatedRecord checks an AAAA record, which holds an address cut from a prefix
+// this host was delegated (ADR 0024).
+//
+// It does not follow an uplink: an uplink's own IPv6 address is not where the outside
+// world reaches a service over IPv6, which is why ADR 0019 refused it. Which interfaces
+// a delegation may be cut from is checkDelegationSource's to say, as it is for every
+// other value derived from the delegated prefix.
+func (v *validator) checkDelegatedRecord(resource *v1alpha1.Resource, record v1alpha1.DNSRecord, field string) {
+	if record.EgressRef != "" {
+		v.errorf(resource, field+".egressRef",
+			"an AAAA record holds an address cut from the delegation, not one an uplink holds; leave egressRef out and write address.fromDelegatedPrefix")
+	}
+	if !v.required(resource, field+".address", record.Address != nil) {
+		return
+	}
+	v.checkDerivedAddress(resource, field+".address.fromDelegatedPrefix", record.Address.FromDelegatedPrefix)
 }
 
 // nameInZone is whether a name can be written in a zone: it is the zone, or it sits under

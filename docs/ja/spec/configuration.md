@@ -108,7 +108,7 @@ strict なリバースパスフィルタはまさにそれを落とす。有効�
 | アドレス配布、DNS | `DHCPServer`、`DNSForwarder` | dnsmasq |
 | ホスト自身のリゾルバ（`listenOn` に `loopback` があるとき） | `DNSForwarder` | systemd-networkd。systemd-resolved が読む |
 | ファイアウォール、NAT、ポリシールーティングの判定 | `FirewallZone`、`FirewallPolicy`、`IPAddressSet`、`SourceNAT`、`PortForward`、`EgressRoutePolicy` | nftables |
-| 回線のアドレスを持つ DNS レコード | `DNSRecordSet` | 事業者の HTTP API |
+| 回線のアドレス、または委譲の中のアドレスを持つ DNS レコード | `DNSRecordSet` | 事業者の HTTP API |
 | カーネルのスイッチ | `spec.global` | カーネル |
 
 regied は networkd の設定を自分の接頭辞のファイルとして `/etc/systemd/network/` に置き、
@@ -307,7 +307,7 @@ DNS レコードは、失敗しても周回をまったく止めない唯一の�
 - `from` と `to` が同じ `FirewallPolicy` が 2 つ
 - `ifname` が他のインターフェースの `bridge.members` に現れ、かつアドレスも持つ `Interface`
 - 上流インターフェースに PD クライアントが無いのに、委譲プレフィックスから導く指定
-  （インターフェースのアドレス、経路の宛先や next hop、アドレスセットの要素）
+  （インターフェースのアドレス、経路の宛先や next hop、アドレスセットの要素、DNS レコードのアドレス）
 - `token` を書いた導出の経路の宛先やアドレスセットの `networks`、`token` が無い、
   またはインターフェース識別子でない導出の next hop やアドレスセットの `addresses`
 - `ipv4` の `IPAddressSet` にある導出の要素
@@ -327,9 +327,11 @@ DNS レコードは、失敗しても周回をまったく止めない唯一の�
 - `self` という名前の `FirewallZone`
 - `from` が `self` である `FirewallPolicy`
 - `provider` が `cloudflare` 以外である `DNSRecordSet`。実装があるのはその 1 つだけである
-- `type` が `AAAA` である `DNSRecordSet` のレコード。ここのレコードが追従するのは
-  このホストの回線が持つアドレスであり、IPv6 のレコードが代わりに何を持つべきかは
-  まだ決めていない
+- `type` が `A` でも `AAAA` でもない `DNSRecordSet` のレコード
+- `egressRef` が無い、または `address` を持つ `DNSRecordSet` の `A` レコード
+- `egressRef` を持つ、`address` が無い、またはアドレスを導出ではなくリテラルで書いた
+  `DNSRecordSet` の `AAAA` レコード。`AAAA` レコードが持つのは委譲の中のアドレスであり、
+  `token` を添えて委譲から切り出す。リテラルのレコードは regied が最新に保つものを持たない
 - `egressRef` が `DSLiteTunnel` を名指す `DNSRecordSet` のレコード。
   そこからは何も公開できず、レコードが持つべきアドレスも無い
 - リソースの `zone` の中に無い名前を挙げている `DNSRecordSet` のレコード

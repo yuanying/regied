@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,90 @@ func TestDNSRecordSetTakesAWrittenTTLAndProxyFlag(t *testing.T) {
 	}
 }
 
+// An AAAA record holds an address cut from the delegation, and it may share its names
+// with A records: a name with both is two records at the provider (ADR 0024).
+func TestDNSRecordSetTakesAnAAAARecordCutFromTheDelegation(t *testing.T) {
+	cfg, problems := check(t, ifaceWAN+ifaceLAN+pppoe+`    - kind: DNSRecordSet
+      metadata: {name: example-com}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com, "*.example.com"]
+            egressRef: pppoe0
+          - names: [example.com, "*.example.com"]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::200"}
+            ttl: 5m
+`, dnsSecrets())
+	if cfg == nil {
+		t.Fatalf("rejected a coherent document:\n%s", problems)
+	}
+	assertProblems(t, problems, nil)
+
+	records := config.ResourcesOf[*v1alpha1.DNSRecordSetSpec](cfg)[0].Spec.Records
+	record := records[1]
+	if got := record.TypeOrDefault(); got != v1alpha1.DNSRecordAAAA {
+		t.Errorf("type: got %q, want AAAA", got)
+	}
+	if record.Address == nil || record.Address.FromDelegatedPrefix == nil {
+		t.Fatalf("address: got %+v", record.Address)
+	}
+	derived := record.Address.FromDelegatedPrefix
+	if derived.InterfaceRef != "wan" || derived.SubnetID == nil || *derived.SubnetID != 1 || derived.Token != "::200" {
+		t.Errorf("fromDelegatedPrefix: got %+v", derived)
+	}
+	if record.EgressRef != "" {
+		t.Errorf("egressRef: got %q", record.EgressRef)
+	}
+	if records[0].Address != nil {
+		t.Errorf("the A record has no address: %+v", records[0].Address)
+	}
+}
+
+// An AAAA record's address is always derived. A literal one is something regied would
+// have nothing to keep up to date, and it is refused where it is read, with the reason
+// (ADR 0024).
+func TestAnAAAARecordWithALiteralAddressIsRefused(t *testing.T) {
+	for _, address := range []string{
+		`            address: "2001:db8::200"`,
+		`            address: {}`,
+		`            address: {literal: "2001:db8::200"}`,
+		`            address: [2001:db8::200]`,
+	} {
+		_, err := config.Parse(doc(ifaceWAN + `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+` + address + "\n"))
+		if err == nil {
+			t.Errorf("%s: parsed, want an error", address)
+		}
+	}
+
+	_, err := config.Parse(doc(ifaceWAN + `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+            address: "2001:db8::200"
+`))
+	if err == nil || !strings.Contains(err.Error(), "derived") {
+		t.Errorf("the refusal says the address is derived: %v", err)
+	}
+}
+
 func TestDNSRecordSetRefusals(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -138,7 +223,9 @@ func TestDNSRecordSetRefusals(t *testing.T) {
 			want: []string{"spec.provider: required"},
 		},
 		{
-			name: "an AAAA record",
+			// An uplink's own IPv6 address is not what the outside world reaches over
+			// IPv6, and an AAAA record never follows it (ADR 0019, ADR 0024).
+			name: "an AAAA record following an uplink",
 			resources: `    - kind: DNSRecordSet
       metadata: {name: set}
       spec:
@@ -149,8 +236,166 @@ func TestDNSRecordSetRefusals(t *testing.T) {
           - names: [example.com]
             type: AAAA
             egressRef: pppoe0
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::200"}
 `,
-			want: []string{"spec.records[0].type: AAAA is not a record regied writes"},
+			want: []string{"spec.records[0].egressRef: an AAAA record holds an address cut from the delegation"},
+		},
+		{
+			name: "an AAAA record with no address",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+`,
+			want: []string{"spec.records[0].address: required"},
+		},
+		{
+			// A record holds an address, so the token is the host half it cannot do
+			// without (ADR 0021).
+			name: "an AAAA record cut from the delegation without a token",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1}
+`,
+			want: []string{"spec.records[0].address.fromDelegatedPrefix.token: required"},
+		},
+		{
+			name: "an AAAA record whose token is not an interface identifier",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "2001:db8::200"}
+`,
+			want: []string{`spec.records[0].address.fromDelegatedPrefix.token: "2001:db8::200" is not an interface identifier`},
+		},
+		{
+			name: "an AAAA record with no subnet ID",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, token: "::200"}
+`,
+			want: []string{"spec.records[0].address.fromDelegatedPrefix.subnetID: required"},
+		},
+		{
+			// The prefix has to be one this host was delegated: an interface that asks
+			// for nothing is handed nothing.
+			name: "an AAAA record cut from an interface with no prefix-delegation client",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: lan, subnetID: 1, token: "::200"}
+`,
+			want: []string{`spec.records[0].address.fromDelegatedPrefix.interfaceRef: the Interface "lan" has no prefix-delegation client`},
+		},
+		{
+			name: "an AAAA record cut from an interface that is not declared",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: nowhere, subnetID: 1, token: "::200"}
+`,
+			want: []string{`spec.records[0].address.fromDelegatedPrefix.interfaceRef`},
+		},
+		{
+			name: "an A record carrying an address",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            egressRef: pppoe0
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::200"}
+`,
+			want: []string{"spec.records[0].address: an A record follows an uplink"},
+		},
+		{
+			name: "a record type regied does not write",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: set}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [example.com]
+            type: MX
+            egressRef: pppoe0
+`,
+			want: []string{`spec.records[0].type: "MX" is not a record type regied writes`},
+		},
+		{
+			name: "the same AAAA name across two sets",
+			resources: `    - kind: DNSRecordSet
+      metadata: {name: first}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/api-token
+        records:
+          - names: [www.example.com]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::200"}
+    - kind: DNSRecordSet
+      metadata: {name: second}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /secrets/other-token
+        records:
+          - names: [WWW.example.com.]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 2, token: "::200"}
+`,
+			want: []string{`the AAAA record for "WWW.example.com." is already declared by DNSRecordSet/first`},
 		},
 		{
 			name: "a name outside the zone",

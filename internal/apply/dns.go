@@ -22,7 +22,8 @@ type DNSChange struct {
 	// Resource is the DNSRecordSet the record was declared in, for a diagnostic that
 	// points at the file.
 	Resource string
-	// Follows is the uplink whose address the record holds.
+	// Follows is what the record's address comes from: the uplink whose address an A
+	// record holds, or the delegation an AAAA record's address is cut from.
 	Follows string
 	Record  ddns.Record
 	// TokenFile is where the API token is, not what it is.
@@ -38,51 +39,69 @@ func (c DNSChange) describe() string {
 	return fmt.Sprintf("set %s %s to %s in %s", c.Record.Name, c.Record.Type, c.Record.Content, c.Record.Zone)
 }
 
-// records is every record the declaration asks for, with the address of the uplink it
-// follows, and what a turn would do with each.
+// records is every record the declaration asks for, with the address it should hold,
+// and what a turn would do with each; and every AAAA address resolved, with the
+// delegation it was cut from, for a dry run to show beside the other derived values.
 //
 // Nothing here contacts the provider. What decides whether to write is what this process
-// last wrote — which is in hand — and the address the kernel is holding, which the
-// runtime already read for the uplink sets (ADR 0015, ADR 0019).
+// last wrote — which is in hand — and the address: the one the kernel holds on the
+// uplink, which the runtime already read for the uplink sets, or the one cut from the
+// delegation networkd holds (ADR 0015, ADR 0019, ADR 0024).
 //
-// A rendering has read no host, so it has no address to show. It says which uplink each
-// record follows and leaves the address empty, rather than inventing one.
-func (e *Engine) records(cfg *config.Config, addresses map[string][]netip.Addr, rendered bool) (changes []DNSChange, waiting []string) {
+// A rendering has read no host, so it has no uplink address to show. It says what each
+// record follows and leaves the address empty, rather than inventing one. An AAAA address
+// is shown when the rendering was given the delegation it is cut from.
+func (e *Engine) records(cfg *config.Config, addresses map[string][]netip.Addr, delegations config.Delegations, rendered bool) (changes []DNSChange, resolved, waiting []string) {
 	for _, set := range config.ResourcesOf[*v1alpha1.DNSRecordSetSpec](cfg) {
-		for _, record := range set.Spec.Records {
-			uplink := uplinkRef(cfg, record.EgressRef)
+		for i, record := range set.Spec.Records {
+			resource := "DNSRecordSet/" + set.Name
+			change := func(name, follows, content string) DNSChange {
+				return DNSChange{
+					Resource:  resource,
+					Follows:   follows,
+					Record:    desiredRecord(set.Spec, record, name, content),
+					TokenFile: set.Spec.APITokenFile,
+				}
+			}
+
+			follows, address, err := recordAddress(cfg, record, addresses, delegations)
+			if record.Address != nil && err == nil {
+				resolved = append(resolved, fmt.Sprintf("%s: spec.records[%d] %s, in %s delegated on Interface/%s",
+					resource, i, address.Address, address.Delegation, record.Address.FromDelegatedPrefix.InterfaceRef))
+			}
 			if rendered {
+				reason := "the address is the uplink's, and nothing was read from this host"
+				content := ""
+				if record.Address != nil {
+					if err != nil {
+						reason = "the address is cut from the delegation, and the rendering waits for " + waitingFor(err)
+					} else {
+						reason = "cut from the delegation that was given; a rendering writes nothing"
+						content = address.Address.String()
+					}
+				}
 				for _, name := range record.Names {
-					changes = append(changes, DNSChange{
-						Resource:  "DNSRecordSet/" + set.Name,
-						Follows:   uplink,
-						Record:    desiredRecord(set.Spec, record, name, ""),
-						TokenFile: set.Spec.APITokenFile,
-						Reason:    "the address is the uplink's, and nothing was read from this host",
-					})
+					rendering := change(name, follows, content)
+					rendering.Reason = reason
+					changes = append(changes, rendering)
 				}
 				continue
 			}
 
-			address, held := recordAddress(addresses[record.EgressRef], record.TypeOrDefault())
-			if !held {
-				// While the uplink holds no address — the session is redialling, the
-				// line is down — the records are left exactly as they are. An empty
-				// record is not a smaller version of the one declared (ADR 0016).
-				waiting = append(waiting, fmt.Sprintf(
-					"DNSRecordSet/%s: waiting for an address on %s; %s left as they are",
-					set.Name, uplink, strings.Join(record.Names, ", ")))
+			if err != nil {
+				// While there is no address to hold — the session is redialling, no
+				// delegation is held — the records are left exactly as they are. An
+				// empty record is not a smaller version of the one declared, and one
+				// pointing at the previous prefix for a minute is better than none
+				// (ADR 0016, ADR 0024).
+				waiting = append(waiting, fmt.Sprintf("%s: waiting for %s; %s left as they are",
+					resource, waitingFor(err), strings.Join(record.Names, ", ")))
 				continue
 			}
 			for _, name := range record.Names {
-				change := DNSChange{
-					Resource:  "DNSRecordSet/" + set.Name,
-					Follows:   uplink,
-					Record:    desiredRecord(set.Spec, record, name, address.String()),
-					TokenFile: set.Spec.APITokenFile,
-				}
-				change.Write, change.Reason = writeReason(e.dnsWriter, change.Record)
-				changes = append(changes, change)
+				write := change(name, follows, address.Address.String())
+				write.Write, write.Reason = writeReason(e.dnsWriter, write.Record)
+				changes = append(changes, write)
 			}
 		}
 	}
@@ -95,7 +114,7 @@ func (e *Engine) records(cfg *config.Config, addresses map[string][]netip.Addr, 
 		}
 		return cmp.Compare(a.Record.Type, b.Record.Type)
 	})
-	return changes, waiting
+	return changes, resolved, waiting
 }
 
 // writeReason says whether a record has to be written, and why.
@@ -128,15 +147,25 @@ func desiredRecord(set *v1alpha1.DNSRecordSetSpec, record v1alpha1.DNSRecord, na
 	}
 }
 
-// recordAddress is the address a record of this type should hold, out of what its uplink
-// is holding. The runtime has already dropped everything that is not globally reachable.
-func recordAddress(held []netip.Addr, recordType v1alpha1.DNSRecordType) (netip.Addr, bool) {
-	for _, address := range held {
-		if recordType == v1alpha1.DNSRecordA && address.Is4() {
-			return address, true
+// recordAddress is what a record follows, as a diagnostic names it, and the address it
+// should hold now. An error is what the record waits for.
+//
+// An A record holds the IPv4 address its uplink is holding; the runtime has already
+// dropped everything that is not globally reachable. An AAAA record holds the address cut
+// from the delegation its interface holds (ADR 0024).
+func recordAddress(cfg *config.Config, record v1alpha1.DNSRecord, addresses map[string][]netip.Addr, delegations config.Delegations) (string, config.Resolved, error) {
+	if record.Address != nil {
+		derived := *record.Address.FromDelegatedPrefix
+		address, err := delegations.Address(derived)
+		return "the delegation on Interface/" + derived.InterfaceRef, address, err
+	}
+	uplink := uplinkRef(cfg, record.EgressRef)
+	for _, address := range addresses[record.EgressRef] {
+		if address.Is4() {
+			return uplink, config.Resolved{Address: address}, nil
 		}
 	}
-	return netip.Addr{}, false
+	return uplink, config.Resolved{}, fmt.Errorf("an address on %s", uplink)
 }
 
 // uplinkRef is a record's egressRef as a resource reference, for a diagnostic. A

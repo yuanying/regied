@@ -16,12 +16,15 @@ type DNSProvider string
 // ProviderCloudflare is the only provider regied writes records at.
 const ProviderCloudflare DNSProvider = "cloudflare"
 
-// DNSRecordType is the type of a record. A is the only one regied writes: a record here
-// follows an address this host's uplink holds, and that is the IPv4 address. The field
-// exists so that widening it later adds a value rather than a field (ADR 0019).
+// DNSRecordType is the type of a record. An A record follows the IPv4 address this
+// host's uplink holds (ADR 0019); an AAAA record holds an address inside the prefix this
+// host was delegated, which is where the outside world reaches over IPv6 (ADR 0024).
 type DNSRecordType string
 
-const DNSRecordA DNSRecordType = "A"
+const (
+	DNSRecordA    DNSRecordType = "A"
+	DNSRecordAAAA DNSRecordType = "AAAA"
+)
 
 // DNSRecordTTL is how long a resolver may cache a record.
 //
@@ -75,19 +78,55 @@ type DNSRecordSetSpec struct {
 
 func (*DNSRecordSetSpec) ResourceKind() ResourceKind { return KindDNSRecordSet }
 
-// DNSRecord is one set of properties over several names. The names follow the same
-// uplink and want the same flags, which is how a zone's apex and its wildcard are
-// written; each name is its own record at the provider.
+// DNSRecord is one set of properties over several names. The names hold the same address
+// and want the same flags, which is how a zone's apex and its wildcard are written; each
+// name is its own record at the provider.
 //
-// There is no field for the address. It is the uplink's, exactly as it is for SourceNAT
-// and PortForward, and writing it down produces a configuration that works until the
-// address changes (ADR 0002, ADR 0019).
+// An A record names the uplink it follows, and the address is the uplink's, exactly as it
+// is for SourceNAT and PortForward (ADR 0002, ADR 0019). An AAAA record carries Address
+// instead, which says where its address is derived from; there is no form that writes the
+// address down, because that produces a configuration that works until the address
+// changes (ADR 0024).
 type DNSRecord struct {
-	Names     []string      `yaml:"names"`
-	Type      DNSRecordType `yaml:"type"`
-	EgressRef string        `yaml:"egressRef"`
-	Proxied   *bool         `yaml:"proxied"`
-	TTL       DNSRecordTTL  `yaml:"ttl"`
+	Names     []string          `yaml:"names"`
+	Type      DNSRecordType     `yaml:"type"`
+	EgressRef string            `yaml:"egressRef"`
+	Address   *DNSRecordAddress `yaml:"address"`
+	Proxied   *bool             `yaml:"proxied"`
+	TTL       DNSRecordTTL      `yaml:"ttl"`
+}
+
+// DNSRecordAddress is where an AAAA record's address comes from. It is a container
+// rather than the form directly on the record, so that the field saying what the record
+// holds reads the same whichever form it carries (ADR 0024).
+type DNSRecordAddress struct {
+	FromDelegatedPrefix *DelegatedPrefixAddr `yaml:"fromDelegatedPrefix"`
+}
+
+// UnmarshalYAML refuses an address written out, here where the line is known. A literal
+// record is one regied would have nothing to keep up to date, and it belongs in the
+// provider's own console (ADR 0024). It takes the unmarshal-function form so that the
+// mapping is still decoded strictly; see Resource.UnmarshalYAML.
+func (a *DNSRecordAddress) UnmarshalYAML(unmarshal func(any) error) error {
+	var capture nodeCapture
+	if err := unmarshal(&capture); err != nil {
+		return err
+	}
+	node := &capture.node
+	if node.Kind != yaml.MappingNode {
+		return typeErrorf(node, "a record's address is derived, never written out: write fromDelegatedPrefix, and keep a literal record at the provider")
+	}
+	var derived struct {
+		FromDelegatedPrefix *DelegatedPrefixAddr `yaml:"fromDelegatedPrefix"`
+	}
+	if err := unmarshal(&derived); err != nil {
+		return err
+	}
+	if derived.FromDelegatedPrefix == nil {
+		return typeErrorf(node, "a record's address needs fromDelegatedPrefix")
+	}
+	a.FromDelegatedPrefix = derived.FromDelegatedPrefix
+	return nil
 }
 
 // TypeOrDefault is the record type, which is A unless something else was written.

@@ -111,7 +111,7 @@ applied at boot, which would enable forwarding before the firewall exists.
 | Address handout, DNS | `DHCPServer`, `DNSForwarder` | dnsmasq |
 | The host's own resolver, when `listenOn` names `loopback` | `DNSForwarder` | systemd-networkd, read by systemd-resolved |
 | Firewall, NAT, policy-routing match | `FirewallZone`, `FirewallPolicy`, `IPAddressSet`, `SourceNAT`, `PortForward`, `EgressRoutePolicy` | nftables |
-| DNS records holding an uplink's address | `DNSRecordSet` | the provider's HTTP API |
+| DNS records holding an uplink's address, or an address inside the delegation | `DNSRecordSet` | the provider's HTTP API |
 | Kernel switches | `spec.global` | kernel |
 
 regied writes networkd files into `/etc/systemd/network/` under its own prefix, builds
@@ -324,8 +324,8 @@ Beyond references resolving and required fields being present, regied rejects:
 - an `Interface` whose `ifname` appears in another interface's `bridge.members` and
   that also carries an address
 - a value derived from a delegated prefix — an interface's address, a route's
-  destination or next hop, an address set's entry — whose upstream interface has no
-  prefix-delegation client
+  destination or next hop, an address set's entry, a DNS record's address — whose upstream
+  interface has no prefix-delegation client
 - a derived route destination or address set network that carries a `token`, and a
   derived next hop or address set address that does not, or whose `token` is not an
   interface identifier
@@ -349,9 +349,12 @@ Beyond references resolving and required fields being present, regied rejects:
 - a `FirewallPolicy` whose `from` is `self`
 - a `DNSRecordSet` whose `provider` is anything other than `cloudflare`, which is the one
   provider there is an implementation for
-- a `DNSRecordSet` record whose `type` is `AAAA`. A record here follows an address this
-  host's uplink holds, and what an IPv6 record should hold instead is a decision that has
-  not been made
+- a `DNSRecordSet` record whose `type` is anything other than `A` or `AAAA`
+- a `DNSRecordSet` `A` record without an `egressRef`, or carrying an `address`
+- a `DNSRecordSet` `AAAA` record carrying an `egressRef`, or without an `address`, or with
+  an address written out rather than derived. An `AAAA` record holds an address inside the
+  delegation, cut from it with a `token`; a literal one is a record regied would have
+  nothing to keep up to date
 - a `DNSRecordSet` record whose `egressRef` names a `DSLiteTunnel`, which publishes
   nothing and therefore has no address for a record to hold
 - a `DNSRecordSet` record naming a name that is not inside the resource's `zone`
