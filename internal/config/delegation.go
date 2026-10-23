@@ -1,8 +1,11 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
@@ -110,4 +113,70 @@ func (d Delegations) delegation(name string) (netip.Prefix, error) {
 	}
 	return netip.Prefix{}, &DelegationError{Waiting: fmt.Sprintf(
 		"Interface/%s to hold one delegated prefix; it holds %d (%s)", name, len(prefixes), strings.Join(held, ", "))}
+}
+
+// AdvertisedAddress is one address networkd configured on a link from a router
+// advertisement, and how long networkd prefers it, as networkd describes the link.
+//
+// PreferredUntil is networkd's own figure, compared only with another address's on the
+// same host; an address networkd describes with no preferred lifetime is preferred for
+// ever, and carries the largest value there is.
+type AdvertisedAddress struct {
+	Address        netip.Addr
+	PreferredUntil uint64
+}
+
+// DelegationFromAdvertisement is the delegation a downstream host knows from the
+// addresses its LAN took from advertisements: the /64 of the address carrying the token,
+// cut back to the declared length (ADR 0023).
+//
+// Only a global address counts. A unique local address advertised beside it is not the
+// delegation, and a temporary address does not carry the token. Two subnets of one
+// delegation are one delegation.
+//
+// held is what Delegations holds for the interface. None is a reason to wait. More than
+// one delegation is ordinary for a while after a prefix change, and the one preferred
+// longest is taken — the new one, as soon as it has arrived — with the others in
+// passedOver for the turn to report. Delegations preferred equally long cannot be told
+// apart, and are all held, which makes everything cut from them wait and say why.
+func DelegationFromAdvertisement(addresses []AdvertisedAddress, token string, length int) (held, passedOver []netip.Prefix) {
+	identifier, err := netip.ParseAddr(token)
+	if err != nil || !identifier.Is6() {
+		return nil, nil
+	}
+	host := identifier.As16()
+
+	preferred := make(map[netip.Prefix]uint64)
+	for _, advertised := range addresses {
+		address := advertised.Address
+		if !address.Is6() || address.Is4In6() || !address.IsGlobalUnicast() || address.IsPrivate() {
+			continue
+		}
+		if bytes := address.As16(); [8]byte(bytes[8:]) != [8]byte(host[8:]) {
+			continue
+		}
+		delegation, err := address.Prefix(length)
+		if err != nil {
+			continue
+		}
+		if until, seen := preferred[delegation]; !seen || advertised.PreferredUntil > until {
+			preferred[delegation] = advertised.PreferredUntil
+		}
+	}
+
+	candidates := slices.Collect(maps.Keys(preferred))
+	slices.SortFunc(candidates, func(a, b netip.Prefix) int {
+		if order := cmp.Compare(preferred[b], preferred[a]); order != 0 {
+			return order
+		}
+		return a.Addr().Compare(b.Addr())
+	})
+	switch {
+	case len(candidates) <= 1:
+		return candidates, nil
+	case preferred[candidates[0]] == preferred[candidates[1]]:
+		slices.SortFunc(candidates, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
+		return candidates, nil
+	}
+	return candidates[:1], candidates[1:]
 }

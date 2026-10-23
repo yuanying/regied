@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yuanying/regied/internal/config"
 	"github.com/yuanying/regied/internal/ddns"
 )
 
@@ -37,6 +39,11 @@ type Host struct {
 	// `regied render` wants (ADR 0021).
 	Delegations DelegationReader
 
+	// Advertisements is networkd's answer to which addresses each link took from a
+	// router advertisement, which is how a host behind a router knows the delegation its
+	// LAN is advertised a subnet of. Left nil, nothing is read (ADR 0023).
+	Advertisements AdvertisementReader
+
 	// DNS is the provider a DNSRecordSet's records are written at. It is an interface
 	// for the same reason the rest of this structure is: a turn in a test writes to
 	// nothing, and `make test` opens no socket (ADR 0019).
@@ -55,19 +62,20 @@ type Host struct {
 // OSHost is the host this process is running on.
 func OSHost() Host {
 	return Host{
-		Files:       OSFileSystem{},
-		Runner:      OSRunner{},
-		Resolver:    OSResolver{},
-		Links:       OSLinks{},
-		Delegations: OSDelegations{},
-		Sysctl:      OSSysctl{},
-		Units:       OSUnits{},
-		DNS:         ddns.NewCloudflare(nil),
-		Clock:       OSClock{},
-		Locker:      OSLocker{},
-		Control:     OSControl{},
-		Timer:       OSTimer{},
-		Notifier:    OSNotifier{},
+		Files:          OSFileSystem{},
+		Runner:         OSRunner{},
+		Resolver:       OSResolver{},
+		Links:          OSLinks{},
+		Delegations:    OSDelegations{},
+		Advertisements: OSDelegations{},
+		Sysctl:         OSSysctl{},
+		Units:          OSUnits{},
+		DNS:            ddns.NewCloudflare(nil),
+		Clock:          OSClock{},
+		Locker:         OSLocker{},
+		Control:        OSControl{},
+		Timer:          OSTimer{},
+		Notifier:       OSNotifier{},
 	}
 }
 
@@ -255,6 +263,14 @@ type DelegationReader interface {
 	DelegatedPrefixes(ctx context.Context, ifname string) ([]netip.Prefix, error)
 }
 
+// AdvertisementReader reads the addresses networkd configured on a link from router
+// advertisements, as networkd describes the link. On a host behind a router the address
+// carrying the declared token is what the delegation is read from (ADR 0023). A link
+// that has taken none answers none, which is not an error.
+type AdvertisementReader interface {
+	AdvertisedAddresses(ctx context.Context, ifname string) ([]config.AdvertisedAddress, error)
+}
+
 // --- the implementations that talk to this host ----------------------------------
 
 // OSDelegations asks this host's networkd, through the description `networkctl status
@@ -268,6 +284,16 @@ func (OSDelegations) DelegatedPrefixes(ctx context.Context, ifname string) ([]ne
 		return nil, err
 	}
 	return parseDelegatedPrefixes(out)
+}
+
+// AdvertisedAddresses reads the same description for the addresses networkd took from
+// router advertisements.
+func (OSDelegations) AdvertisedAddresses(ctx context.Context, ifname string) ([]config.AdvertisedAddress, error) {
+	out, err := OSRunner{}.Run(ctx, Command{Name: "networkctl", Args: []string{"status", "--json=short", "--", ifname}})
+	if err != nil {
+		return nil, err
+	}
+	return parseAdvertisedAddresses(out)
 }
 
 // linkDescription is the part of networkd's description of a link that says what its
@@ -308,6 +334,50 @@ func parseDelegatedPrefixes(data []byte) ([]netip.Prefix, error) {
 			return nil, fmt.Errorf("networkd describes a delegated prefix of length %d", delegated.PrefixLength)
 		}
 		out = append(out, prefix)
+	}
+	return out, nil
+}
+
+// linkAddresses is the part of networkd's description of a link that lists its
+// addresses. networkd names where each came from; an address from a router advertisement
+// is "NDisc". The preferred lifetime is networkd's timestamp in microseconds, and an
+// address that is preferred for ever has none.
+type linkAddresses struct {
+	Addresses []struct {
+		Family                int     `json:"Family"`
+		RawAddress            []int   `json:"Address"`
+		ConfigSource          string  `json:"ConfigSource"`
+		PreferredLifetimeUSec *uint64 `json:"PreferredLifetimeUSec"`
+	} `json:"Addresses"`
+}
+
+// parseAdvertisedAddresses reads the IPv6 addresses networkd took from router
+// advertisements out of a link's description, in the order networkd lists them.
+func parseAdvertisedAddresses(data []byte) ([]config.AdvertisedAddress, error) {
+	var description linkAddresses
+	if err := json.Unmarshal(data, &description); err != nil {
+		return nil, fmt.Errorf("cannot read networkd's description of the link: %w", err)
+	}
+	var out []config.AdvertisedAddress
+	for _, described := range description.Addresses {
+		if described.Family != syscall.AF_INET6 || described.ConfigSource != "NDisc" {
+			continue
+		}
+		if len(described.RawAddress) != 16 {
+			return nil, fmt.Errorf("networkd describes an IPv6 address of %d bytes, want 16", len(described.RawAddress))
+		}
+		var raw [16]byte
+		for i, b := range described.RawAddress {
+			if b < 0 || b > 255 {
+				return nil, fmt.Errorf("networkd describes an address with a byte of %d", b)
+			}
+			raw[i] = byte(b)
+		}
+		preferred := uint64(math.MaxUint64)
+		if described.PreferredLifetimeUSec != nil {
+			preferred = *described.PreferredLifetimeUSec
+		}
+		out = append(out, config.AdvertisedAddress{Address: netip.AddrFrom16(raw), PreferredUntil: preferred})
 	}
 	return out, nil
 }

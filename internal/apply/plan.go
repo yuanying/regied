@@ -697,7 +697,11 @@ func delegationsOf(cfg *config.Config, runtime *Runtime, rendered *rendering) []
 		for i, prefix := range prefixes {
 			held[i] = prefix.String()
 		}
-		lines = append(lines, fmt.Sprintf("Interface/%s: delegated %s", iface.Name, strings.Join(held, ", ")))
+		line := fmt.Sprintf("Interface/%s: delegated %s", iface.Name, strings.Join(held, ", "))
+		if iface.Spec.AdvertisedDelegationOf() != nil {
+			line += ", cut from the prefix advertised to it"
+		}
+		lines = append(lines, line)
 	}
 	return append(lines, rendered.derived...)
 }

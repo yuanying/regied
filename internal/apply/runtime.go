@@ -213,6 +213,55 @@ func (c *collector) readDelegations(ctx context.Context) {
 			c.runtime.Networkd.DelegatedPrefixes[iface.Name] = prefixes
 		}
 	}
+	c.readAdvertisedDelegations(ctx)
+}
+
+// readAdvertisedDelegations reads the delegation a host behind a router knows from the
+// advertisement on its LAN: the address networkd took from it with the declared token,
+// its /64 cut back to the declared length (ADR 0023).
+//
+// As on a router, none of this fails the turn. Nothing advertised yet, or nothing that
+// can be told apart, is a reason for what is cut from it to wait.
+func (c *collector) readAdvertisedDelegations(ctx context.Context) {
+	if c.host.Advertisements == nil {
+		return
+	}
+	for _, iface := range config.ResourcesOf[*v1alpha1.InterfaceSpec](c.cfg) {
+		advertised := iface.Spec.AdvertisedDelegationOf()
+		token := advertisedToken(iface.Spec)
+		if advertised == nil || advertised.PrefixLength == nil || token == "" {
+			continue
+		}
+		addresses, err := c.host.Advertisements.AdvertisedAddresses(ctx, iface.Spec.Ifname)
+		if err != nil {
+			c.notef("Interface/%s: the addresses taken from the router advertisement cannot be read from networkd: %v", iface.Name, err)
+			continue
+		}
+		held, passedOver := config.DelegationFromAdvertisement(addresses, token, *advertised.PrefixLength)
+		if len(held) == 0 {
+			continue
+		}
+		c.runtime.Networkd.DelegatedPrefixes[iface.Name] = held
+		if len(passedOver) > 0 {
+			others := make([]string, len(passedOver))
+			for i, prefix := range passedOver {
+				others[i] = prefix.String()
+			}
+			c.notef("Interface/%s is advertised subnets of %d delegations; took %s, which is preferred longest, over %s",
+				iface.Name, len(passedOver)+1, held[0], strings.Join(others, ", "))
+		}
+	}
+}
+
+// advertisedToken is the token of the interface's address taken from the router
+// advertisement, or empty. Validation allows at most one.
+func advertisedToken(spec *v1alpha1.InterfaceSpec) string {
+	for _, address := range spec.Addresses {
+		if address.FromRouterAdvertisement != nil {
+			return address.FromRouterAdvertisement.Token
+		}
+	}
+	return ""
 }
 
 // readLinkAddresses reads what each uplink's link is holding.

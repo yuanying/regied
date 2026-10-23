@@ -1,0 +1,108 @@
+# regied example configuration: a host behind the router
+#
+# The host at token ::10 on the LAN of the router in example.yaml. It runs a
+# container runtime and gives the containers a bridge of their own. IPv6 has
+# no NAT, so the bridge needs a subnet of its own out of the router's
+# delegation: subnet 2, which the router routes here through this host's LAN
+# address (ADR 0023).
+#
+# No prefix is written anywhere in this file. The LAN takes its address from
+# the router's advertisement and states how long the delegation it is a
+# subnet of is; everything else is cut from that delegation, and follows a
+# prefix change without an edit. What is still written on both hosts is the
+# allocation — subnet 2 belongs to the host at ::10 — which changes only when
+# somebody re-plans the network.
+#
+# The schema is described in docs/spec/. Every address below is reserved for
+# documentation, as in example.yaml.
+
+apiVersion: net.unstable.cloud/v1alpha1
+kind: NetworkConfig
+metadata:
+  name: example-downstream
+
+spec:
+  global:
+    ipForwarding: true
+
+  resources:
+    # The LAN. Its address is taken from the router's advertisement, and the
+    # advertised /64 cut back to /56 is the delegation on this host.
+    - kind: Interface
+      metadata: {name: lan}
+      spec:
+        ifname: eth0
+        addresses:
+          - fromRouterAdvertisement: {token: "::10"}
+        ipv6:
+          advertisedDelegation:
+            prefixLength: 56
+
+    # The containers' bridge. A container runtime plugs its veths in, so it
+    # names no member. Its address is written into the file as the value it
+    # resolves to, and advertised as a literal prefix with short lifetimes,
+    # so that containers let go of the old prefix soon after a change.
+    - kind: Interface
+      metadata: {name: containers}
+      spec:
+        ifname: br-v6net
+        bridge: {}
+        addresses:
+          - fromDelegatedPrefix:
+              interfaceRef: lan
+              subnetID: 2
+              token: "::1"
+        ipv6:
+          advertise:
+            mode: slaac
+
+    - kind: FirewallZone
+      metadata: {name: lan}
+      spec:
+        linkRefs: [lan]
+
+    - kind: FirewallZone
+      metadata: {name: containers}
+      spec:
+        linkRefs: [containers]
+
+    # A container that is reachable from the LAN, named once and cut from the
+    # same delegation as the bridge.
+    - kind: IPAddressSet
+      metadata: {name: web}
+      spec:
+        family: ipv6
+        addresses:
+          - fromDelegatedPrefix: {interfaceRef: lan, subnetID: 2, token: "::151"}
+
+    - kind: FirewallPolicy
+      metadata: {name: lan-to-containers}
+      spec:
+        from: lan
+        to: containers
+        defaultAction: drop
+        rules:
+          - name: icmpv6
+            action: accept
+            family: ipv6
+            protocol: icmpv6
+          - name: web
+            action: accept
+            family: ipv6
+            protocol: tcp
+            destinationAddressSetRefs: [web]
+            destinationPorts: [443]
+
+    - kind: FirewallPolicy
+      metadata: {name: containers-to-lan}
+      spec:
+        from: containers
+        to: lan
+        defaultAction: accept
+
+    - kind: FirewallPolicy
+      metadata: {name: lan-to-self}
+      spec:
+        from: lan
+        to: self
+        defaultAction: accept

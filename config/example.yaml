@@ -78,6 +78,8 @@ spec:
           # ends are cut from the prefix the provider delegates now, so the
           # route follows a prefix change; while there is no delegation the
           # route is left out, because the subnet it names does not exist.
+          # The host at ::10 cuts its container bridge from the same subnet:
+          # see example-downstream.yaml.
           - destination:
               fromDelegatedPrefix: {interfaceRef: wan, subnetID: 2}
             via:
