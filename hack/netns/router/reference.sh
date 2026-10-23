@@ -9,7 +9,7 @@
 # described in ADR 0010) and the same tests can be run against an existing
 # implementation or against one of our own.
 #
-# Usage: reference.sh up | down
+# Usage: reference.sh up | down | resolicit
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +28,8 @@ PPP_PID_FILE="/var/run/ppp-${PPP_LINKNAME}.pid"
 DSLITE_IF="dslite0"
 
 DHCPCD_CONF="${RUNTIME_DIR}/router-dhcpcd.conf"
+# The access concentrator the session last came up with.
+CONCENTRATOR_RECORD="${RUNTIME_DIR}/router-concentrator"
 
 # The routing tables. Policy routing picks between them per source range.
 TABLE_PPPOE=1
@@ -66,7 +68,8 @@ setup_wan_v6() {
 # The session is dialled again when it drops, as when the provider moves the line to
 # another access concentrator. The PPPoE link is created anew each time, and the route
 # the policy routing table holds through it goes with it, so the ip-up script puts that
-# route back.
+# route back, and has the delegation asked for again when the session came back from
+# another concentrator (resolicit).
 start_pppoe() {
   local user password
   user="$(cat "${PPPOE_USER_FILE}")"
@@ -74,7 +77,11 @@ start_pppoe() {
 
   cat >"${PPP_IP_UP}" <<SCRIPT
 #!/bin/sh
+# pppd hands its scripts a PATH without the sbin directories, where dhcpcd is.
+PATH=/usr/local/sbin:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
 ip route replace default dev "\$1" table ${TABLE_PPPOE}
+"${here}/reference.sh" resolicit >>"${RUNTIME_DIR}/router-ip-up.log" 2>&1
 SCRIPT
   chmod 0755 "${PPP_IP_UP}"
 
@@ -119,6 +126,32 @@ interface ${ROUTER_WAN_IF}
   ia_pd 1/::/${PD_LENGTH}
 CONF
   r dhcpcd -6 -b -f "${DHCPCD_CONF}" -c "${here}/reference-pd.sh" "${ROUTER_WAN_IF}"
+}
+
+# dhcpcd renames its processes ("dhcpcd: wan0 [ip6]"), so they are found by name. The
+# reference router is the only dhcpcd the testbed runs.
+dhcpcd_gone() {
+  ! pgrep -x dhcpcd >/dev/null
+}
+
+# pppd's ip-up script calls this, with what the PPPoE plugin learned in the environment.
+# When the session came up from an access concentrator other than the last one, the line
+# may have moved to another of the provider's routers, which does not route the prefix
+# dhcpcd holds. dhcpcd is stopped without releasing, its lease is forgotten, and it is
+# started again, so that it solicits. The first session is only recorded.
+resolicit() {
+  local previous=""
+  [[ -n "${MACREMOTE:-}" ]] || return 0
+  [[ -f "${CONCENTRATOR_RECORD}" ]] && previous="$(cat "${CONCENTRATOR_RECORD}")"
+  [[ "${MACREMOTE}" != "${previous}" ]] || return 0
+  echo "${MACREMOTE}" >"${CONCENTRATOR_RECORD}"
+  [[ -n "${previous}" ]] || return 0
+
+  r dhcpcd -6 -x "${ROUTER_WAN_IF}" >/dev/null 2>&1 || true
+  wait_for "dhcpcd to stop" 10 dhcpcd_gone || return 0
+  rm -f /var/lib/dhcpcd/"${ROUTER_WAN_IF}"*.lease6 /var/lib/dhcpcd/"${ROUTER_WAN_IF}"-6.lease*
+  start_dhcpcd
+  log "the session came back from ${MACREMOTE}; the reference router solicits again"
 }
 
 # The B4 side of DS-Lite. Nothing is translated here; NAT44 is the AFTR's job.
@@ -272,5 +305,6 @@ down() {
 case "${1:-}" in
 up) up ;;
 down) down ;;
-*) die "usage: $(basename "$0") up|down" ;;
+resolicit) resolicit ;;
+*) die "usage: $(basename "$0") up|down|resolicit" ;;
 esac

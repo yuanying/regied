@@ -18,10 +18,16 @@
 #   topo.sh delegate <prefix>    delegate this prefix from now on; the router learns of it
 #                                on its next renewal
 #   topo.sh withdraw             stop the DHCPv6 server; what it delegated expires
-#   topo.sh concentrator <mac>   move the PPPoE session to an access concentrator with this
-#                                MAC address; the router has to dial again
+#   topo.sh lifetimes short|long hand out lifetimes of seconds (the default) or of hours,
+#                                keeping the bindings; long waits until the router holds one
+#   topo.sh concentrator <mac> [prefix]
+#                                move the PPPoE session to an access concentrator with this
+#                                MAC address; the router has to dial again. Given a prefix,
+#                                the DHCPv6 server behind it holds no binding for the router
+#                                and delegates that prefix
 #
-# Usage: topo.sh up | down | status | delegate <prefix> | withdraw | concentrator <mac>
+# Usage: topo.sh up | down | status | delegate <prefix> | withdraw | lifetimes short|long |
+#        concentrator <mac> [prefix]
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -166,6 +172,19 @@ setup_wan() {
     nse "${NS_WAN}" ip -6 route add "${prefix}" via "${WAN_V6_ROUTER}" dev "${PPPOE_SERVER_IF}"
   done
 
+  # Count what reaches the DHCPv6 server, so that a check can see from this side whether
+  # the router asked for anything. The checks read the counter by this name.
+  nse "${NS_WAN}" nft -f - <<NFT
+table ip6 dhcpv6 {
+	counter requests {}
+
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname "${PPPOE_SERVER_IF}" udp dport 547 counter name "requests"
+	}
+}
+NFT
+
   setup_aftr
   setup_pppoe_server
 }
@@ -277,10 +296,20 @@ pppoe_server_gone() {
   ! pgrep -f "pppoe-server -I ${PPPOE_SERVER_IF}" >/dev/null
 }
 
+#
+# Given a prefix, the line moves to a router whose DHCPv6 server holds no binding for the
+# router and delegates that prefix, and the provider's AFTR and the LAN hosts move to it, as
+# with delegate. The router does not hear of it from the server: with the lifetimes it was
+# handed, its lease runs on. Only soliciting again brings the new prefix in time.
 move_concentrator() {
-  local mac="$1"
+  local mac="$1" prefix="${2:-}"
   pkill -f "pppoe-server -I ${PPPOE_SERVER_IF}" 2>/dev/null || true
   wait_for "the PPPoE server to stop" 10 pppoe_server_gone || die "the PPPoE server did not stop"
+  if [[ -n "${prefix}" ]]; then
+    stop_kea
+    rm -f "${KEA_DIR}"/kea-leases6.csv*
+    delegate "${prefix}"
+  fi
   nse "${NS_WAN}" ip link set "${PPPOE_SERVER_IF}" address "${mac}"
   start_pppoe_server
   log "the access concentrator is now ${mac}"
@@ -299,8 +328,21 @@ move_concentrator() {
 # environment. It opens its socket only once the interface has a carrier, which arrives
 # when the device under test brings its end up, so it is told to keep trying.
 
+# The lifetimes the server hands out: the short ones lib.sh names, or those of a real line,
+# under which nothing is renewed for the length of a check. Which is in use is kept in a
+# file, so that every restart of the server hands out the same.
+lifetimes_in_use() {
+  cat "${LIFETIMES_FILE}" 2>/dev/null || echo short
+}
+
 write_kea_config() {
   local prefix="${1%/*}"
+  local renew="${PD_RENEW_TIMER}" rebind="${PD_REBIND_TIMER}"
+  local preferred="${PD_PREFERRED_LIFETIME}" valid="${PD_VALID_LIFETIME}"
+  if [[ "$(lifetimes_in_use)" == long ]]; then
+    renew="${PD_LONG_RENEW_TIMER}" rebind="${PD_LONG_REBIND_TIMER}"
+    preferred="${PD_LONG_PREFERRED_LIFETIME}" valid="${PD_LONG_VALID_LIFETIME}"
+  fi
   mkdir -p "${KEA_DIR}"
   cat >"${KEA_DIR}/kea-dhcp6.conf" <<KEA
 {
@@ -316,10 +358,10 @@ write_kea_config() {
       "name": "kea-leases6.csv",
       "lfc-interval": 0
     },
-    "renew-timer": ${PD_RENEW_TIMER},
-    "rebind-timer": ${PD_REBIND_TIMER},
-    "preferred-lifetime": ${PD_PREFERRED_LIFETIME},
-    "valid-lifetime": ${PD_VALID_LIFETIME},
+    "renew-timer": ${renew},
+    "rebind-timer": ${rebind},
+    "preferred-lifetime": ${preferred},
+    "valid-lifetime": ${valid},
     "subnet6": [
       {
         "id": 1,
@@ -381,6 +423,29 @@ delegate() {
 withdraw() {
   stop_kea
   log "stopped the DHCPv6 server; what it delegated expires within ${PD_VALID_LIFETIME}s"
+}
+
+# The server goes on delegating the same prefix, keeping its bindings, with other
+# lifetimes. Moving to the long ones waits until the router has renewed onto them, which
+# the short lifetimes it holds bring within seconds; from then on the router has no reason
+# to ask the server anything.
+holds_long_lease() {
+  awk -F, -v valid="${PD_LONG_VALID_LIFETIME}" 'NR > 1 && $3 == valid { found = 1 } END { exit !found }' \
+    "${KEA_DIR}/kea-leases6.csv"
+}
+
+set_lifetimes() {
+  local which="$1" prefix
+  [[ "${which}" == short || "${which}" == long ]] || die "lifetimes are short or long, not ${which}"
+  prefix="$(cat "${DELEGATION_FILE}")"
+  stop_kea
+  echo "${which}" >"${LIFETIMES_FILE}"
+  start_kea "${prefix}"
+  if [[ "${which}" == long ]]; then
+    wait_for "the router to renew onto the long lifetimes" 30 holds_long_lease || \
+      die "the router did not renew onto the long lifetimes"
+  fi
+  log "the DHCPv6 server hands out ${which} lifetimes"
 }
 
 # The reachability servers. All they do is answer with one line naming the peer they
@@ -514,9 +579,13 @@ delegate)
   delegate "$2"
   ;;
 withdraw) withdraw ;;
-concentrator)
-  [[ -n "${2:-}" ]] || die "usage: $(basename "$0") concentrator <mac>"
-  move_concentrator "$2"
+lifetimes)
+  [[ -n "${2:-}" ]] || die "usage: $(basename "$0") lifetimes short|long"
+  set_lifetimes "$2"
   ;;
-*) die "usage: $(basename "$0") up|down|status|delegate <prefix>|withdraw|concentrator <mac>" ;;
+concentrator)
+  [[ -n "${2:-}" ]] || die "usage: $(basename "$0") concentrator <mac> [prefix]"
+  move_concentrator "$2" "${3:-}"
+  ;;
+*) die "usage: $(basename "$0") up|down|status|delegate <prefix>|withdraw|lifetimes short|long|concentrator <mac> [prefix]" ;;
 esac
