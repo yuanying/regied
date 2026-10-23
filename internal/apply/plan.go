@@ -596,7 +596,9 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 			plan.Firewall.Elements = append(plan.Firewall.Elements, set)
 		}
 	}
-	plan.Records, _ = e.records(cfg, nil, true)
+	var resolved []string
+	plan.Records, resolved, _ = e.records(cfg, nil, runtime.Networkd.DelegatedPrefixes, true)
+	plan.Delegations = append(plan.Delegations, resolved...)
 	return plan, nil
 }
 
@@ -672,8 +674,9 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		}
 	}
 
-	var waitingForRecords []string
-	plan.Records, waitingForRecords = e.records(cfg, runtime.UplinkAddresses, false)
+	var resolvedRecords, waitingForRecords []string
+	plan.Records, resolvedRecords, waitingForRecords = e.records(cfg, runtime.UplinkAddresses, runtime.Networkd.DelegatedPrefixes, false)
+	plan.Delegations = append(plan.Delegations, resolvedRecords...)
 	plan.Waiting = append(plan.Waiting, waitingForRecords...)
 
 	plan.Steps = e.steps(ctx, plan, rendered)

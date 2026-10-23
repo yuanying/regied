@@ -757,7 +757,10 @@ through the uplink and back.
 The records regied keeps in one DNS zone, so that a name published through a
 `PortForward` resolves to the address the uplink is holding now. On a dynamically
 addressed uplink that address changes, and a record still holding the old one makes the
-service unreachable from outside until somebody edits it by hand.
+service unreachable from outside until somebody edits it by hand. An IPv6 record holds an
+address inside the prefix this host was delegated instead, so that a name published over
+IPv6 follows a change of the delegation in the same way
+([ADR 0024](../adr/0024-dns-records-inside-the-delegation.md)).
 
 Backend: the provider's HTTP API. It is the only thing regied talks to that is not on
 this host, and the only reason the host needs CA certificates
@@ -799,24 +802,23 @@ nothing. A file that is missing, unreadable or empty is a validation error.
 | Field | Required | Value |
 |---|---|---|
 | `names` | yes | Fully qualified names, each inside `zone`. At least one |
-| `type` | no | `A`, which is the default and for now the only value |
-| `egressRef` | yes | The uplink these names follow. The address is taken from it |
+| `type` | no | `A`, which is the default, or `AAAA` |
+| `egressRef` | `A` only | The uplink these names follow. The address is taken from it. Refused on `AAAA` |
+| `address` | `AAAA` only | Where the address is derived from. See below. Refused on `A` |
 | `proxied` | no | Default `false`. Cloudflare's proxy flag |
 | `ttl` | no | Default `automatic`, which is the provider's own choice. Otherwise a duration |
 
 One entry is one set of properties over several names, which is how a zone's apex and its
-wildcard are written: they follow the same uplink and want the same flags. Each name
+wildcard are written: they hold the same address and want the same flags. Each name
 becomes its own record at the provider.
 
 **Every name has to be inside the zone** — equal to it, or ending in a dot and it. A name
 outside is a validation error rather than a request the provider refuses on every turn.
 
-**`type` is `A`, and `AAAA` is refused with the reason.** A record here follows an address
-this host's uplink holds, and IPv4 is the family where that address is what the outside
-world has to reach. The IPv6 case a deployment actually wants is an address inside the
-delegated prefix, belonging to a host behind this one — *an address this host routes*,
-which is a different decision and not made (ADR 0019). The field exists so that the
-decision, when it is made, adds a value rather than a field.
+**An entry is either an `A` record following an uplink, or an `AAAA` record holding a
+derived address.** An `A` entry names the uplink in `egressRef`; an `AAAA` entry carries
+`address` instead, and the other field is a validation error on each. A name with both an
+`A` and an `AAAA` entry is two records, and is fine. Any other type is refused.
 
 **`egressRef` names an uplink, and a `DSLiteTunnel` is a validation error.** The tunnel's
 IPv4 is translated by the AFTR, so nothing can be published through it and there is no
@@ -834,11 +836,46 @@ validation error, because it is outside what the provider accepts. So is a durat
 TTL belongs to the provider, and a declaration setting both asks for something that is
 refused on every turn.
 
+### `address`
+
+What an `AAAA` record holds: an address inside the prefix this host was delegated
+([ADR 0024](../adr/0024-dns-records-inside-the-delegation.md)). It is a mapping with
+exactly one form in it.
+
+| Field | Required | Value |
+|---|---|---|
+| `fromDelegatedPrefix.interfaceRef` | yes | The interface running the prefix-delegation client |
+| `fromDelegatedPrefix.subnetID` | yes | Which /64 of the delegated prefix |
+| `fromDelegatedPrefix.token` | yes | The host part, e.g. `::200` |
+
+`fromDelegatedPrefix` is the one an interface's address, a route and an address set take
+([ADR 0021](../adr/0021-values-derived-from-the-delegated-prefix.md)), with the `token`
+required because a record holds an address rather than a subnet. Its `interfaceRef` has to
+name an interface with a `dhcpv6.prefixDelegation` client.
+
+**There is no literal form.** An `AAAA` record with an address written out is one regied
+would have nothing to keep up to date, and the provider's own console is where it belongs.
+An `AAAA` following an uplink's own IPv6 address is refused too: the address the outside
+world has to reach over IPv6 is inside the delegation, not on the uplink
+([ADR 0019](../adr/0019-uplink-address-in-dns-records.md)).
+
+**Which host keeps a name is the host whose declaration decides its address.** A router
+keeps the records for itself and for what on its segments does not run regied — a cluster's
+load-balancer address, a host configured by something else. **One name is written by at
+most one host**: two hosts writing the same name would each put back what the other wrote.
+Within one declaration that is checked; across hosts it cannot be, and keeping the names
+apart is for the repository that holds both declarations.
+
+**A change of the delegation rewrites every `AAAA` record at once, and resolvers keep the
+old answer for the TTL.** The default, `automatic`, is short at the provider. A long TTL on
+an `AAAA` record is a choice to be unreachable for that long after the prefix changes.
+
 ### What a turn does with a record
 
 | When | What happens |
 |---|---|
 | The uplink holds no address | Every record following it is left exactly as it is, and the turn says what it waits for |
+| No delegation is held, or the one held has no room for the subnet ID | Every `AAAA` record cut from it is left exactly as it is, and the turn says what it waits for, naming the interface |
 | The address is not what this process last wrote | The record is written |
 | The record is not at the provider | It is created |
 | The record is at the provider | Its address and declared properties are updated, and its other fields — a comment somebody wrote on it — are left alone |
@@ -860,7 +897,9 @@ address changes or regied restarts.
 the provider nothing.** It does not read the token either: what a dry run has to show is
 decided by the memory and the kernel, both of which are here
 ([ADR 0006](../adr/0006-dry-run-and-rendering.md)). In a fresh process that means every
-record is shown as one it would write, which is what the turn would do.
+record is shown as one it would write, which is what the turn would do. An `AAAA` record's
+address is shown beside the delegation it was cut from, among the values derived from the
+delegated prefix.
 
 **Stopping regied stops the updates.** A host whose daemon is stopped keeps whatever its
 records last held, which is what the stop lever means.

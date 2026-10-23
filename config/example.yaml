@@ -269,6 +269,21 @@ spec:
             # automatic hands the choice to the provider. It is a declared
             # value, and not the same as leaving the field out.
             ttl: automatic
+          # The same names over IPv6 are two more records, holding the
+          # address of the host behind the router that serves them. There
+          # is no NAT to publish through, so the address is inside the
+          # delegated prefix and written as cut from it, the way the
+          # published-v6 set below writes it: a prefix change rewrites
+          # these records with no edit. There is no egressRef and no
+          # literal form -- an AAAA record always holds a derived address.
+          #
+          # Every AAAA record is rewritten at once when the prefix changes,
+          # and a resolver keeps the old answer for the TTL, so a long one
+          # here is a choice to be unreachable for that long.
+          - names: [example.com, "*.example.com"]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::200"}
 
     - kind: DNSRecordSet
       metadata: {name: example-net}

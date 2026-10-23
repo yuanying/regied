@@ -55,14 +55,19 @@ not move traffic from one to the other when one stops carrying it: noticing that
 monitoring, and switching is a person submitting a declaration that names the other uplink
 ([ADR 0026](adr/0026-no-uplink-failover-inside-regied.md)).
 
-The one exception is keeping DNS records at the address this host's uplink holds, so that
-a published name follows a dynamically assigned address. It tells a provider about this
-host and nothing else: no other host is managed, and no configuration is taken from the
-provider. It is decided in [ADR 0019](adr/0019-uplink-address-in-dns-records.md) and
-built, as the [`DNSRecordSet`](spec/kinds.md#dnsrecordset) kind. What stays out of scope is
-everything around it: a record names the uplink it follows and holds an IPv4 address,
-regied creates one that is missing and deletes none, one provider is spoken to, and no
-provider feature beyond the record's address is touched.
+The one exception is keeping DNS records at addresses this host's own configuration
+decides — the address its uplink holds, or an address inside the prefix it was delegated —
+so that a published name follows a dynamically assigned address. It tells a provider about
+this host and nothing else: no other host is managed, and no configuration is taken from the
+provider. It is decided in [ADR 0019](adr/0019-uplink-address-in-dns-records.md), widened
+in [ADR 0024](adr/0024-dns-records-inside-the-delegation.md), and built, as the
+[`DNSRecordSet`](spec/kinds.md#dnsrecordset) kind. What stays out of scope is everything
+around it: a record either follows an uplink and holds its IPv4 address, or holds an IPv6
+address inside a prefix this host was delegated or derived for itself, including its own
+address from an advertisement; regied does not check that anything answers at that
+address, and each name is kept by one host. regied creates a record that is missing and
+deletes none, one provider is spoken to, and no provider feature beyond the record's
+address is touched.
 
 **Distribution is explicitly out of scope.** How a configuration file reaches a node is
 someone else's problem — a configuration management tool, a Git-based delivery pipeline,

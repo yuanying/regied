@@ -206,6 +206,9 @@ func reportRecords(w io.Writer, plan *Plan) {
 	fmt.Fprintln(w, "DNS records")
 	for _, change := range plan.Records {
 		switch {
+		case plan.Rendered && change.Record.Content != "":
+			fmt.Fprintf(w, "  %s %s = %s in %s follows %s (%s)\n",
+				change.Record.Name, change.Record.Type, change.Record.Content, change.Record.Zone, change.Follows, change.Resource)
 		case plan.Rendered:
 			fmt.Fprintf(w, "  %s %s in %s follows %s (%s)\n",
 				change.Record.Name, change.Record.Type, change.Record.Zone, change.Follows, change.Resource)
