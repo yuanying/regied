@@ -100,7 +100,9 @@ up() {
   fi
 
   wait_for "the PPPoE link" 45 ip link show pppoe0 || die "regied did not establish PPPoE"
-  wait_for "the DS-Lite tunnel" 20 ip link show dslite0 || die "regied did not establish DS-Lite"
+  # The tunnel's local address is cut from the delegated prefix, so the tunnel appears
+  # only once networkd holds a delegation and a turn has acted on it.
+  wait_for "the DS-Lite tunnel" 45 ip link show dslite0 || die "regied did not establish DS-Lite"
 
   wait_for "reconciliation of the DS-Lite link" 20 \
     bash -c '[[ "$(< /proc/sys/net/ipv4/conf/dslite0/rp_filter)" == 0 ]]' || \

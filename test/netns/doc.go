@@ -21,7 +21,12 @@
 //   - The firewall drops traffic that is not allowed
 //   - The NAT mapping is endpoint-independent
 //
-// This needs root / CAP_NET_ADMIN plus nft / pppd / pppoe-server / socat. The local
-// development environment has none of them, so the usual way to run these is through a
-// privileged container, via `make test-netns-docker`.
+// Beyond those, the provider side delegates a prefix over DHCPv6 and moves it, and the
+// checks see that what the router derives from it follows: DS-Lite, a published host
+// and a subnet routed to it, and the firewall in front of them.
+//
+// This needs root / CAP_NET_ADMIN plus nft / pppd / pppoe-server / socat / kea-dhcp6,
+// and dhcpcd for the reference router. The local development environment has none of
+// them, so the usual way to run these is through a privileged container, via
+// `make test-netns-docker`.
 package netns

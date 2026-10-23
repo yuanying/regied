@@ -104,7 +104,7 @@ func unmetPrerequisite() string {
 	if os.Geteuid() != 0 {
 		return "not running as root (creating a netns needs CAP_NET_ADMIN)"
 	}
-	for _, bin := range []string{"ip", "nft", "pppd", "pppoe-server", "socat"} {
+	for _, bin := range []string{"ip", "nft", "pppd", "pppoe-server", "socat", "kea-dhcp6"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			return fmt.Sprintf("%s not found", bin)
 		}

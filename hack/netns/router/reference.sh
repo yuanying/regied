@@ -21,10 +21,13 @@ source "${here}/../lib.sh"
 PPP_IF="ppp-wan"
 PPP_LINKNAME="regied-netns"
 PPP_OPTIONS="${RUNTIME_DIR}/router-pppd-options"
+PPP_IP_UP="${RUNTIME_DIR}/router-ppp-ip-up"
 PPP_PID_FILE="/var/run/ppp-${PPP_LINKNAME}.pid"
 
 # The DS-Lite tunnel.
 DSLITE_IF="dslite0"
+
+DHCPCD_CONF="${RUNTIME_DIR}/router-dhcpcd.conf"
 
 # The routing tables. Policy routing picks between them per source range.
 TABLE_PPPOE=1
@@ -49,8 +52,9 @@ setup_lan() {
   r ip link set "${ROUTER_LAN_IF}" up
 }
 
-# The WAN-side IPv6. On a real line this comes from RA and DHCPv6-PD; in the testbed it
-# is placed statically. DS-Lite rides on top of this IPv6 reachability.
+# The WAN-side IPv6. On a real line the route comes from RA; in the testbed it is placed
+# statically. DS-Lite rides on top of this IPv6 reachability. The prefix the LAN uses is
+# delegated over DHCPv6 (start_dhcpcd).
 setup_wan_v6() {
   r ip -6 addr add "${WAN_V6_ROUTER}/${WAN_V6_PREFIXLEN}" dev "${ROUTER_WAN_IF}"
   r ip link set "${ROUTER_WAN_IF}" up
@@ -58,10 +62,21 @@ setup_wan_v6() {
 }
 
 # PPPoE. Credentials are read from files rather than written into the configuration.
+#
+# The session is dialled again when it drops, as when the provider moves the line to
+# another access concentrator. The PPPoE link is created anew each time, and the route
+# the policy routing table holds through it goes with it, so the ip-up script puts that
+# route back.
 start_pppoe() {
   local user password
   user="$(cat "${PPPOE_USER_FILE}")"
   password="$(cat "${PPPOE_PASSWORD_FILE}")"
+
+  cat >"${PPP_IP_UP}" <<SCRIPT
+#!/bin/sh
+ip route replace default dev "\$1" table ${TABLE_PPPOE}
+SCRIPT
+  chmod 0755 "${PPP_IP_UP}"
 
   umask 077
   cat >"${PPP_OPTIONS}" <<OPTS
@@ -78,6 +93,9 @@ noipdefault
 nodefaultroute
 noipv6
 maxfail 3
+persist
+holdoff 1
+ip-up-script ${PPP_IP_UP}
 lcp-echo-interval 10
 lcp-echo-failure 5
 updetach
@@ -87,10 +105,29 @@ OPTS
   r pppd file "${PPP_OPTIONS}"
 }
 
+# The prefix-delegation client. dhcpcd keeps the lease, its renewals and its expiry, and
+# calls reference-pd.sh with every change; the hook puts in place what the reference
+# derives from the prefix. It solicits without waiting for an advertisement, as a
+# client told to ask for a prefix does.
+start_dhcpcd() {
+  cat >"${DHCPCD_CONF}" <<CONF
+ipv6only
+noipv6rs
+duid
+option rapid_commit
+interface ${ROUTER_WAN_IF}
+  ia_pd 1/::/${PD_LENGTH}
+CONF
+  r dhcpcd -6 -b -f "${DHCPCD_CONF}" -c "${here}/reference-pd.sh" "${ROUTER_WAN_IF}"
+}
+
 # The B4 side of DS-Lite. Nothing is translated here; NAT44 is the AFTR's job.
+#
+# The local address is the one the delegation puts on the LAN, so the tunnel is created
+# without one and the dhcpcd hook (reference-pd.sh) sets it once a prefix is delegated.
 setup_dslite() {
   r ip link add "${DSLITE_IF}" type ip6tnl \
-    mode ipip6 local "${WAN_V6_ROUTER}" remote "${WAN_V6_AFTR}" dev "${ROUTER_WAN_IF}" \
+    mode ipip6 remote "${WAN_V6_AFTR}" dev "${ROUTER_WAN_IF}" \
     encaplimit none
   r ip addr add "${DSLITE_B4_IP}/${DSLITE_PREFIXLEN}" dev "${DSLITE_IF}"
   r ip link set "${DSLITE_IF}" mtu "${DSLITE_MTU}" up
@@ -166,6 +203,13 @@ table ip nat {
 table inet filter
 delete table inet filter
 table inet filter {
+	# The LAN hosts and subnets inside the delegation that the outside may reach. The
+	# dhcpcd hook fills it from the prefix delegated now.
+	set published {
+		type ipv6_addr
+		flags interval
+	}
+
 	chain input {
 		type filter hook input priority filter; policy drop;
 		ct state established,related accept
@@ -175,6 +219,8 @@ table inet filter {
 		ip protocol icmp accept
 		# ipip6 (protocol 4) arriving from the AFTR. DS-Lite return traffic comes in this way.
 		iifname "${ROUTER_WAN_IF}" ip6 nexthdr 4 accept
+		# The DHCPv6 server's replies, which carry the delegated prefix.
+		iifname "${ROUTER_WAN_IF}" udp dport 546 accept
 	}
 
 	chain forward {
@@ -183,6 +229,7 @@ table inet filter {
 		ct state invalid drop
 		iifname "${ROUTER_LAN_IF}" accept
 		ct status dnat accept
+		iifname "${ROUTER_WAN_IF}" ip6 daddr @published tcp dport ${INBOUND_V6_PORT} accept
 	}
 
 	chain output {
@@ -209,10 +256,12 @@ up() {
   start_pppoe
   setup_routing
   setup_nftables
+  start_dhcpcd
   log "assembled the device under test (the reference implementation)"
 }
 
 down() {
+  r dhcpcd -6 -x "${ROUTER_WAN_IF}" 2>/dev/null || true
   if [[ -f "${PPP_PID_FILE}" ]]; then
     kill "$(cat "${PPP_PID_FILE}")" 2>/dev/null || true
     rm -f "${PPP_PID_FILE}"

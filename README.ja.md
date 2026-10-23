@@ -428,12 +428,12 @@ DUID ファイル。たいてい勝手に解消する。`failing` は失敗し�
 |---|---|---|
 | ユニットテスト | `make test` | Go ツールチェインだけ |
 | netns 統合テスト | `make test-netns-docker` | Docker（特権コンテナを起動する） |
-| netns 統合テスト（直接） | `make test-netns` | root / CAP_NET_ADMIN と nft / pppd / pppoe-server / socat |
+| netns 統合テスト（直接） | `make test-netns` | root / CAP_NET_ADMIN と nft / pppd / pppoe-server / socat / kea-dhcp6、参照実装には dhcpcd |
 | netns 統合テスト（regied を被試験機に） | `make test-netns-regied REGIED_NETNS_MGMT_IF=<管理 IF 名>` | systemd のあるホスト（Debian 13 の VM など）の root。本物の systemd-networkd / pppd / nftables |
 
 netns 統合テストは network namespace で擬似 WAN（PPPoE サーバー、DS-Lite の
-AFTR、到達確認用のサーバー）を組み、その中でルーターを動かして次の 9 点を
-外側から確かめる。
+AFTR、プレフィックスを委譲する DHCPv6 サーバー、到達確認用のサーバー）を組み、その中で
+ルーターを動かして次の 10 点を外側から確かめる。
 
 1. PPPoE 経由で外向き疎通ができる
 2. DS-Lite 経由で外向き疎通ができる
@@ -445,6 +445,10 @@ AFTR、到達確認用のサーバー）を組み、その中でルーターを�
 8. 自身の通信がもう一方の回線から出るホストへのポートフォワードが、外から見て答える。
    戻りは接続が届いた回線から出ていく
 9. 同じフォワードが内側から hairpin で通る
+10. ルーターが委譲プレフィックスから導出するものが、プレフィックスに追随する。2 つの
+    プレフィックスのそれぞれのもとで、DS-Lite の IPv4 が通り、プレフィックスの中の公開した
+    ホストとそこへ経路を張ったサブネットが外から応答し、隣のホストは落とされる。何も委譲
+    されていない間は、プレフィックスの中の何も応答せず、PPPoE は動き続ける
 
 root と、開発環境には入っていない外部コマンドが要るので、build tag `netns` の
 後ろに分離してある。`go test ./...` はこれを拾わない。通常は
@@ -489,8 +493,14 @@ root で走らせる。被試験機はホスト自身のルート network namesp
 そのリンクを専用の zone に入れて ssh と icmp をホストへ許可し、アドレスや経路については
 何も宣言せず、プラットフォーム側の networkd ファイルが正であり続けるようにする。適用の
 前に管理アドレスと既定経路を控え、適用の後に照合し、管理側のゲートウェイに疎通を打つ。
-どれかが崩れていれば、regied の nftables テーブルだけを即座に消す。VM の作り方はこの
+どれかが崩れていれば、regied の nftables テーブルだけを即座に消す。管理側のゲートウェイは
+`192.168.0.1` であってはならない。これは試験用 LAN のルーターのアドレスで、被試験機が自分に
+付けるため、疎通確認がゲートウェイではなく自分自身に届いてしまう。VM の作り方はこの
 README の範囲外である。
+
+ホストには `kea-dhcp6` と `socat` も要る。Debian は `kea-dhcp6` を AppArmor のプロファイルで
+縛り、ディストリビューション自身のファイル名しか開けないようにしている。試験用のホストでは
+このプロファイルを complain モードにするか外すこと。そうしないとトポロジが立ち上がらない。
 
 ### 調べる
 
@@ -498,6 +508,11 @@ README の範囲外である。
 同じコンテナのシェルに入り、`hack/netns/topo.sh up` で組み立て、
 `hack/netns/topo.sh status` で各 netns のアドレスと経路を見られる。片付けは
 `hack/netns/topo.sh down`。
+
+組み上がったトポロジの上では、回線側の変化を手で起こせる。`hack/netns/topo.sh delegate <prefix>`
+は委譲するプレフィックスを替え、`hack/netns/topo.sh withdraw` は DHCPv6 サーバーを止めて
+委譲を失効させ、`hack/netns/topo.sh concentrator <mac>` は PPPoE の集線装置を別の MAC
+アドレスのものに入れ替える。
 
 ## ドキュメント
 

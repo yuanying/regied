@@ -450,12 +450,12 @@ Tests are split by the privileges they need.
 |---|---|---|
 | unit tests | `make test` | the Go toolchain, nothing else |
 | netns integration tests | `make test-netns-docker` | Docker (starts a privileged container) |
-| netns integration tests, directly | `make test-netns` | root / CAP_NET_ADMIN and `nft`, `pppd`, `pppoe-server`, `socat` |
+| netns integration tests, directly | `make test-netns` | root / CAP_NET_ADMIN and `nft`, `pppd`, `pppoe-server`, `socat`, `kea-dhcp6`, and `dhcpcd` for the reference router |
 | netns integration tests, with regied under test | `make test-netns-regied REGIED_NETNS_MGMT_IF=<interface>` | root on a host with systemd, such as a Debian 13 VM: real systemd-networkd, pppd and nftables |
 
 The integration tests build a pseudo-WAN out of network namespaces — a PPPoE server,
-a DS-Lite AFTR, and reachability servers — run a router inside it, and check the
-following nine things from the outside.
+a DS-Lite AFTR, a DHCPv6 server delegating a prefix, and reachability servers — run a
+router inside it, and check the following ten things from the outside.
 
 1. Outbound traffic gets through over PPPoE
 2. Outbound traffic gets through over DS-Lite
@@ -467,6 +467,10 @@ following nine things from the outside.
 8. A port forward to a host whose own traffic leaves by the other uplink still answers
    from outside: the reply goes back by the uplink the connection arrived on
 9. The same forward hairpins from inside
+10. What the router derives from its delegated prefix follows it: under each of two
+    prefixes in turn, IPv4 over DS-Lite works, a published host inside the prefix and a
+    subnet routed to it answer from outside, and the host beside it is dropped. While
+    nothing is delegated, nothing inside the prefix answers and PPPoE keeps working
 
 They need root and commands that a development environment normally lacks, so they
 sit behind the `netns` build tag; `go test ./...` does not pick them up. Use
@@ -514,8 +518,14 @@ puts that link in a zone of its own and admits SSH and ICMP to the host, declare
 about its addresses or routes so that the platform's own networkd file stays
 authoritative, records the management addresses and default route before the apply,
 verifies them after it, and probes the management gateway. If any of that fails it
-deletes regied's nftables table at once and nothing else. Building the VM is outside the
-scope of this README.
+deletes regied's nftables table at once and nothing else. The management gateway must not
+be `192.168.0.1`: that is the test LAN's router address, which the device under test takes
+for itself, and the probe would then reach the host instead of the gateway. Building the
+VM is outside the scope of this README.
+
+The host also needs `kea-dhcp6` and `socat`. Debian confines `kea-dhcp6` with an AppArmor
+profile that lets it open only the distribution's own file names; on a test host, put that
+profile in complain mode or unload it, or the topology refuses to come up.
 
 ### Looking around
 
@@ -523,6 +533,12 @@ scope of this README.
 into a shell in the same container, where `hack/netns/topo.sh up` builds it and
 `hack/netns/topo.sh status` shows the addresses and routes of each namespace.
 `hack/netns/topo.sh down` removes it.
+
+With the topology up, the provider side can be changed by hand.
+`hack/netns/topo.sh delegate <prefix>` changes the prefix delegated,
+`hack/netns/topo.sh withdraw` stops the DHCPv6 server so that the delegation expires,
+and `hack/netns/topo.sh concentrator <mac>` replaces the PPPoE access concentrator with
+one at another MAC address.
 
 ## Documentation
 

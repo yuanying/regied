@@ -55,9 +55,10 @@ test: ## Unit tests. Needs neither privileges nor external commands.
 
 ##@ Netns
 
-# The netns integration tests build a pseudo WAN (a PPPoE server, a DS-Lite AFTR
-# and reachability servers) out of network namespaces and run against it. They need
-# root plus nft / pppd / pppoe-server / socat. The local development environment has
+# The netns integration tests build a pseudo WAN (a PPPoE server, a DS-Lite AFTR, a
+# DHCPv6 server delegating a prefix and reachability servers) out of network namespaces
+# and run against it. They need root plus nft / pppd / pppoe-server / socat / kea-dhcp6,
+# and dhcpcd for the reference router. The local development environment has
 # none of those, so the usual entry point is test-netns-docker, which calls them
 # through a privileged container (ADR 0010).
 
