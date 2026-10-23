@@ -12,13 +12,20 @@ spec:
       metadata: {name: lan}
       spec:
         ifname: ${ROUTER_LAN_IF}
-        addresses: [${ROUTER_LAN_IP}/${LAN_PREFIXLEN}]
+        addresses:
+          - ${ROUTER_LAN_IP}/${LAN_PREFIXLEN}
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: ${PD_LAN_SUBNET_ID}, token: "${PD_ROUTER_LAN_TOKEN}"}
         routes:
           # Host routes keep the synthetic clients on this veth even when a VM's
           # management network happens to overlap the test LAN's private range.
           - destination: ${CLIENT_PPPOE_IP}/32
           - destination: ${CLIENT_DSLITE_IP}/32
           - destination: ${CLIENT_SERVER_IP}/32
+          # A subnet handed to the published host, as to a host behind the router.
+          - destination:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: ${PD_DOWNSTREAM_SUBNET_ID}}
+            via:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: ${PD_LAN_SUBNET_ID}, token: "${PD_PUBLISHED_TOKEN}"}
     - kind: Interface
       metadata: {name: wan}
       spec:
@@ -27,6 +34,9 @@ spec:
         routes:
           - destination: ::/0
             via: ${WAN_V6_AFTR}
+        dhcpv6:
+          prefixDelegation:
+            prefixLength: ${PD_LENGTH}
     - kind: Interface
       metadata: {name: mgmt}
       spec:
@@ -45,7 +55,9 @@ spec:
       metadata: {name: dslite0}
       spec:
         underlayRef: wan
-        localAddress: ${WAN_V6_ROUTER}
+        # The address the delegation puts on the LAN. The AFTR accepts the tunnel from
+        # that address only.
+        localAddressFrom: {interfaceRef: lan}
         aftrAddress: ${WAN_V6_AFTR}
         mtu: ${DSLITE_MTU}
         defaultRoute: {install: true}
@@ -122,12 +134,34 @@ spec:
             action: accept
             family: ipv6
             protocol: ipip
+          - name: dhcpv6-client
+            action: accept
+            family: ipv6
+            protocol: udp
+            destinationPorts: [546]
+    # The hosts inside the delegation the outside may reach: the published LAN host,
+    # and the subnet routed to it. The hidden host beside it is not here.
+    - kind: IPAddressSet
+      metadata: {name: published}
+      spec:
+        family: ipv6
+        addresses:
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: ${PD_LAN_SUBNET_ID}, token: "${PD_PUBLISHED_TOKEN}"}
+        networks:
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: ${PD_DOWNSTREAM_SUBNET_ID}}
     - kind: FirewallPolicy
       metadata: {name: outside-to-inside}
       spec:
         from: outside
         to: inside
         defaultAction: drop
+        rules:
+          - name: published
+            action: accept
+            family: ipv6
+            protocol: tcp
+            destinationAddressSetRefs: [published]
+            destinationPorts: [${INBOUND_V6_PORT}]
     - kind: FirewallPolicy
       metadata: {name: inside-to-outside}
       spec:

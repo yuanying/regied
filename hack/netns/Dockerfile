@@ -10,9 +10,11 @@ FROM golang:1.27-trixie
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         conntrack \
+        dhcpcd-base \
         dnsmasq \
         iproute2 \
         iputils-ping \
+        kea-dhcp6-server \
         kmod \
         nftables \
         ppp \

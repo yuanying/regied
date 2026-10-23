@@ -113,6 +113,47 @@ root's PATH reported success. Asking for the suite is now taken as a statement t
 tools are expected: the make target sets the same variable the container image sets, and
 a missing prerequisite fails with the reason. A bare `go test -tags netns` still skips.
 
+### The provider side delegates a prefix
+
+**Amended 2026-10-23.** The delegated prefix moved from configuration to runtime state
+([ADR 0021](0021-values-derived-from-the-delegated-prefix.md)), and what a router derives
+from it can only be shown to follow a change by changing it. The testbed now delegates a
+prefix over DHCPv6, as a provider does over the same line that carries PPPoE.
+
+| item | what the testbed does |
+|---|---|
+| server | A DHCPv6 server on the subscriber-facing interface of `rg-wan` delegates one of two /56s at a time, with lifetimes of seconds rather than hours |
+| routing | The provider side routes both /56s to the router at all times, and the internet side reaches them over IPv6 |
+| the AFTR | Accepts the tunnel only from the address the delegation puts on the router's LAN, and moves with the delegation. A real AFTR takes any address its provider routes to the subscriber; a tunnel from a prefix that is no longer routed gets nothing back. Pinning the far end says the same |
+| LAN hosts | The client holds addresses inside the delegation and moves them when the delegation moves. They stand in for hosts that renumber themselves; following is the router's job, moving them is the testbed's |
+| moving it | `topo.sh delegate <prefix>` restarts the server with only that prefix in its pool, and the router learns of it on its next renewal. `topo.sh withdraw` stops the server, and what it delegated expires. `topo.sh concentrator <mac>` replaces the PPPoE server with one at another MAC address, so that the router has to dial again |
+
+The contract gains one line: **the device under test runs a prefix-delegation client on
+its WAN side, and puts its LAN address, DS-Lite's local address, a route and the hosts its
+firewall lets in where the shared definitions say, cut from whatever is delegated.** The
+reference router does so with `dhcpcd` and a hook that recomputes those values on every
+change.
+
+The server is Kea, as the distribution ships it. It delegates from a pool, its bindings
+survive a restart, and a restart with a different pool moves the delegation on the next
+renewal, handing back the old prefix with zero lifetimes beside the new one. It is also
+what the verification virtual machines use, so a behaviour seen in one place can be
+checked in the other. dnsmasq, already in the image, does not delegate prefixes, and ISC
+DHCP has reached its end of life.
+
+One check is added, from the outside like the others. Under the first prefix, IPv4 over
+DS-Lite works, a published LAN host and a subnet routed to it answer from the internet
+side, and a host beside it that the firewall does not let in times out. The same holds
+under the second prefix after the server moves to it. While nothing is delegated, nothing
+inside the prefix answers and PPPoE still works. When a delegation returns, everything
+comes back. It passes against the reference router under Docker and against regied on a
+Debian 13 virtual machine (systemd 257), and each phase fails against a reference router
+broken in the way that phase looks for.
+
+The container now starts with an init. The server is stopped and started while the
+tests run, and without an init PID 1 is the test binary, which does not reap it: a stopped
+server stayed a zombie that still looked alive.
+
 ## Consequences
 
 The testbed arrives before the thing it tests. Any candidate implementation can be
@@ -144,10 +185,13 @@ Some things a pseudo-WAN cannot settle.
 - **Kernel differences** — verification runs on an amd64 development kernel. The
   target is an arm64 vendor kernel, which is not the same thing
 - **Access network behaviour** — the address handed out over PPPoE is fixed here.
-  Reconnection, address changes, and differences between AFTR implementations are
-  not reproduced
-- **How IPv6 is obtained** — what a real link learns through RA and DHCPv6-PD is
-  configured statically here. Receiving and delegating a prefix is not covered
+  Address changes and differences between AFTR implementations are not reproduced.
+  *Amended 2026-10-23: a reconnection to another access concentrator is* (`topo.sh
+  concentrator`)
+- **How IPv6 is obtained** — what a real link learns through RA is configured
+  statically here: the router's own WAN address and its default route.
+  *Amended 2026-10-23: the delegated prefix is received over DHCPv6, and can be moved
+  and withdrawn. Delegating onward to a host behind the router is not covered*
 - **DHCP and DNS** — dnsmasq's territory is not among the seven checks. It is in the
   image, so it can be added when it is needed
 

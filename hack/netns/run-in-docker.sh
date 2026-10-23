@@ -20,6 +20,10 @@ mkdir -p "${cache_dir}"
 
 args=(
   run --rm --privileged
+  # Daemons the testbed starts in the background outlive the shell that started them, and
+  # when they stop, something has to reap them. Without an init, PID 1 is the test binary,
+  # which does not, and a stopped server stays a zombie that still looks alive.
+  --init
   # PPPoE is a kernel module, so make it loadable from inside the container.
   --volume /lib/modules:/lib/modules:ro
   --volume "${repo_root}:${repo_root}"

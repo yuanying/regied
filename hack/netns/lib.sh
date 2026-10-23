@@ -77,6 +77,41 @@ export INTERNET_PREFIXLEN="24"
 export WHOAMI_TCP_PORT="8080"
 export WHOAMI_UDP_PORT="9999"
 
+# The internet side over IPv6, for the checks that reach into the delegated prefix from
+# outside.
+export WAN_UPLINK_V6="2001:db8:fe::1"
+export INTERNET_V6="2001:db8:fe::10"
+export INTERNET_V6_PREFIXLEN="64"
+
+# ---- Prefix delegation ----------------------------------------------------
+#
+# A DHCPv6 server on the subscriber-facing interface delegates one of two /56s at a time,
+# as a provider does over the same line that carries PPPoE. Moving from one to the other
+# is the prefix change the checks reproduce. The provider side routes both to the router.
+export PD_FIRST="2001:db8:100::/56"
+export PD_SECOND="2001:db8:200::/56"
+export PD_LENGTH="56"
+
+# Short lifetimes, so that a renewal carries a new prefix within seconds and a withdrawn
+# one expires within half a minute. A real line uses hours.
+export PD_RENEW_TIMER="5"
+export PD_REBIND_TIMER="8"
+export PD_PREFERRED_LIFETIME="15"
+export PD_VALID_LIFETIME="20"
+
+# Where things sit inside the delegation: what a declaration writes as
+# fromDelegatedPrefix. The router's LAN address is also DS-Lite's local address, so the
+# AFTR accepts the tunnel from that address only.
+export PD_LAN_SUBNET_ID="1"
+export PD_ROUTER_LAN_TOKEN="::1"
+export PD_PUBLISHED_TOKEN="::30" # a LAN host the firewall lets the outside reach
+export PD_HIDDEN_TOKEN="::31"    # a LAN host on the same /64 that it does not
+export PD_DOWNSTREAM_SUBNET_ID="2" # a /64 routed to the published host, as to a host behind it
+export PD_DOWNSTREAM_TOKEN="::1"
+
+# The port a LAN host answers on over IPv6. The answer is the address it was reached at.
+export INBOUND_V6_PORT="8030"
+
 # ---- Port forwarding ------------------------------------------------------
 
 export FORWARD_WAN_PORT="8022"
@@ -94,6 +129,9 @@ export DSLITE_HOST_STUB_BANNER="sshd-stub-dslite-host"
 
 export RUNTIME_DIR="${RUNTIME_DIR:-/run/regied-netns}"
 export PID_FILE="${RUNTIME_DIR}/services.pid"
+export KEA_DIR="${RUNTIME_DIR}/kea"
+# The prefix the server delegates now, for the commands that move it.
+export DELEGATION_FILE="${RUNTIME_DIR}/delegation"
 
 # ---- Shared helpers -------------------------------------------------------
 
@@ -149,4 +187,47 @@ wait_for() {
 # Record the pid of a service started in the background, for the teardown to use.
 record_pid() {
   echo "$1" >>"${PID_FILE}"
+}
+
+# Print the eight groups of an IPv6 address as decimal numbers, "::" expanded.
+ipv6_groups() {
+  local addr="$1" head="$1" tail=""
+  local -a h=() t=() g=()
+  if [[ "${addr}" == *::* ]]; then
+    head="${addr%%::*}"
+    tail="${addr#*::}"
+  fi
+  [[ -z "${head}" ]] || IFS=: read -ra h <<<"${head}"
+  [[ -z "${tail}" ]] || IFS=: read -ra t <<<"${tail}"
+  g=("${h[@]}")
+  local i
+  for ((i = ${#h[@]} + ${#t[@]}; i < 8; i++)); do
+    g+=(0)
+  done
+  g+=("${t[@]}")
+  for i in "${g[@]}"; do
+    printf '%d ' "$((16#${i}))"
+  done
+}
+
+# delegated_address <prefix/len> <subnet ID> [token]
+#
+# What fromDelegatedPrefix means: the subnet's /64 inside a delegated prefix, or, given a
+# token, the address in it. The arithmetic is the one test/netns pins down with unit
+# tests (delegation.go); the subnet ID is assumed to fit.
+delegated_address() {
+  local prefix="${1%/*}" subnet_id="$2" token="${3:-}"
+  local -a p=() h=(0 0 0 0 0 0 0 0)
+  read -ra p <<<"$(ipv6_groups "${prefix}")"
+  [[ -z "${token}" ]] || read -ra h <<<"$(ipv6_groups "${token}")"
+
+  local net=$(((p[0] << 48) | (p[1] << 32) | (p[2] << 16) | p[3] | subnet_id))
+  local out
+  out="$(printf '%x:%x:%x:%x' $(((net >> 48) & 0xffff)) $(((net >> 32) & 0xffff)) \
+    $(((net >> 16) & 0xffff)) $((net & 0xffff)))"
+  if [[ -z "${token}" ]]; then
+    printf '%s::/64\n' "${out}"
+  else
+    printf '%s:%x:%x:%x:%x\n' "${out}" "${h[4]}" "${h[5]}" "${h[6]}" "${h[7]}"
+  fi
 }
