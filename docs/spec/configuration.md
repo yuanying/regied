@@ -361,6 +361,10 @@ Beyond references resolving and required fields being present, regied rejects:
   an address written out rather than derived. An `AAAA` record holds an address inside the
   delegation, cut from it with a `token`; a literal one is a record regied would have
   nothing to keep up to date
+- a `DNSRecordSet` `AAAA` record whose `address` names both `fromDelegatedPrefix` and
+  `fromRouterAdvertisement`, or whose `fromRouterAdvertisement.interfaceRef` names an
+  interface holding no `fromRouterAdvertisement` address. The token is that address's,
+  and without one there is nothing to take from the advertisement
 - a `DNSRecordSet` record whose `egressRef` names a `DSLiteTunnel`, which publishes
   nothing and therefore has no address for a record to hold
 - a `DNSRecordSet` record naming a name that is not inside the resource's `zone`

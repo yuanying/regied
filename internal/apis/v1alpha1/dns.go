@@ -98,9 +98,30 @@ type DNSRecord struct {
 
 // DNSRecordAddress is where an AAAA record's address comes from. It is a container
 // rather than the form directly on the record, so that the field saying what the record
-// holds reads the same whichever form it carries (ADR 0024).
+// holds reads the same whichever form it carries (ADR 0024). Exactly one form is set.
 type DNSRecordAddress struct {
-	FromDelegatedPrefix *DelegatedPrefixAddr `yaml:"fromDelegatedPrefix"`
+	FromDelegatedPrefix     *DelegatedPrefixAddr     `yaml:"fromDelegatedPrefix"`
+	FromRouterAdvertisement *RecordAdvertisedAddress `yaml:"fromRouterAdvertisement"`
+}
+
+// RecordAdvertisedAddress is the address the named interface takes from the router
+// advertisement it receives, which is how a host behind a router publishes its own
+// address on the LAN.
+//
+// It carries no token. The interface's own fromRouterAdvertisement address already holds
+// one, and the record refers to the interface rather than writing it a second time. Nor
+// is it a fromDelegatedPrefix: that would need the LAN's subnet ID, which is the router's
+// choice and appears nowhere in this host's declaration (ADR 0024).
+type RecordAdvertisedAddress struct {
+	InterfaceRef string `yaml:"interfaceRef"`
+}
+
+// InterfaceRef is the interface the address is taken from, whichever form it is.
+func (a *DNSRecordAddress) InterfaceRef() string {
+	if a.FromRouterAdvertisement != nil {
+		return a.FromRouterAdvertisement.InterfaceRef
+	}
+	return a.FromDelegatedPrefix.InterfaceRef
 }
 
 // UnmarshalYAML refuses an address written out, here where the line is known. A literal
@@ -114,18 +135,20 @@ func (a *DNSRecordAddress) UnmarshalYAML(unmarshal func(any) error) error {
 	}
 	node := &capture.node
 	if node.Kind != yaml.MappingNode {
-		return typeErrorf(node, "a record's address is derived, never written out: write fromDelegatedPrefix, and keep a literal record at the provider")
+		return typeErrorf(node, "a record's address is derived, never written out: write fromDelegatedPrefix or fromRouterAdvertisement, and keep a literal record at the provider")
 	}
 	var derived struct {
-		FromDelegatedPrefix *DelegatedPrefixAddr `yaml:"fromDelegatedPrefix"`
+		FromDelegatedPrefix     *DelegatedPrefixAddr     `yaml:"fromDelegatedPrefix"`
+		FromRouterAdvertisement *RecordAdvertisedAddress `yaml:"fromRouterAdvertisement"`
 	}
 	if err := unmarshal(&derived); err != nil {
 		return err
 	}
-	if derived.FromDelegatedPrefix == nil {
-		return typeErrorf(node, "a record's address needs fromDelegatedPrefix")
+	if (derived.FromDelegatedPrefix == nil) == (derived.FromRouterAdvertisement == nil) {
+		return typeErrorf(node, "a record's address needs exactly one of fromDelegatedPrefix and fromRouterAdvertisement")
 	}
 	a.FromDelegatedPrefix = derived.FromDelegatedPrefix
+	a.FromRouterAdvertisement = derived.FromRouterAdvertisement
 	return nil
 }
 

@@ -597,7 +597,7 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 		}
 	}
 	var resolved []string
-	plan.Records, resolved, _ = e.records(cfg, nil, runtime.Networkd.DelegatedPrefixes, true)
+	plan.Records, resolved, _ = e.records(cfg, nil, runtime.Networkd.DelegatedPrefixes, runtime.Advertised, true)
 	plan.Delegations = append(plan.Delegations, resolved...)
 	return plan, nil
 }
@@ -675,7 +675,7 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 	}
 
 	var resolvedRecords, waitingForRecords []string
-	plan.Records, resolvedRecords, waitingForRecords = e.records(cfg, runtime.UplinkAddresses, runtime.Networkd.DelegatedPrefixes, false)
+	plan.Records, resolvedRecords, waitingForRecords = e.records(cfg, runtime.UplinkAddresses, runtime.Networkd.DelegatedPrefixes, runtime.Advertised, false)
 	plan.Delegations = append(plan.Delegations, resolvedRecords...)
 	plan.Waiting = append(plan.Waiting, waitingForRecords...)
 

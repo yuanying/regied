@@ -339,6 +339,10 @@ DNS レコードは、失敗しても周回をまったく止めない唯一の�
 - `egressRef` を持つ、`address` が無い、またはアドレスを導出ではなくリテラルで書いた
   `DNSRecordSet` の `AAAA` レコード。`AAAA` レコードが持つのは委譲の中のアドレスであり、
   `token` を添えて委譲から切り出す。リテラルのレコードは regied が最新に保つものを持たない
+- `address` に `fromDelegatedPrefix` と `fromRouterAdvertisement` の両方を書いた、または
+  `fromRouterAdvertisement.interfaceRef` が `fromRouterAdvertisement` のアドレスを持たない
+  インターフェースを名指す `DNSRecordSet` の `AAAA` レコード。トークンはそのアドレスのものであり、
+  それが無ければ広告から取るものが無い
 - `egressRef` が `DSLiteTunnel` を名指す `DNSRecordSet` のレコード。
   そこからは何も公開できず、レコードが持つべきアドレスも無い
 - リソースの `zone` の中に無い名前を挙げている `DNSRecordSet` のレコード

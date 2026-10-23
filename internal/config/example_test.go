@@ -105,4 +105,17 @@ func TestExampleDownstreamConfiguration(t *testing.T) {
 	if len(interfaces) != 2 || interfaces[0].Spec.AdvertisedDelegationOf() == nil {
 		t.Errorf("the first interface is not the LAN declaring its advertised delegation: %+v", interfaces)
 	}
+
+	// The host keeps its own name and its container's, one through each form (ADR 0024).
+	sets := config.ResourcesOf[*v1alpha1.DNSRecordSetSpec](cfg)
+	if len(sets) != 1 || len(sets[0].Spec.Records) != 2 {
+		t.Fatalf("want one DNSRecordSet with two records: %+v", sets)
+	}
+	records := sets[0].Spec.Records
+	if records[0].Address == nil || records[0].Address.FromRouterAdvertisement == nil {
+		t.Errorf("the first record holds the address taken from the advertisement: %+v", records[0].Address)
+	}
+	if records[1].Address == nil || records[1].Address.FromDelegatedPrefix == nil {
+		t.Errorf("the second record is cut from the advertised delegation: %+v", records[1].Address)
+	}
 }

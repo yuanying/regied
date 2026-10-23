@@ -966,12 +966,34 @@ func (v *validator) checkUplinkRecord(resource *v1alpha1.Resource, record v1alph
 func (v *validator) checkDelegatedRecord(resource *v1alpha1.Resource, record v1alpha1.DNSRecord, field string) {
 	if record.EgressRef != "" {
 		v.errorf(resource, field+".egressRef",
-			"an AAAA record holds an address cut from the delegation, not one an uplink holds; leave egressRef out and write address.fromDelegatedPrefix")
+			"an AAAA record holds an address cut from the delegation, not one an uplink holds; leave egressRef out and write address.fromDelegatedPrefix or address.fromRouterAdvertisement")
 	}
 	if !v.required(resource, field+".address", record.Address != nil) {
 		return
 	}
+	if advertised := record.Address.FromRouterAdvertisement; advertised != nil {
+		v.checkAdvertisedRecord(resource, field+".address.fromRouterAdvertisement", advertised)
+		return
+	}
 	v.checkDerivedAddress(resource, field+".address.fromDelegatedPrefix", record.Address.FromDelegatedPrefix)
+}
+
+// checkAdvertisedRecord checks an AAAA record holding the address an interface takes
+// from the router advertisement. The token is that address's, so an interface without
+// one gives the record nothing to hold (ADR 0024).
+func (v *validator) checkAdvertisedRecord(resource *v1alpha1.Resource, field string, advertised *v1alpha1.RecordAdvertisedAddress) {
+	if !v.required(resource, field+".interfaceRef", advertised.InterfaceRef != "") {
+		return
+	}
+	upstream := v.resolveInterface(resource, field+".interfaceRef", advertised.InterfaceRef)
+	if upstream == nil {
+		return
+	}
+	if upstream.Spec.(*v1alpha1.InterfaceSpec).AdvertisedAddressOf() == nil {
+		v.errorf(resource, field+".interfaceRef",
+			"the Interface %q takes no address from the router advertisement; give it a fromRouterAdvertisement address, or cut this record from the delegation with fromDelegatedPrefix",
+			advertised.InterfaceRef)
+	}
 }
 
 // nameInZone is whether a name can be written in a zone: it is the zone, or it sits under
