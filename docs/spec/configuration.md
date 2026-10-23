@@ -323,8 +323,14 @@ Beyond references resolving and required fields being present, regied rejects:
 - two `FirewallPolicy` resources with the same `from` and `to`
 - an `Interface` whose `ifname` appears in another interface's `bridge.members` and
   that also carries an address
-- an address derived from a delegated prefix whose upstream interface has no
+- a value derived from a delegated prefix — an interface's address, a route's
+  destination or next hop, an address set's entry — whose upstream interface has no
   prefix-delegation client
+- a derived route destination or address set network that carries a `token`, and a
+  derived next hop or address set address that does not, or whose `token` is not an
+  interface identifier
+- a derived entry in an `ipv4` `IPAddressSet`
+- a derived route on a `PPPoESession` or a `DSLiteTunnel`
 - a `PortForward` or `SourceNAT` whose `egressRef` names a `DSLiteTunnel`, which
   translates at the far end and cannot publish anything inbound
 - a `PortForward` whose target covers a different number of ports from the range it

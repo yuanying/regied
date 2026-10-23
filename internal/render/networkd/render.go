@@ -73,6 +73,12 @@ type Output struct {
 	// delegated prefix. A dry-run shows it, because the value in effect is the first thing
 	// a diagnosis needs (ADR 0021).
 	Resolved []string
+
+	// Waiting is every entry left out of a file that was written, for want of a runtime
+	// value, naming the value: a route to a subnet of a delegation that is not there. The
+	// file without the entry is what the declaration means at that moment, so it is
+	// written; the caller is told so that the turn says what it waits for (ADR 0021).
+	Waiting []string
 }
 
 // LinkFile is one .link file and the kernel name of the link it matches.
@@ -140,7 +146,7 @@ func Render(cfg *config.Config, rt Runtime) (*Output, error) {
 	if len(r.errors) > 0 {
 		return nil, &Error{Messages: r.errors}
 	}
-	return &Output{Files: r.files, Warnings: r.warnings, LinkFiles: r.linkFiles, Omitted: r.omitted, Resolved: r.resolved}, nil
+	return &Output{Files: r.files, Warnings: r.warnings, LinkFiles: r.linkFiles, Omitted: r.omitted, Resolved: r.resolved, Waiting: r.waiting}, nil
 }
 
 type renderer struct {
@@ -153,6 +159,7 @@ type renderer struct {
 	omitted   []Omission
 	linkFiles []LinkFile
 	resolved  []string
+	waiting   []string
 
 	// interfaces is every Interface by resource name, for the references that name one.
 	interfaces map[string]config.Named[*v1alpha1.InterfaceSpec]

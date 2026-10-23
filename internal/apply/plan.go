@@ -207,8 +207,9 @@ type FirewallChange struct {
 	// Ruleset is the table, as text. It is a function of the configuration alone: it
 	// names a set per uplink where an address would be, and holds no address (ADR 0015).
 	Ruleset string
-	// Elements is the uplink sets this apply would write, and what it would write into
-	// each: the addresses the uplink's link is holding now. A set is in here when what
+	// Elements is the sets this apply would write, and what it would write into each:
+	// the addresses an uplink's link is holding now, and the elements of an address set
+	// cut from the delegated prefix (ADR 0021). A set is in here when what
 	// the kernel holds is not that — which, for a table about to be replaced, is every
 	// set with something to hold, because replacing a table empties them. An apply that
 	// finds every set right writes none (ADR 0015).
@@ -260,8 +261,9 @@ func seedingText(elements []SetElements) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n# What each uplink is holding, read from the kernel by this apply. It is not part of\n")
-	b.WriteString("# the ruleset above: what a line holds is runtime state (ADR 0015).\n")
+	b.WriteString("\n# What each uplink is holding, and what the delegated prefix makes of an address set,\n")
+	b.WriteString("# read by this apply. It is not part of the ruleset above: both are runtime state\n")
+	b.WriteString("# (ADR 0015, ADR 0021).\n")
 	for _, entry := range elements {
 		fmt.Fprintf(&b, "flush set %s %s %s\n", nftables.TableFamily, nftables.TableName, entry.Set)
 		if len(entry.Elements) > 0 {
@@ -355,7 +357,8 @@ const (
 	// are being written, because something is still running from the file.
 	StepRemove StepKind = "remove"
 	StepWrite  StepKind = "write"
-	// StepSeed puts into the ruleset's uplink sets what the links are holding. It runs a
+	// StepSeed puts into the ruleset's uplink sets what the links are holding, and into an
+	// address set cut from the delegated prefix what it resolves to (ADR 0021). It runs a
 	// command like StepCommand and is a kind of its own so that the dry-run can tell the
 	// two nft transactions of the firewall phase apart (ADR 0015).
 	StepSeed StepKind = "seed"
@@ -586,6 +589,13 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 	}
 	slices.SortFunc(plan.Files, func(a, b FileChange) int { return cmp.Compare(a.Path, b.Path) })
 	plan.Firewall = FirewallChange{Ruleset: rendered.ruleset, Apply: true}
+	// A rendering has no links to read, so the uplink sets have nothing to show. The sets
+	// filled from the delegated prefix do, when a prefix was given (ADR 0021).
+	for _, set := range rendered.addressSets {
+		if len(set.Elements) > 0 {
+			plan.Firewall.Elements = append(plan.Firewall.Elements, set)
+		}
+	}
 	plan.Records, _ = e.records(cfg, nil, true)
 	return plan, nil
 }
@@ -647,7 +657,9 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		return nil, err
 	}
 
-	plan.Firewall, err = e.firewall(ctx, rendered.ruleset, desiredUplinkSets(cfg, runtime.UplinkAddresses))
+	sets := append(desiredUplinkSets(cfg, runtime.UplinkAddresses), rendered.addressSets...)
+	slices.SortFunc(sets, func(a, b SetElements) int { return cmp.Compare(a.Set, b.Set) })
+	plan.Firewall, err = e.firewall(ctx, rendered.ruleset, sets)
 	if err != nil {
 		return nil, err
 	}
@@ -908,13 +920,13 @@ func (e *Engine) probeUplinkSets(ctx context.Context) (map[string][]string, stri
 	out, err := e.host.Runner.Run(ctx, listTableCommand())
 	switch {
 	case errors.Is(err, ErrCommandNotFound):
-		return nil, "nft is not installed here, so what the uplink sets hold could not be read; they were left as they are"
+		return nil, "nft is not installed here, so what the uplink sets and the address sets hold could not be read; they were left as they are"
 	case err != nil:
-		return nil, fmt.Sprintf("what the uplink sets hold could not be read (%v); they were left as they are", err)
+		return nil, fmt.Sprintf("what the uplink sets and the address sets hold could not be read (%v); they were left as they are", err)
 	}
 	held, err := parseSets(out)
 	if err != nil {
-		return nil, fmt.Sprintf("what the uplink sets hold could not be read (%v); they were left as they are", err)
+		return nil, fmt.Sprintf("what the uplink sets and the address sets hold could not be read (%v); they were left as they are", err)
 	}
 	return held, ""
 }
@@ -950,16 +962,33 @@ func parseSets(output []byte) (map[string][]string, error) {
 		}
 		elements := make([]string, 0, len(set.Elem))
 		for _, element := range set.Elem {
-			var address string
-			if err := json.Unmarshal(element, &address); err != nil {
-				address = string(element)
-			}
-			elements = append(elements, address)
+			elements = append(elements, elementText(element))
 		}
 		slices.Sort(elements)
 		held[set.Name] = elements
 	}
 	return held, nil
+}
+
+// elementText is one element of a set as nft printed it: an address as itself, and a
+// network in an interval set — which nft prints as a prefix object — as its CIDR, which is
+// how a turn writes one (ADR 0021). Anything else is kept as the text nft gave, so that
+// it compares as different from anything a turn would write.
+func elementText(element json.RawMessage) string {
+	var address string
+	if err := json.Unmarshal(element, &address); err == nil {
+		return address
+	}
+	var network struct {
+		Prefix *struct {
+			Addr string `json:"addr"`
+			Len  int    `json:"len"`
+		} `json:"prefix"`
+	}
+	if err := json.Unmarshal(element, &network); err == nil && network.Prefix != nil {
+		return fmt.Sprintf("%s/%d", network.Prefix.Addr, network.Prefix.Len)
+	}
+	return string(element)
 }
 
 // probeTable asks the kernel which tables it holds and looks for regied's among them.
@@ -1032,7 +1061,7 @@ func (e *Engine) steps(ctx context.Context, plan *Plan, rendered *rendering) []S
 		steps = append(steps, Step{
 			Phase:   PhaseFirewall,
 			Kind:    StepSeed,
-			Reason:  "write the uplink sets: " + describeElements(plan.Firewall.Elements),
+			Reason:  "write the sets: " + describeElements(plan.Firewall.Elements),
 			Command: seedCommand(plan.Firewall.Elements),
 		})
 	}

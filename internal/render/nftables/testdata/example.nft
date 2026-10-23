@@ -27,11 +27,10 @@ table inet regied {
 		elements = { "dslite", "eth0", "pppoe0" }
 	}
 
-	# IPAddressSet "published-v6"
+	# IPAddressSet "published-v6": elements written at runtime, from the delegated prefix
 	set addrset_published-v6 {
 		type ipv6_addr
 		flags interval
-		elements = { 2001:db8:0:1::200, 2001:db8:0:1::210, 2001:db8:0:2::/64 }
 	}
 
 	# DSLiteTunnel "dslite", IPv4: what the link is holding

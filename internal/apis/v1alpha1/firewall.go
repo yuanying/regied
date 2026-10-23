@@ -29,13 +29,32 @@ func (s EgressRoutePolicySpec) FamilyOrDefault() Family {
 
 // IPAddressSetSpec is a named set of addresses or prefixes, so that a group of hosts can
 // be written once and referred to from several rules.
+//
+// An entry may be cut from the delegated prefix. A set with one such entry has all its
+// elements written at runtime rather than rendered into the ruleset (ADR 0021).
 type IPAddressSetSpec struct {
-	Family    Family   `yaml:"family"`
-	Addresses []Addr   `yaml:"addresses"`
-	Networks  []Prefix `yaml:"networks"`
+	Family    Family            `yaml:"family"`
+	Addresses []DerivableAddr   `yaml:"addresses"`
+	Networks  []DerivablePrefix `yaml:"networks"`
 }
 
 func (*IPAddressSetSpec) ResourceKind() ResourceKind { return KindIPAddressSet }
+
+// HasDerived reports whether any entry is cut from the delegated prefix, which is what
+// moves every element of the set out of the ruleset and into the turn.
+func (s IPAddressSetSpec) HasDerived() bool {
+	for _, address := range s.Addresses {
+		if address.IsDerived() {
+			return true
+		}
+	}
+	for _, network := range s.Networks {
+		if network.IsDerived() {
+			return true
+		}
+	}
+	return false
+}
 
 // FirewallZoneSpec is a named set of links. Zones are what policies are written between.
 //

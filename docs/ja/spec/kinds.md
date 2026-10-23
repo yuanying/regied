@@ -145,9 +145,26 @@ networkd がリンクごとにトークンを 1 つしか取らないうえ、�
 
 | フィールド | 必須 | 値 |
 |---|---|---|
-| `destination` | はい | CIDR。ファミリは推論する |
-| `via` | いいえ | next hop。省略するとこのインターフェースの on-link |
+| `destination` | はい | CIDR、または `token` を書かない `fromDelegatedPrefix`（委譲の /64）。ファミリは推論する |
+| `via` | いいえ | next hop のアドレス、または `token` を書いた `fromDelegatedPrefix`。省略するとこのインターフェースの on-link |
 | `metric` | いいえ | 小さいほうが勝つ |
+
+`fromDelegatedPrefix` は `addresses[]` と同じ `interfaceRef` と `subnetID` を取り、どちらも必須。
+サブネットを書く欄（`destination`）では `token` を拒否し、アドレスを書く欄（`via`）では
+`token` を必須とする。`token` はホスト部である。これで、ルーターの後ろのホストに渡した
+サブネットへの経路を、そのホストのアドレス経由で 1 度だけ書け、プレフィックスが変わっても
+追随する（[ADR 0021](../adr/0021-values-derived-from-the-delegated-prefix.md)）。
+
+導出した端は、ターンのたびに PD クライアントがいま持つプレフィックスから解決し、
+`.network` ファイルにリテラルとして書く。事業者が別のプレフィックスを委譲すると、
+次のターンがファイルを書き直して networkd を reload する。委譲を持っていない間や、
+`subnetID` が届いた委譲に収まらない間は、経路が指すサブネットが存在しない。
+その経路だけをファイルから外し、残りは宣言どおりに書き、ターンは待機として
+インターフェースの名前を挙げて報告する。`regied render` と `--dry-run` は、
+解決した経路をどの委譲から切り出したかと一緒に見せる。
+
+導出の形を取れるのは `Interface` の経路だけである。回線の経路は外へ向かうもので、
+外にあるものはこのホストに委譲されたプレフィックスの中に無い。
 
 **テーブルを指定するフィールドは無い。** regied が作る追加のルーティングテーブルは
 `EgressRoutePolicy` が必要とするものと、`PortForward` が戻りを返す回線ごとのものだけで、
@@ -246,7 +263,7 @@ PPPoE の回線。systemd-networkd に PPPoE は無いので、regied が pppd �
 | `useDNS` | いいえ | 既定 `false`。相手からリゾルバを受け取るか |
 | `defaultRoute.install` | いいえ | 既定 `true`。main テーブルにデフォルトルートを入れる |
 | `defaultRoute.metric` | いいえ | 既定 `0`。上げるとこの回線は待機側になる |
-| `routes` | いいえ | `Interface` と同じ |
+| `routes` | いいえ | `Interface` と同じ。ただしリテラルだけ |
 
 リンク名は `metadata.name` から付ける。掛け直しをまたいで、他のリソースと
 ファイアウォールから見える名前が変わらない。つまりこの名前はカーネルの
@@ -279,7 +296,7 @@ IPv4 over IPv6 の回線。RFC 6333 の B4 側である。IPv4 パケットを I
 | `ttl` | いいえ | 既定 `64` |
 | `defaultRoute.install` | いいえ | 既定 `true` |
 | `defaultRoute.metric` | いいえ | 既定 `0` |
-| `routes` | いいえ | `Interface` と同じ |
+| `routes` | いいえ | `Interface` と同じ。ただしリテラルだけ |
 
 トンネルのリンク名は `metadata.name` から付ける。つまりこの名前もカーネルの
 インターフェース名であり、`ifname` と同じ 15 文字の上限が掛かる。
@@ -415,10 +432,25 @@ RFC 6334 のオプション 64 は AFTR の名前を運ぶ。つまり届くの�
 | フィールド | 必須 | 値 |
 |---|---|---|
 | `family` | はい | `ipv4` または `ipv6` |
-| `addresses` | いいえ | 個々のアドレス |
-| `networks` | いいえ | プレフィックス |
+| `addresses` | いいえ | 個々のアドレス、または `token` を書いた `fromDelegatedPrefix` |
+| `networks` | いいえ | プレフィックス、または `token` を書かない `fromDelegatedPrefix`（委譲の /64） |
 
-2 つのリストの少なくとも一方は空でないこと。プレフィックスを含む集合は interval set になる。
+2 つのリストの少なくとも一方は空でないこと。プレフィックスを含む集合は、
+リテラルでも導出でも interval set になる。
+
+ここでの `fromDelegatedPrefix` は経路と同じである。`interfaceRef` と `subnetID` は必須で、
+`token` は `addresses` では必須、`networks` では拒否する。集合は `ipv6` でなければならない。
+ルーターの後ろのホストや、そこに渡したサブネットを、委譲プレフィックスを書き下さずに
+ルールから指すための書き方である（[ADR 0021](../adr/0021-values-derived-from-the-delegated-prefix.md)）。
+
+**導出の要素を 1 つでも持つ集合は、ルールセットに要素を描かない。** ルールセットは空の集合として
+宣言し、ターンのたびに全要素を書く。1 つの集合を 2 か所から埋めないよう、リテラルの要素も
+ターンが書く。回線のセットと同じ書き方である（[ADR 0015](../adr/0015-uplink-addresses-in-sets.md)）。
+ルールセットのテキストは宣言だけの関数のままで、プレフィックスが変わってもテーブルは
+入れ替えず、集合の要素だけを入れ替える。委譲を持っていない間は導出の要素だけを外し、
+リテラルの要素は書く。ターンは待機として、インターフェースの名前を挙げて報告する。
+`regied render` と `--dry-run` は、ターンが書く要素をルールセットの横に、導出の要素を
+どの委譲から切り出したかと一緒に見せる。
 
 ---
 

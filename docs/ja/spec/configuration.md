@@ -307,6 +307,11 @@ DNS レコードは、失敗しても周回をまったく止めない唯一の�
 - `from` と `to` が同じ `FirewallPolicy` が 2 つ
 - `ifname` が他のインターフェースの `bridge.members` に現れ、かつアドレスも持つ `Interface`
 - 上流インターフェースに PD クライアントが無いのに、委譲プレフィックスから導く指定
+  （インターフェースのアドレス、経路の宛先や next hop、アドレスセットの要素）
+- `token` を書いた導出の経路の宛先やアドレスセットの `networks`、`token` が無い、
+  またはインターフェース識別子でない導出の next hop やアドレスセットの `addresses`
+- `ipv4` の `IPAddressSet` にある導出の要素
+- `PPPoESession` や `DSLiteTunnel` の導出の経路
 - `egressRef` が `DSLiteTunnel` を指す `PortForward` / `SourceNAT`
   （AFTR 側で変換されるので、内向きに公開できない）
 - 待ち受けるレンジと変換先が同じ数のポートを覆っていない `PortForward`

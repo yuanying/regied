@@ -167,26 +167,10 @@ func (v *validator) checkInterface(resource *v1alpha1.Resource, spec *v1alpha1.I
 			}
 			continue
 		}
-		derived := address.FromDelegatedPrefix
-		if !v.required(resource, field+".fromDelegatedPrefix.interfaceRef", derived.InterfaceRef != "") {
-			continue
-		}
-		v.required(resource, field+".fromDelegatedPrefix.subnetID", derived.SubnetID != nil)
-
-		upstream := v.resolveInterface(resource, field+".fromDelegatedPrefix.interfaceRef", derived.InterfaceRef)
-		if upstream == nil {
-			continue
-		}
-		// The address is a slice of a prefix that has to be asked for. An upstream that
-		// asks for nothing hands out nothing.
-		upstreamSpec := upstream.Spec.(*v1alpha1.InterfaceSpec)
-		if upstreamSpec.DHCPv6 == nil || upstreamSpec.DHCPv6.PrefixDelegation == nil {
-			v.errorf(resource, field+".fromDelegatedPrefix.interfaceRef",
-				"the Interface %q has no prefix-delegation client", derived.InterfaceRef)
-		}
+		v.checkDelegationSource(resource, field+".fromDelegatedPrefix", address.FromDelegatedPrefix)
 	}
 
-	v.checkRoutes(resource, "spec.routes", spec.Routes)
+	v.checkRoutes(resource, "spec.routes", spec.Routes, true)
 
 	if spec.DHCPv6 != nil && spec.DHCPv6.PrefixDelegation != nil {
 		delegation := spec.DHCPv6.PrefixDelegation
@@ -254,7 +238,7 @@ func (v *validator) checkPPPoESession(resource *v1alpha1.Resource, spec *v1alpha
 	if v.required(resource, "spec.passwordFile", spec.PasswordFile != "") {
 		v.checkFile(resource, "spec.passwordFile", spec.PasswordFile)
 	}
-	v.checkRoutes(resource, "spec.routes", spec.Routes)
+	v.checkRoutes(resource, "spec.routes", spec.Routes, false)
 }
 
 func (v *validator) checkDSLiteTunnel(resource *v1alpha1.Resource, spec *v1alpha1.DSLiteTunnelSpec) {
@@ -276,7 +260,7 @@ func (v *validator) checkDSLiteTunnel(resource *v1alpha1.Resource, spec *v1alpha
 	}
 	v.exactlyOne(resource, "aftrHost", "aftrAddress", spec.AFTRHost != "", spec.AFTRAddress != nil)
 
-	v.checkRoutes(resource, "spec.routes", spec.Routes)
+	v.checkRoutes(resource, "spec.routes", spec.Routes, false)
 }
 
 // checkTunnelLocalAddress refuses an interface whose declaration does not state the one
@@ -348,14 +332,34 @@ func (v *validator) checkIPAddressSet(resource *v1alpha1.Resource, spec *v1alpha
 		return
 	}
 	for i, address := range spec.Addresses {
-		if familyOf(address.Addr) != spec.Family {
-			v.errorf(resource, fmt.Sprintf("spec.addresses[%d]", i), "%s is not %s", address, spec.Family)
+		field := fmt.Sprintf("spec.addresses[%d]", i)
+		if address.IsDerived() {
+			v.checkDerivedSetEntry(resource, field, "an address", spec.Family)
+			v.checkDerivedAddress(resource, field+".fromDelegatedPrefix", address.FromDelegatedPrefix)
+			continue
+		}
+		if familyOf(address.Literal.Addr) != spec.Family {
+			v.errorf(resource, field, "%s is not %s", address.Literal, spec.Family)
 		}
 	}
 	for i, network := range spec.Networks {
-		if familyOf(network.Addr()) != spec.Family {
-			v.errorf(resource, fmt.Sprintf("spec.networks[%d]", i), "%s is not %s", network, spec.Family)
+		field := fmt.Sprintf("spec.networks[%d]", i)
+		if network.IsDerived() {
+			v.checkDerivedSetEntry(resource, field, "a network", spec.Family)
+			v.checkDerivedSubnet(resource, field+".fromDelegatedPrefix", "a network", network.FromDelegatedPrefix)
+			continue
 		}
+		if familyOf(network.Literal.Addr()) != spec.Family {
+			v.errorf(resource, field, "%s is not %s", network.Literal, spec.Family)
+		}
+	}
+}
+
+// checkDerivedSetEntry refuses an entry cut from the delegated prefix in a set of the
+// other family. A delegated prefix is IPv6, whatever the set says.
+func (v *validator) checkDerivedSetEntry(resource *v1alpha1.Resource, field, what string, family v1alpha1.Family) {
+	if family != v1alpha1.FamilyIPv6 {
+		v.errorf(resource, field, "%s cut from the delegated prefix is %s, and the set is %s", what, v1alpha1.FamilyIPv6, family)
 	}
 }
 
@@ -582,9 +586,69 @@ func (v *validator) checkDNSForwarder(resource *v1alpha1.Resource, spec *v1alpha
 	}
 }
 
-func (v *validator) checkRoutes(resource *v1alpha1.Resource, field string, routes []v1alpha1.Route) {
+// checkRoutes checks a link's static routes. Only an Interface's routes may be cut from
+// the delegated prefix: an uplink's routes lead outward, and nothing outward is inside the
+// prefix the provider delegated to this host (ADR 0021).
+func (v *validator) checkRoutes(resource *v1alpha1.Resource, field string, routes []v1alpha1.Route, derivable bool) {
 	for i, route := range routes {
-		v.required(resource, fmt.Sprintf("%s[%d].destination", field, i), route.Destination.IsValid())
+		entry := fmt.Sprintf("%s[%d]", field, i)
+		destination := route.Destination
+		v.required(resource, entry+".destination", destination.Literal.IsValid() || destination.IsDerived())
+		if destination.IsDerived() {
+			if derivable {
+				v.checkDerivedSubnet(resource, entry+".destination.fromDelegatedPrefix", "a destination", destination.FromDelegatedPrefix)
+			} else {
+				v.errorf(resource, entry+".destination", "only an Interface's routes may be cut from the delegated prefix")
+			}
+		}
+		if route.Via != nil && route.Via.IsDerived() {
+			if derivable {
+				v.checkDerivedAddress(resource, entry+".via.fromDelegatedPrefix", route.Via.FromDelegatedPrefix)
+			} else {
+				v.errorf(resource, entry+".via", "only an Interface's routes may be cut from the delegated prefix")
+			}
+		}
+	}
+}
+
+// checkDerivedAddress checks a fromDelegatedPrefix written where an address is wanted.
+// The token is the host half, and without it the value would be a subnet (ADR 0021).
+func (v *validator) checkDerivedAddress(resource *v1alpha1.Resource, field string, derived *v1alpha1.DelegatedPrefixAddr) {
+	if v.required(resource, field+".token", derived.Token != "") && !isInterfaceIdentifier(derived.Token) {
+		v.errorf(resource, field+".token",
+			"%q is not an interface identifier; write the host part of an IPv6 address, e.g. \"::1\"", derived.Token)
+	}
+	v.checkDelegationSource(resource, field, derived)
+}
+
+// checkDerivedSubnet checks a fromDelegatedPrefix written where a subnet is wanted. A
+// token would make it an address, so it is refused rather than ignored (ADR 0021).
+func (v *validator) checkDerivedSubnet(resource *v1alpha1.Resource, field, what string, derived *v1alpha1.DelegatedPrefixAddr) {
+	if derived.Token != "" {
+		v.errorf(resource, field+".token",
+			"%s is a /%d subnet of the delegation and takes no token; leave it out", what, DelegatedSubnetBits)
+	}
+	v.checkDelegationSource(resource, field, derived)
+}
+
+// checkDelegationSource checks what every fromDelegatedPrefix has in common: which
+// subnet, and the interface whose delegation it is cut from.
+func (v *validator) checkDelegationSource(resource *v1alpha1.Resource, field string, derived *v1alpha1.DelegatedPrefixAddr) {
+	if !v.required(resource, field+".interfaceRef", derived.InterfaceRef != "") {
+		return
+	}
+	v.required(resource, field+".subnetID", derived.SubnetID != nil)
+
+	upstream := v.resolveInterface(resource, field+".interfaceRef", derived.InterfaceRef)
+	if upstream == nil {
+		return
+	}
+	// The value is a slice of a prefix that has to be asked for. An upstream that asks
+	// for nothing hands out nothing.
+	upstreamSpec := upstream.Spec.(*v1alpha1.InterfaceSpec)
+	if upstreamSpec.DHCPv6 == nil || upstreamSpec.DHCPv6.PrefixDelegation == nil {
+		v.errorf(resource, field+".interfaceRef",
+			"the Interface %q has no prefix-delegation client", derived.InterfaceRef)
 	}
 }
 

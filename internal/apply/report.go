@@ -166,13 +166,14 @@ func reportFirewall(w io.Writer, plan *Plan) {
 	}
 	// The ruleset says which set the hairpin rules match on; what goes into it is what
 	// the links are holding, and it is shown beside the ruleset rather than in it
-	// (ADR 0015). Which sets are written was decided against the kernel, not against the
+	// (ADR 0015). An address set cut from the delegated prefix is shown the same way
+	// (ADR 0021). Which sets are written was decided against the kernel, not against the
 	// text, so this is shown whether or not the ruleset changed.
 	if len(plan.Firewall.Elements) > 0 {
 		if plan.Firewall.Apply {
-			fmt.Fprintln(w, "  and into the uplink sets")
+			fmt.Fprintln(w, "  and into the sets written at runtime")
 		} else {
-			fmt.Fprintln(w, "  the ruleset is unchanged, but these uplink sets do not hold what the links do")
+			fmt.Fprintln(w, "  the ruleset is unchanged, but these sets do not hold what this apply would write")
 		}
 		for _, entry := range plan.Firewall.Elements {
 			fmt.Fprintf(w, "    %s\n", entry)

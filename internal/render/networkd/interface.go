@@ -1,6 +1,8 @@
 package networkd
 
 import (
+	"errors"
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -107,7 +109,7 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 		r.renderPrefixDelegation(u, iface, delegated, advertise != nil)
 	}
 	r.renderAdvertisement(u, iface, advertise, delegated != nil)
-	renderRoutes(u, spec.Routes)
+	r.renderRoutes(u, v1alpha1.KindInterface, iface.Name, spec.Routes)
 
 	r.add(fileName(iface.Name, ".network"), u)
 }
@@ -371,17 +373,83 @@ func (r *renderer) renderBridgeMembers() {
 
 // renderRoutes writes the static routes that leave by a link. A route with no next hop
 // is on-link through it.
-func renderRoutes(u *unit, routes []v1alpha1.Route) {
-	for _, r := range routes {
-		route := u.section("Route")
-		route.set("Destination", r.Destination.String())
-		if r.Via != nil {
-			route.set("Gateway", r.Via.String())
+//
+// An end cut from the delegated prefix is written as the value it resolves to now: the
+// file is a function of the declaration and of the runtime values, and the turn rewrites
+// it when the prefix changes. While it cannot be resolved the subnet it names does not
+// exist, so the route is left out, the rest of the file is written as declared, and the
+// rendering says what the route waits for (ADR 0021).
+func (r *renderer) renderRoutes(u *unit, kind v1alpha1.ResourceKind, name string, routes []v1alpha1.Route) {
+	for i, route := range routes {
+		field := fmt.Sprintf("spec.routes[%d]", i)
+		destination, via, delegation, err := r.resolveRoute(route)
+		if err != nil {
+			var waiting *config.DelegationError
+			if !errors.As(err, &waiting) {
+				r.errorf("%s/%s: %s: %v", kind, name, field, err)
+				continue
+			}
+			r.waiting = append(r.waiting, fmt.Sprintf("%s/%s: waiting for %s; %s is left out of %s",
+				kind, name, waiting.Waiting, field, fileName(name, ".network")))
+			continue
 		}
-		if r.Metric != nil {
-			route.setInt("Metric", *r.Metric)
+
+		section := u.section("Route")
+		section.set("Destination", destination)
+		if via != "" {
+			section.set("Gateway", via)
+		}
+		if route.Metric != nil {
+			section.setInt("Metric", *route.Metric)
+		}
+
+		if delegation != "" {
+			line := fmt.Sprintf("%s/%s: %s to %s", kind, name, field, destination)
+			if via != "" {
+				line += " via " + via
+			}
+			r.resolved = append(r.resolved, line+", in "+delegation)
 		}
 	}
+}
+
+// resolveRoute is a route's two ends as they are written into the file, and, when either
+// was cut from the delegated prefix, the delegation it was cut from.
+func (r *renderer) resolveRoute(route v1alpha1.Route) (destination, via, delegation string, err error) {
+	if derived := route.Destination.FromDelegatedPrefix; derived != nil {
+		subnet, err := r.rt.DelegatedPrefixes.Subnet(*derived)
+		if err != nil {
+			return "", "", "", err
+		}
+		destination = subnet.String()
+		delegation = r.delegationOf(*derived)
+	} else {
+		destination = route.Destination.Literal.String()
+	}
+	switch {
+	case route.Via == nil:
+	case route.Via.FromDelegatedPrefix != nil:
+		resolved, err := r.rt.DelegatedPrefixes.Address(*route.Via.FromDelegatedPrefix)
+		if err != nil {
+			return "", "", "", err
+		}
+		via = resolved.Address.String()
+		if delegation == "" {
+			delegation = r.delegationOf(*route.Via.FromDelegatedPrefix)
+		}
+	default:
+		via = route.Via.Literal.String()
+	}
+	return destination, via, delegation, nil
+}
+
+// delegationOf names the delegation a value was cut from, for the line that shows it.
+func (r *renderer) delegationOf(derived v1alpha1.DelegatedPrefixAddr) string {
+	held := r.rt.DelegatedPrefixes[derived.InterfaceRef]
+	if len(held) != 1 {
+		return "the delegation on Interface/" + derived.InterfaceRef
+	}
+	return fmt.Sprintf("%s delegated on Interface/%s", held[0].Masked(), derived.InterfaceRef)
 }
 
 // splitDUID takes the DUID as it was written — colon-separated hex, type prefix included

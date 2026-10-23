@@ -74,8 +74,14 @@ spec:
         routes:
           - destination: 172.16.0.0/16
             via: 192.168.10.10
-          - destination: 2001:db8:0:2::/64
-            via: 2001:db8:0:1::10
+          # A subnet of the delegation handed to a host behind this one. Both
+          # ends are cut from the prefix the provider delegates now, so the
+          # route follows a prefix change; while there is no delegation the
+          # route is left out, because the subnet it names does not exist.
+          - destination:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 2}
+            via:
+              fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::10"}
         ipv6:
           advertise:
             mode: slaac
@@ -302,16 +308,19 @@ spec:
 
     # IPv6 has no NAT, so the wan-to-lan policy is the only thing standing
     # between the segment and the world. Hosts that should be reachable are
-    # named here once and referred to from the rules.
+    # named here once and referred to from the rules. They are inside the
+    # delegated prefix, so they are written as cut from it: the ruleset
+    # declares the set empty, and each turn writes its elements from the
+    # prefix the delegation client holds now.
     - kind: IPAddressSet
       metadata: {name: published-v6}
       spec:
         family: ipv6
         addresses:
-          - 2001:db8:0:1::200
-          - 2001:db8:0:1::210
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::200"}
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::210"}
         networks:
-          - 2001:db8:0:2::/64
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 2}
 
     - kind: FirewallPolicy
       metadata: {name: wan-to-self}

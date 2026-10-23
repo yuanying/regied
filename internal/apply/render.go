@@ -66,6 +66,9 @@ type rendering struct {
 
 	// ruleset is the text to hand to nft.
 	ruleset string
+	// addressSets is what each address set the ruleset declares empty should hold: the
+	// ones with an entry cut from the delegated prefix, which a turn writes (ADR 0021).
+	addressSets []SetElements
 	// sessions is every PPPoESession's name, in the order the document lists them.
 	sessions []string
 	// dnsmasq is whether this host needs one at all.
@@ -90,6 +93,7 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 	}
 	out.warnings = append(out.warnings, links.Warnings...)
 	out.derived = append(out.derived, links.Resolved...)
+	out.waiting = append(out.waiting, links.Waiting...)
 	for _, omission := range links.Omitted {
 		for _, name := range omission.Files {
 			out.withheld = append(out.withheld, e.opts.NetworkdDir+"/"+name)
@@ -113,6 +117,10 @@ func (e *Engine) render(cfg *config.Config, runtime *Runtime) (*rendering, error
 	if err != nil {
 		return nil, err
 	}
+	sets, resolved, waiting := derivedSets(cfg, runtime.Networkd.DelegatedPrefixes)
+	out.addressSets = sets
+	out.derived = append(out.derived, resolved...)
+	out.waiting = append(out.waiting, waiting...)
 
 	sessions := pppd.Render(cfg, pppd.WithRoot(e.opts.Root), pppd.WithPPPDir(e.opts.PPPDir))
 	for _, hook := range sessions.Hooks {
