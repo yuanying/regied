@@ -151,9 +151,26 @@ prefixes and the delegated one.
 
 | Field | Required | Value |
 |---|---|---|
-| `destination` | yes | CIDR. Family is inferred |
-| `via` | no | Next hop address. Omitted means on-link through this interface |
+| `destination` | yes | CIDR, or `fromDelegatedPrefix` without a `token`, which is a /64 of the delegation. Family is inferred |
+| `via` | no | Next hop address, or `fromDelegatedPrefix` with a `token`. Omitted means on-link through this interface |
 | `metric` | no | Lower wins |
+
+`fromDelegatedPrefix` takes the same `interfaceRef` and `subnetID` as in `addresses[]`, and
+both are required. Where a subnet is wanted — `destination` — the `token` is refused; where an
+address is wanted — `via` — it is required, and is the host part. A route to a subnet handed
+to a host behind the router, through that host's address, is then written once and follows a
+prefix change ([ADR 0021](../adr/0021-values-derived-from-the-delegated-prefix.md)).
+
+Every turn resolves the derived ends from the prefix the delegation client holds now, and
+writes them into the `.network` file as literals. When the provider delegates another prefix,
+the turn that follows rewrites the file and reloads networkd. While no delegation is held, or
+the `subnetID` does not fit in the one delivered, the subnet the route names does not exist:
+the route is left out of the file, the rest of the file is written as declared, and the turn
+reports that it is waiting, naming the interface. `regied render` and `--dry-run` show each
+route resolved, with the delegation it was cut from.
+
+Only an `Interface`'s routes take the derived form. A route on an uplink leads outward, and
+nothing outward is inside the prefix delegated to this host.
 
 There is no table field. The only additional routing tables regied creates are the ones
 an `EgressRoutePolicy` needs and the one per uplink a `PortForward` sends its replies
@@ -260,7 +277,7 @@ Backend: a pppd peer file, a secrets file with restrictive permissions, and a su
 | `useDNS` | no | Default `false`. Whether to take resolvers from the peer |
 | `defaultRoute.install` | no | Default `true`. Install a default route in the main table |
 | `defaultRoute.metric` | no | Default `0`. Raise it to make this uplink a standby |
-| `routes` | no | As on `Interface` |
+| `routes` | no | As on `Interface`, with literals only |
 
 The link is named after `metadata.name`, so other resources and the firewall see a stable
 name across redials. That makes the name a kernel interface name, and it is held to the
@@ -293,7 +310,7 @@ Backend: a `.netdev` of kind `ip6tnl`, mode `ipip6`, and its `.network`.
 | `ttl` | no | Default `64` |
 | `defaultRoute.install` | no | Default `true` |
 | `defaultRoute.metric` | no | Default `0` |
-| `routes` | no | As on `Interface` |
+| `routes` | no | As on `Interface`, with literals only |
 
 The tunnel link is named after `metadata.name`, which makes it a kernel interface name
 and holds it to the same 15 characters an `ifname` is.
@@ -432,11 +449,27 @@ Backend: an nftables set inside regied's table.
 | Field | Required | Value |
 |---|---|---|
 | `family` | yes | `ipv4` or `ipv6` |
-| `addresses` | no | Individual addresses |
-| `networks` | no | Prefixes |
+| `addresses` | no | Individual addresses, or `fromDelegatedPrefix` with a `token` |
+| `networks` | no | Prefixes, or `fromDelegatedPrefix` without a `token`, which is a /64 of the delegation |
 
 At least one of the two lists must be non-empty. A set holding prefixes becomes an
-interval set.
+interval set, whether they are written or derived.
+
+`fromDelegatedPrefix` here is the same as on a route: `interfaceRef` and `subnetID` are
+required, the `token` is required in `addresses` and refused in `networks`, and the set must
+be `ipv6`. It is how a host behind the router, or a subnet handed to one, is named in a rule
+without writing the delegated prefix down
+([ADR 0021](../adr/0021-values-derived-from-the-delegated-prefix.md)).
+
+**A set with at least one derived entry has no elements in the ruleset.** The ruleset
+declares it empty, and every turn writes all its elements — the literal ones too, so that one
+set is never filled from two places — the way it writes an uplink's set
+([ADR 0015](../adr/0015-uplink-addresses-in-sets.md)). The ruleset text stays a function of
+the declaration, and a prefix change replaces the set's elements without replacing the table.
+While no delegation is held, the derived entries are left out and the literal ones are
+written; the turn reports that it is waiting, naming the interface. `regied render` and
+`--dry-run` show the elements a turn would write beside the ruleset, and each derived entry
+with the delegation it was cut from.
 
 ---
 

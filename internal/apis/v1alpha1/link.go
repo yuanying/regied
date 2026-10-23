@@ -150,10 +150,13 @@ func (a *InterfaceAddress) UnmarshalYAML(unmarshal func(any) error) error {
 // Route is a static route that leaves by the link it is written on. There is no table
 // field: the only extra tables regied creates are the ones an EgressRoutePolicy needs,
 // and it fills them itself.
+//
+// On an Interface, either end may be cut from the delegated prefix, so that a route to a
+// subnet handed to a host behind the router follows a prefix change (ADR 0021).
 type Route struct {
-	Destination Prefix `yaml:"destination"`
-	Via         *Addr  `yaml:"via"`
-	Metric      *int   `yaml:"metric"`
+	Destination DerivablePrefix `yaml:"destination"`
+	Via         *DerivableAddr  `yaml:"via"`
+	Metric      *int            `yaml:"metric"`
 }
 
 // DHCPv6Client is the DHCPv6 client on the upstream interface.

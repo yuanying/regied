@@ -45,6 +45,13 @@ func UplinkSetName(link string, family v1alpha1.Family) string {
 	return uplinkSetPrefixIPv4 + link
 }
 
+// AddressSetName is the set an IPAddressSet is declared as. It is exported because a set
+// with an entry cut from the delegated prefix is filled by the apply engine rather than
+// by the ruleset, which has to arrive at the same name (ADR 0021).
+func AddressSetName(name string) string {
+	return addressSetPrefix + name
+}
+
 // The base chains.
 //
 // prerouting_mark is what makes policy routing work, and where it sits is the whole
@@ -132,34 +139,57 @@ func (r *renderer) renderSets(ruleset *Ruleset) {
 		return cmp.Compare(a.Name, b.Name)
 	})
 	for _, set := range sets {
-		addresses := slices.Clone(set.Spec.Addresses)
-		slices.SortFunc(addresses, func(a, b v1alpha1.Addr) int { return a.Addr.Compare(b.Addr) })
-		networks := slices.Clone(set.Spec.Networks)
-		slices.SortFunc(networks, comparePrefixes)
-
-		elements := make([]string, 0, len(addresses)+len(networks))
-		for _, address := range addresses {
-			elements = append(elements, address.String())
-		}
-		for _, network := range networks {
-			elements = append(elements, network.String())
-		}
 		// A set holding prefixes is an interval set. A single address is a /128 or a /32
-		// inside one, so the two forms live together.
+		// inside one, so the two forms live together. Whether it is one follows from the
+		// declaration, derived networks included, so the text does not change with the
+		// prefix.
 		var flags []string
-		if len(networks) > 0 {
+		if len(set.Spec.Networks) > 0 {
 			flags = []string{"interval"}
 		}
-		ruleset.Sets = append(ruleset.Sets, Set{
-			Name:     r.identifier(addressSetPrefix, "IPAddressSet", set.Name),
-			Type:     addressType(set.Spec.Family),
-			Flags:    flags,
-			Elements: elements,
-			Comment:  fmt.Sprintf("IPAddressSet %q", set.Name),
-		})
+		declared := Set{
+			Name:    r.identifier(addressSetPrefix, "IPAddressSet", set.Name),
+			Type:    addressType(set.Spec.Family),
+			Flags:   flags,
+			Comment: fmt.Sprintf("IPAddressSet %q", set.Name),
+		}
+		if set.Spec.HasDerived() {
+			// What the delegated prefix is, is runtime state, and the ruleset is a
+			// function of the declaration alone. The set is declared empty and a turn
+			// writes every element of it, the literal ones too, so that one set is never
+			// filled from two places (ADR 0021, ADR 0015).
+			declared.Comment += ": elements written at runtime, from the delegated prefix"
+		} else {
+			declared.Elements = literalElements(set.Spec)
+		}
+		ruleset.Sets = append(ruleset.Sets, declared)
 	}
 
 	r.renderUplinkSets(ruleset)
+}
+
+// literalElements is a set's entries as they are written in its declaration, addresses
+// first, each group in address order.
+func literalElements(spec *v1alpha1.IPAddressSetSpec) []string {
+	addresses := make([]netip.Addr, 0, len(spec.Addresses))
+	for _, address := range spec.Addresses {
+		addresses = append(addresses, address.Literal.Addr)
+	}
+	slices.SortFunc(addresses, netip.Addr.Compare)
+	networks := make([]v1alpha1.Prefix, 0, len(spec.Networks))
+	for _, network := range spec.Networks {
+		networks = append(networks, network.Literal)
+	}
+	slices.SortFunc(networks, comparePrefixes)
+
+	elements := make([]string, 0, len(addresses)+len(networks))
+	for _, address := range addresses {
+		elements = append(elements, address.String())
+	}
+	for _, network := range networks {
+		elements = append(elements, network.String())
+	}
+	return elements
 }
 
 // renderUplinkSets declares the sets the hairpin rules match on: one per uplink and

@@ -770,3 +770,62 @@ func TestNoMarkChainWithoutAPolicyOrAForward(t *testing.T) {
 		t.Error("a mark chain was rendered with nothing to put in it")
 	}
 }
+
+// A set with an entry cut from the delegated prefix is declared without elements: what
+// the prefix is, is runtime state, and the ruleset stays a function of the declaration.
+// Its literal entries are left out with the derived ones, so that one set is never filled
+// from two places, and a turn writes all of them (ADR 0021, ADR 0015). A set holding a
+// network is an interval set whether the network is literal or derived.
+func TestAnAddressSetWithADerivedEntryIsDeclaredEmpty(t *testing.T) {
+	ruleset := render(t, `    - kind: Interface
+      metadata: {name: wan}
+      spec:
+        ifname: eth0
+        dhcpv6:
+          prefixDelegation: {prefixLength: 56}
+    - kind: IPAddressSet
+      metadata: {name: published}
+      spec:
+        family: ipv6
+        addresses:
+          - 2001:db8::1
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 1, token: "::200"}
+    - kind: IPAddressSet
+      metadata: {name: behind}
+      spec:
+        family: ipv6
+        networks:
+          - fromDelegatedPrefix: {interfaceRef: wan, subnetID: 2}
+    - kind: IPAddressSet
+      metadata: {name: literal}
+      spec:
+        family: ipv6
+        addresses: [2001:db8::1]
+`)
+
+	assertEqual(t, "addrset_published", elementsOf(t, ruleset, "addrset_published"), nil)
+	assertEqual(t, "addrset_behind", elementsOf(t, ruleset, "addrset_behind"), nil)
+	assertEqual(t, "addrset_literal", elementsOf(t, ruleset, "addrset_literal"), []string{"2001:db8::1"})
+	for _, set := range ruleset.Sets {
+		switch set.Name {
+		case "addrset_published":
+			if len(set.Flags) != 0 {
+				t.Errorf("a set of addresses is an interval set: %+v", set)
+			}
+			if !strings.Contains(set.Comment, "written at runtime") {
+				t.Errorf("the set does not say its elements are written at runtime: %q", set.Comment)
+			}
+		case "addrset_behind":
+			if strings.Join(set.Flags, ",") != "interval" {
+				t.Errorf("a set holding a derived network is not an interval set: %+v", set)
+			}
+		case "addrset_literal":
+			if strings.Contains(set.Comment, "runtime") {
+				t.Errorf("a literal set says it is written at runtime: %q", set.Comment)
+			}
+		}
+	}
+	if nftables.AddressSetName("published") != "addrset_published" {
+		t.Errorf("the set of IPAddressSet/published is named %q", nftables.AddressSetName("published"))
+	}
+}

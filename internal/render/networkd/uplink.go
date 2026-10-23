@@ -52,7 +52,7 @@ func (r *renderer) renderDSLiteTunnel(tunnel config.Named[*v1alpha1.DSLiteTunnel
 		route.set("Destination", defaultRouteV4)
 		route.setInt("Metric", spec.DefaultRoute.MetricOrDefault())
 	}
-	renderRoutes(u, spec.Routes)
+	r.renderRoutes(u, v1alpha1.KindDSLiteTunnel, tunnel.Name, spec.Routes)
 	r.renderPolicyRouting(u, tunnel.Name)
 	r.renderForwardReturnRouting(u, tunnel.Name)
 
@@ -187,7 +187,7 @@ func (r *renderer) renderPPPoESession(session config.Named[*v1alpha1.PPPoESessio
 	// table — was put there by pppd. networkd is told to leave all of it alone.
 	u.section("Network").setBool("KeepConfiguration", true)
 
-	renderRoutes(u, session.Spec.Routes)
+	r.renderRoutes(u, v1alpha1.KindPPPoESession, session.Name, session.Spec.Routes)
 	r.renderPolicyRouting(u, session.Name)
 	r.renderForwardReturnRouting(u, session.Name)
 

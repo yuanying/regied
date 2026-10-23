@@ -99,6 +99,34 @@ func TestRenderTakesTheDelegatedPrefix(t *testing.T) {
 	}
 }
 
+// The example routes a subnet of the delegation to a host behind the router and
+// publishes hosts inside it through an address set. Given the prefix, the rendering
+// writes the route as literals and shows the elements a turn would put in the set, which
+// the ruleset declares empty (ADR 0021).
+func TestRenderResolvesDerivedRoutesAndSetElements(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"render",
+		"-config", "../../config/example.yaml",
+		"-aftr", "dslite=2001:db8:53::1",
+		"-duid", "/etc/regied/secrets/dhcpv6-duid=00:03:00:01:00:00:5e:00:53:01",
+		"-delegated-prefix", "wan=2001:db8:1000::/56",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("rendering the example exits %d:\n%s", code, stderr.String())
+	}
+	for _, want := range []string{
+		"Destination=2001:db8:1000:2::/64",
+		"Gateway=2001:db8:1000:1::10",
+		"Interface/lan: spec.routes[1] to 2001:db8:1000:2::/64 via 2001:db8:1000:1::10",
+		"addrset_published-v6 { 2001:db8:1000:1::200, 2001:db8:1000:1::210, 2001:db8:1000:2::/64 }",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("the rendering does not show %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
 // Without it, the tunnel is left out and the rendering says what it waits for, as it
 // would for an AFTR name that was not given.
 func TestRenderWithoutTheDelegatedPrefixLeavesTheTunnelOut(t *testing.T) {

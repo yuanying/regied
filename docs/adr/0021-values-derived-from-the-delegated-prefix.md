@@ -164,6 +164,15 @@ would undo that for the same reasons that record gives. **A set with at least on
 entry has all its elements written by the turn**, literal ones included, so that one set is
 never filled from two places.
 
+*Confirmed by the third implementation unit on systemd 257.13 and nftables 1.1.3 (Debian
+13), with a DHCPv6 server moving the delegation to another /56: after the turn rewrites a
+`.network` whose route was resolved from the delegation and reloads networkd, the route to
+the old subnet is gone and the route to the new one is in place; no `networkctl
+reconfigure` is needed. In the same turn the set's elements are replaced without replacing
+the table. nft prints a network in an interval set as a prefix object rather than a string,
+and the turn reads it back as its CIDR, so a set already holding what the turn would write
+is not written again.*
+
 `regied render` and `--dry-run` show the prefix that was read, and every value resolved from
 it, beside the files and the set elements a turn would write. Neither is a secret, and the
 prefix in effect is the first thing a diagnosis needs — the treatment the DUID and the
