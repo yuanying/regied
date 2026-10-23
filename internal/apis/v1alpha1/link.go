@@ -197,7 +197,24 @@ func (d PrefixDelegation) SendReleaseEnabled() bool { return boolOr(d.SendReleas
 
 // InterfaceIPv6 groups the IPv6 settings of a link.
 type InterfaceIPv6 struct {
-	Advertise *RouterAdvertisement `yaml:"advertise"`
+	Advertise            *RouterAdvertisement  `yaml:"advertise"`
+	AdvertisedDelegation *AdvertisedDelegation `yaml:"advertisedDelegation"`
+}
+
+// AdvertisedDelegation says, on a host behind a router, that the prefix advertised to this
+// link is a subnet of a delegation of the stated length. The host then knows the delegated
+// prefix as the router does — the advertised /64 cut back to the length — and a
+// fromDelegatedPrefix naming this interface means what it means on the router (ADR 0023).
+type AdvertisedDelegation struct {
+	PrefixLength *int `yaml:"prefixLength"`
+}
+
+// AdvertisedDelegationOf is the interface's advertised delegation, or nil.
+func (s *InterfaceSpec) AdvertisedDelegationOf() *AdvertisedDelegation {
+	if s.IPv6 == nil {
+		return nil
+	}
+	return s.IPv6.AdvertisedDelegation
 }
 
 // RouterAdvertisement makes a downstream link advertise the prefix it holds. The prefix

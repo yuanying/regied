@@ -48,6 +48,7 @@ Backend: a `.network` file, for a bridge a `.netdev` file, and for a link with
 | `routes` | no | List of static routes. See below |
 | `dhcpv6` | no | DHCPv6 client settings. See below |
 | `ipv6.advertise` | no | Router advertisement settings. See below |
+| `ipv6.advertisedDelegation` | no | On a host behind a router: the delegation the prefix advertised to this link belongs to. See below |
 
 `bridge.members` holds kernel interface names, not resource names. A member does not
 need an `Interface` resource of its own — regied writes the file that enslaves it.
@@ -123,9 +124,9 @@ mapping names exactly one of `fromDelegatedPrefix` and `fromRouterAdvertisement`
 | Field | Required | Value |
 |---|---|---|
 | *(string)* | — | A literal, e.g. `192.0.2.1/24` or `2001:db8::1/64` |
-| `fromDelegatedPrefix.interfaceRef` | yes | The interface running the prefix-delegation client |
+| `fromDelegatedPrefix.interfaceRef` | yes | The interface running the prefix-delegation client, or, on a host behind a router, the one declaring [`ipv6.advertisedDelegation`](#ipv6advertiseddelegation) |
 | `fromDelegatedPrefix.subnetID` | yes | Which subnet of the delegated prefix to take |
-| `fromDelegatedPrefix.token` | no | The host part, e.g. `::1`. Defaults to the interface identifier |
+| `fromDelegatedPrefix.token` | no | The host part, e.g. `::1`. Defaults to the interface identifier. Required when `interfaceRef` declares `ipv6.advertisedDelegation` |
 | `fromRouterAdvertisement.token` | yes | The host part, e.g. `::153`. The upper 64 bits must be zero, and it must not be `::` |
 
 A derived address changes when the delegation changes, and everything built on it —
@@ -243,18 +244,65 @@ same link.
 | `mode` | yes | `slaac` — advertise the prefix for stateless autoconfiguration |
 | `otherInformation` | no | Default `false`. Set the O flag, telling clients to ask DHCPv6 for the rest |
 | `dnsServers` | no | Advertised as RDNSS |
-| `validLifetime` | no | Default `24h`. Literal prefixes only. See below |
-| `preferredLifetime` | no | Default half of `validLifetime`. Literal prefixes only |
+| `validLifetime` | no | Default `24h` for a literal prefix, `1h` for one cut from an advertised delegation. Not for a delegated prefix. See below |
+| `preferredLifetime` | no | Default half of `validLifetime`. Not for a delegated prefix |
 
 The prefix advertised is the one this interface holds. It is not written here, so it
 cannot drift from the address that is actually configured.
 
-**The two lifetimes apply only to a prefix written as a literal address.** A prefix that
-comes from delegation is announced by the delegation itself, and networkd takes its
-lifetimes from the delegation — how long the provider says the prefix is good for is not
-something a downstream advertisement may extend, and there is no directive that
-overrides it. An interface whose IPv6 address is entirely derived and that sets either
-field is warned about at render time: what was written goes nowhere.
+**The two lifetimes apply only to a prefix regied writes into the advertisement**: one
+written as a literal address, and one cut from an
+[advertised delegation](#ipv6advertiseddelegation) on a host behind a router. A prefix
+that comes from this host's own delegation is announced by the delegation itself, and
+networkd takes its lifetimes from the delegation — how long the provider says the prefix
+is good for is not something a downstream advertisement may extend, and there is no
+directive that overrides it. An interface whose IPv6 address is entirely delegated and
+that sets either field is warned about at render time: what was written goes nowhere.
+
+A prefix cut from an advertised delegation is advertised for an hour, and preferred for
+half of that, unless the fields say otherwise. networkd re-sends the advertisement every
+few minutes while the prefix is current, so the short lifetime costs nothing while it is.
+It matters after a change: networkd stops advertising a prefix it is no longer told to,
+but does not announce it once more with a lifetime of zero, so the hosts below keep the
+old address until the lifetime they last heard runs out
+([ADR 0023](../adr/0023-downstream-hosts-derive-their-subnet.md)).
+
+### `ipv6.advertisedDelegation`
+
+Set on the LAN interface of a host behind a router, when that host hands subnets of the
+router's delegation to a segment of its own — a container bridge, typically. It states
+that the prefix advertised to this link is a subnet of a delegation of the given length.
+The host then knows the delegated prefix as well as the router does, and
+`fromDelegatedPrefix` naming this interface means here what it means on the router
+([ADR 0023](../adr/0023-downstream-hosts-derive-their-subnet.md)).
+
+| Field | Required | Value |
+|---|---|---|
+| `prefixLength` | yes | The length of the delegation, e.g. `56`. Between 1 and 64 |
+
+The interface must also hold a `fromRouterAdvertisement` address, and must not run a
+prefix-delegation client of its own. Every turn reads, from networkd's description of the
+link, the address networkd configured from an advertisement with that token, and cuts its
+/64 back to `prefixLength`: that is the delegated prefix on this host. Only a global
+address counts. A unique local address advertised beside it is not the delegation, and a
+temporary address does not carry the token. When the link holds the token in more than
+one delegation, which is ordinary for a while after a prefix change, the one networkd
+prefers for longest is taken, and the turn says which one it took. Two preferred equally
+long cannot be told apart: everything cut from them waits.
+
+`fromDelegatedPrefix` naming this interface is accepted wherever it is accepted on a
+router — an interface's address, a route's destination and next hop, an address set's
+entry — and resolves the same way, with the same waiting while nothing has been advertised.
+The difference is how an interface's address reaches the host. networkd has no delegation
+here to derive from, so the address is written into the `.network` file as the value it
+resolves to (and so needs a `token`), and `ipv6.advertise` on that interface advertises it
+as a literal prefix. When the router moves to another prefix and advertises a subnet of it,
+the address taken from the advertisement changes, that wakes a turn, and the turn rewrites
+the files and reloads networkd.
+
+The length is the one value here a provider can still break: a provider that changes the
+length it delegates moves every derived subnet on this host to the wrong place, and
+nothing on this host can tell.
 
 ---
 

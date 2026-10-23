@@ -26,7 +26,7 @@ func renderCommand(args []string, stdout, stderr io.Writer) int {
 	delegated := pairs{}
 	flags.Var(aftr, "aftr", "a DS-Lite tunnel's resolved AFTR address, as name=address (repeatable)")
 	flags.Var(duid, "duid", "the contents of a DUID file, as path=value (repeatable)")
-	flags.Var(delegated, "delegated-prefix", "the prefix an Interface's prefix-delegation client holds, as name=prefix (repeatable)")
+	flags.Var(delegated, "delegated-prefix", "the delegated prefix an Interface holds, through its prefix-delegation client or cut from the prefix advertised to it, as name=prefix (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return parseExit(err)
 	}

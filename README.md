@@ -105,6 +105,8 @@ resource kinds in `spec.resources[]`.
   between resources, and what lands in which backend
 - [`docs/spec/kinds.md`](docs/spec/kinds.md) — the kinds, field by field
 - [`config/example.yaml`](config/example.yaml) — a worked example of a two-uplink host
+- [`config/example-downstream.yaml`](config/example-downstream.yaml) — a host behind that
+  router, whose container bridge is cut from the router's delegation
 
 The kinds and the division of responsibility are settled
 ([ADR 0002](docs/adr/0002-configuration-schema.md)); individual field names may still move

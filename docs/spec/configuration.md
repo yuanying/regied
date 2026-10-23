@@ -2,7 +2,8 @@
 
 The schema of regied's configuration file. The reasoning behind its shape is in
 [ADR 0002](../adr/0002-configuration-schema.md); the per-kind field tables are in
-[`kinds.md`](kinds.md); a worked example is [`config/example.yaml`](../../config/example.yaml).
+[`kinds.md`](kinds.md); a worked example is [`config/example.yaml`](../../config/example.yaml), and
+[`config/example-downstream.yaml`](../../config/example-downstream.yaml) is a host behind it.
 
 日本語版は [docs/ja/spec/configuration.md](../ja/spec/configuration.md) にあります。
 
@@ -325,7 +326,12 @@ Beyond references resolving and required fields being present, regied rejects:
   that also carries an address
 - a value derived from a delegated prefix — an interface's address, a route's
   destination or next hop, an address set's entry, a DNS record's address — whose upstream
-  interface has no prefix-delegation client
+  interface has no prefix-delegation client and declares no `ipv6.advertisedDelegation`
+- an interface's address derived through an interface declaring
+  `ipv6.advertisedDelegation` without a `token`
+- an `ipv6.advertisedDelegation` whose `prefixLength` is not between 1 and 64, on an
+  interface that holds no `fromRouterAdvertisement` address, or on one that also runs a
+  prefix-delegation client
 - a derived route destination or address set network that carries a `token`, and a
   derived next hop or address set address that does not, or whose `token` is not an
   interface identifier

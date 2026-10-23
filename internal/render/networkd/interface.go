@@ -14,7 +14,16 @@ import (
 
 // The lifetimes a router advertisement uses when the configuration leaves them out. The
 // preferred lifetime defaults to half the valid one.
-const defaultValidLifetime = 24 * time.Hour
+//
+// A prefix cut from an advertised delegation is advertised for much less. networkd, told
+// to stop advertising a prefix, drops it without announcing it once more with a lifetime
+// of zero, so the hosts below keep the old prefix until the lifetime they last heard runs
+// out. The advertisement is refreshed every few minutes while the prefix is current, so a
+// short lifetime costs nothing until the prefix changes (ADR 0023).
+const (
+	defaultValidLifetime          = 24 * time.Hour
+	defaultCutPrefixValidLifetime = time.Hour
+)
 
 func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) {
 	spec := iface.Spec
@@ -58,9 +67,19 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 		// first client, nor go when the last one is unplugged (ADR 0018).
 		network.setBool("ConfigureWithoutCarrier", true)
 	}
-	for _, address := range spec.Addresses {
-		if address.IsLiteral() {
+	var advertisable []advertisedPrefix
+	for i, address := range spec.Addresses {
+		switch {
+		case address.IsLiteral():
 			network.set("Address", address.Literal.String())
+			if isIPv6(address.Literal.Addr()) {
+				advertisable = append(advertisable, advertisedPrefix{prefix: address.Literal.Masked()})
+			}
+		case address.FromDelegatedPrefix != nil && r.advertisedDelegation(address.FromDelegatedPrefix.InterfaceRef):
+			if cut, ok := r.cutAddress(iface, i, *address.FromDelegatedPrefix); ok {
+				network.set("Address", cut.String())
+				advertisable = append(advertisable, advertisedPrefix{prefix: cut.Masked(), cut: true})
+			}
 		}
 	}
 	if r.carriesHostResolver(iface) {
@@ -108,7 +127,7 @@ func (r *renderer) renderInterface(iface config.Named[*v1alpha1.InterfaceSpec]) 
 	if delegated != nil {
 		r.renderPrefixDelegation(u, iface, delegated, advertise != nil)
 	}
-	r.renderAdvertisement(u, iface, advertise, delegated != nil)
+	r.renderAdvertisement(u, iface, advertise, delegated != nil, advertisable)
 	r.renderRoutes(u, v1alpha1.KindInterface, iface.Name, spec.Routes)
 
 	r.add(fileName(iface.Name, ".network"), u)
@@ -122,14 +141,16 @@ func advertisementOf(spec *v1alpha1.InterfaceSpec) *v1alpha1.RouterAdvertisement
 	return spec.IPv6.Advertise
 }
 
-// delegatedAddress is the one address of the interface derived from a delegated prefix.
+// delegatedAddress is the one address of the interface networkd derives from a delegated
+// prefix. One cut from an advertised delegation is not: there is no delegation on this
+// host for networkd to derive it from, and regied writes it as an address.
 //
 // networkd takes one [DHCPPrefixDelegation] per link, so a second one has nowhere to go.
 // The schema does not refuse it, so the backend that cannot express it says so.
 func (r *renderer) delegatedAddress(iface config.Named[*v1alpha1.InterfaceSpec]) *v1alpha1.DelegatedPrefixAddr {
 	var found *v1alpha1.DelegatedPrefixAddr
 	for _, address := range iface.Spec.Addresses {
-		if address.FromDelegatedPrefix == nil {
+		if address.FromDelegatedPrefix == nil || r.advertisedDelegation(address.FromDelegatedPrefix.InterfaceRef) {
 			continue
 		}
 		if found != nil {
@@ -140,6 +161,45 @@ func (r *renderer) delegatedAddress(iface config.Named[*v1alpha1.InterfaceSpec])
 		found = address.FromDelegatedPrefix
 	}
 	return found
+}
+
+// advertisedDelegation is whether the named interface knows its delegation from the
+// prefix advertised to it, rather than from a prefix-delegation client (ADR 0023).
+func (r *renderer) advertisedDelegation(name string) bool {
+	upstream, ok := r.interfaces[name]
+	return ok && upstream.Spec.AdvertisedDelegationOf() != nil
+}
+
+// cutAddress is an address of the interface cut from an advertised delegation, as it is
+// written into the file: the value it resolves to, with the /64 it is a subnet of.
+//
+// While it cannot be resolved the subnet it names does not exist, so the address is left
+// out, the rest of the file is written as declared, and the rendering says what the
+// address waits for (ADR 0021, ADR 0023).
+func (r *renderer) cutAddress(iface config.Named[*v1alpha1.InterfaceSpec], i int, derived v1alpha1.DelegatedPrefixAddr) (netip.Prefix, bool) {
+	field := fmt.Sprintf("spec.addresses[%d]", i)
+	resolved, err := r.rt.DelegatedPrefixes.Address(derived)
+	if err != nil {
+		var waiting *config.DelegationError
+		if !errors.As(err, &waiting) {
+			r.errorf("Interface/%s: %s: %v", iface.Name, field, err)
+			return netip.Prefix{}, false
+		}
+		r.waiting = append(r.waiting, fmt.Sprintf("Interface/%s: waiting for %s; %s is left out of %s",
+			iface.Name, waiting.Waiting, field, fileName(iface.Name, ".network")))
+		return netip.Prefix{}, false
+	}
+	address := netip.PrefixFrom(resolved.Address, config.DelegatedSubnetBits)
+	r.resolved = append(r.resolved, fmt.Sprintf("Interface/%s: %s %s, in %s",
+		iface.Name, field, address, r.delegationOf(derived)))
+	return address, true
+}
+
+// advertisedPrefix is a prefix regied writes into the advertisement itself, and whether it
+// was cut from an advertised delegation, which decides its default lifetimes.
+type advertisedPrefix struct {
+	prefix netip.Prefix
+	cut    bool
 }
 
 // advertisedAddress is the interface's address taken from the router advertisement, or
@@ -259,8 +319,10 @@ func (r *renderer) renderPrefixDelegation(u *unit, iface config.Named[*v1alpha1.
 	pd.setBool("Announce", announce)
 }
 
-// renderAdvertisement writes what this link tells the segment below it.
-func (r *renderer) renderAdvertisement(u *unit, iface config.Named[*v1alpha1.InterfaceSpec], advertise *v1alpha1.RouterAdvertisement, delegated bool) {
+// renderAdvertisement writes what this link tells the segment below it. The prefixes are
+// the ones regied writes in itself; a prefix from this host's own delegation is announced
+// by [DHCPPrefixDelegation].
+func (r *renderer) renderAdvertisement(u *unit, iface config.Named[*v1alpha1.InterfaceSpec], advertise *v1alpha1.RouterAdvertisement, delegated bool, prefixes []advertisedPrefix) {
 	if advertise == nil {
 		return
 	}
@@ -275,17 +337,15 @@ func (r *renderer) renderAdvertisement(u *unit, iface config.Named[*v1alpha1.Int
 		ra.set("DNS", server.String())
 	}
 
-	valid := advertise.ValidLifetime.OrDefault(defaultValidLifetime)
-	preferred := advertise.PreferredLifetime.OrDefault(valid / 2)
-
-	var prefixes int
-	for _, address := range iface.Spec.Addresses {
-		if !address.IsLiteral() || !isIPv6(address.Literal.Addr()) {
-			continue
+	for _, advertised := range prefixes {
+		valid := advertise.ValidLifetime.OrDefault(defaultValidLifetime)
+		if advertised.cut {
+			valid = advertise.ValidLifetime.OrDefault(defaultCutPrefixValidLifetime)
 		}
-		prefixes++
+		preferred := advertise.PreferredLifetime.OrDefault(valid / 2)
+
 		prefix := u.section("IPv6Prefix")
-		prefix.set("Prefix", address.Literal.Masked().String())
+		prefix.set("Prefix", advertised.prefix.String())
 		prefix.setInt("PreferredLifetimeSec", int(preferred.Seconds()))
 		prefix.setInt("ValidLifetimeSec", int(valid.Seconds()))
 	}
@@ -293,7 +353,7 @@ func (r *renderer) renderAdvertisement(u *unit, iface config.Named[*v1alpha1.Int
 	// A delegated prefix is announced by [DHCPPrefixDelegation], which takes the
 	// lifetimes from the delegation itself: there is no directive to override them.
 	// Writing one that goes nowhere is worth saying out loud.
-	if prefixes == 0 && delegated && (advertise.ValidLifetime != 0 || advertise.PreferredLifetime != 0) {
+	if len(prefixes) == 0 && delegated && (advertise.ValidLifetime != 0 || advertise.PreferredLifetime != 0) {
 		r.warnf("Interface/%s: ipv6.advertise validLifetime and preferredLifetime are not applied, because this interface advertises only its delegated prefix and networkd takes that prefix's lifetimes from the delegation",
 			iface.Name)
 	}

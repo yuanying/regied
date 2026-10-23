@@ -2,7 +2,8 @@
 
 regied の設定ファイルのスキーマ。この形にした理由は
 [ADR 0002](../adr/0002-configuration-schema.md)、kind ごとのフィールドは
-[`kinds.md`](kinds.md)、実例は [`config/example.yaml`](../../../config/example.yaml) にある。
+[`kinds.md`](kinds.md)、実例は [`config/example.yaml`](../../../config/example.yaml) にあり、
+[`config/example-downstream.yaml`](../../../config/example-downstream.yaml) はその後ろのホストである。
 
 英語が正である。[docs/spec/configuration.md](../../spec/configuration.md) を参照。
 
@@ -306,8 +307,14 @@ DNS レコードは、失敗しても周回をまったく止めない唯一の�
 - 同じファミリで `priority` が重複する `EgressRoutePolicy`
 - `from` と `to` が同じ `FirewallPolicy` が 2 つ
 - `ifname` が他のインターフェースの `bridge.members` に現れ、かつアドレスも持つ `Interface`
-- 上流インターフェースに PD クライアントが無いのに、委譲プレフィックスから導く指定
-  （インターフェースのアドレス、経路の宛先や next hop、アドレスセットの要素、DNS レコードのアドレス）
+- 上流インターフェースに PD クライアントも `ipv6.advertisedDelegation` も無いのに、
+  委譲プレフィックスから導く指定（インターフェースのアドレス、経路の宛先や next hop、
+  アドレスセットの要素、DNS レコードのアドレス）
+- `ipv6.advertisedDelegation` を宣言したインターフェースから導く、`token` の無い
+  インターフェースのアドレス
+- `prefixLength` が 1 から 64 の外にある `ipv6.advertisedDelegation`、
+  `fromRouterAdvertisement` のアドレスを持たないインターフェースや、PD クライアントも
+  走らせるインターフェースに置いた `ipv6.advertisedDelegation`
 - `token` を書いた導出の経路の宛先やアドレスセットの `networks`、`token` が無い、
   またはインターフェース識別子でない導出の next hop やアドレスセットの `addresses`
 - `ipv4` の `IPAddressSet` にある導出の要素

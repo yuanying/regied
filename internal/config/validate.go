@@ -167,8 +167,18 @@ func (v *validator) checkInterface(resource *v1alpha1.Resource, spec *v1alpha1.I
 			}
 			continue
 		}
-		v.checkDelegationSource(resource, field+".fromDelegatedPrefix", address.FromDelegatedPrefix)
+		derived := address.FromDelegatedPrefix
+		upstream := v.checkDelegationSource(resource, field+".fromDelegatedPrefix", derived)
+		// On a router networkd derives the address, and makes up the host part when there
+		// is no token. Through an advertised delegation regied writes the address itself,
+		// and has no host part to make up (ADR 0023).
+		if upstream != nil && upstream.AdvertisedDelegationOf() != nil && derived.Token == "" {
+			v.errorf(resource, field+".fromDelegatedPrefix.token",
+				"the Interface %q is advertised its prefix rather than delegated one, so this address is written as the value it resolves to and needs a token",
+				derived.InterfaceRef)
+		}
 	}
+	v.checkAdvertisedDelegation(resource, spec, fromAdvertisement)
 
 	v.checkRoutes(resource, "spec.routes", spec.Routes, true)
 
@@ -192,6 +202,30 @@ func (v *validator) checkInterface(resource *v1alpha1.Resource, spec *v1alpha1.I
 
 	if spec.WakeOnLan != nil {
 		v.checkWakeOnLan(resource, spec)
+	}
+}
+
+// checkAdvertisedDelegation checks what a downstream host needs to read its delegation:
+// a length, and the address taken from the advertisement it is read from. A link running
+// a prefix-delegation client already knows its delegation, and two sources for one would
+// leave which of them a value is cut from unstated (ADR 0023).
+func (v *validator) checkAdvertisedDelegation(resource *v1alpha1.Resource, spec *v1alpha1.InterfaceSpec, fromAdvertisement bool) {
+	const field = "spec.ipv6.advertisedDelegation"
+	advertised := spec.AdvertisedDelegationOf()
+	if advertised == nil {
+		return
+	}
+	if v.required(resource, field+".prefixLength", advertised.PrefixLength != nil) {
+		if length := *advertised.PrefixLength; length < 1 || length > DelegatedSubnetBits {
+			v.errorf(resource, field+".prefixLength", "%d is not the length of a delegation; it is between 1 and %d",
+				length, DelegatedSubnetBits)
+		}
+	}
+	if !fromAdvertisement {
+		v.errorf(resource, field, "the advertised prefix is read from the address taken from the router advertisement, and this Interface declares none; add a fromRouterAdvertisement address")
+	}
+	if spec.DHCPv6 != nil && spec.DHCPv6.PrefixDelegation != nil {
+		v.errorf(resource, field, "this Interface runs a prefix-delegation client, which is where its delegation comes from; declare one or the other")
 	}
 }
 
@@ -632,24 +666,27 @@ func (v *validator) checkDerivedSubnet(resource *v1alpha1.Resource, field, what 
 }
 
 // checkDelegationSource checks what every fromDelegatedPrefix has in common: which
-// subnet, and the interface whose delegation it is cut from.
-func (v *validator) checkDelegationSource(resource *v1alpha1.Resource, field string, derived *v1alpha1.DelegatedPrefixAddr) {
+// subnet, and the interface whose delegation it is cut from. It hands back that
+// interface, or nil when it cannot be resolved.
+func (v *validator) checkDelegationSource(resource *v1alpha1.Resource, field string, derived *v1alpha1.DelegatedPrefixAddr) *v1alpha1.InterfaceSpec {
 	if !v.required(resource, field+".interfaceRef", derived.InterfaceRef != "") {
-		return
+		return nil
 	}
 	v.required(resource, field+".subnetID", derived.SubnetID != nil)
 
 	upstream := v.resolveInterface(resource, field+".interfaceRef", derived.InterfaceRef)
 	if upstream == nil {
-		return
+		return nil
 	}
-	// The value is a slice of a prefix that has to be asked for. An upstream that asks
-	// for nothing hands out nothing.
+	// The value is a slice of a prefix that has to be asked for, or, on a host behind a
+	// router, one the router advertises a subnet of (ADR 0023). An upstream that does
+	// neither knows of no delegation.
 	upstreamSpec := upstream.Spec.(*v1alpha1.InterfaceSpec)
-	if upstreamSpec.DHCPv6 == nil || upstreamSpec.DHCPv6.PrefixDelegation == nil {
+	if (upstreamSpec.DHCPv6 == nil || upstreamSpec.DHCPv6.PrefixDelegation == nil) && upstreamSpec.AdvertisedDelegationOf() == nil {
 		v.errorf(resource, field+".interfaceRef",
-			"the Interface %q has no prefix-delegation client", derived.InterfaceRef)
+			"the Interface %q has no prefix-delegation client and declares no ipv6.advertisedDelegation", derived.InterfaceRef)
 	}
+	return upstreamSpec
 }
 
 // --- names that reach the kernel -------------------------------------------------

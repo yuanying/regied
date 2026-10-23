@@ -100,6 +100,8 @@ networkd は有効にしておく必要があり、ルーターのリンクを�
   リソース間の参照、どのバックエンドに落ちるか
 - [`docs/ja/spec/kinds.md`](docs/ja/spec/kinds.md) — kind ごとのフィールド
 - [`config/example.yaml`](config/example.yaml) — 回線 2 本のホストの実例
+- [`config/example-downstream.yaml`](config/example-downstream.yaml) — そのルーターの後ろの
+  ホストで、コンテナのブリッジをルーターの委譲から切り出す実例
 
 kind の一覧と持ち分は確定している（[ADR 0002](docs/ja/adr/0002-configuration-schema.md)）。
 個々のフィールド名は最初のリリースまでに動くことがあり、`v1alpha1` はその意味である。

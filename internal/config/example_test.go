@@ -89,3 +89,20 @@ func (exampleSecrets) CheckSecretFile(path string) error {
 	}
 	return config.ErrSecretFileMissing
 }
+
+// config/example-downstream.yaml is the host behind the router of the worked example, the
+// one ADR 0023 describes. It holds no literal prefix, and it has to stay readable for the
+// same reason the router's example does.
+func TestExampleDownstreamConfiguration(t *testing.T) {
+	cfg, err := config.Load("../../config/example-downstream.yaml", config.WithSecretFiles(exampleSecrets{}))
+	if err != nil {
+		t.Fatalf("config/example-downstream.yaml does not validate:\n%v", err)
+	}
+	if warnings := cfg.Warnings(); len(warnings) != 0 {
+		t.Errorf("config/example-downstream.yaml warns:\n%s", warnings)
+	}
+	interfaces := config.ResourcesOf[*v1alpha1.InterfaceSpec](cfg)
+	if len(interfaces) != 2 || interfaces[0].Spec.AdvertisedDelegationOf() == nil {
+		t.Errorf("the first interface is not the LAN declaring its advertised delegation: %+v", interfaces)
+	}
+}
