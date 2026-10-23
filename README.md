@@ -152,6 +152,7 @@ below is.
 | The systemd unit | `/etc/systemd/system/regied.service`, copied from [`dist/systemd/`](dist/systemd/) | the operator |
 | The accepted declaration | `/var/lib/regied/accepted/declaration.yaml` | regied, when a submission is accepted |
 | The report of the last turn | `/var/lib/regied/turn/report.yaml` | regied, when what it says changes |
+| Steps an earlier turn left owed | `/var/lib/regied/turn/owed.yaml` — a reload a turn wrote files for and did not get to run; absent when nothing is owed | regied, when what it says changes |
 | The control socket | `/run/regied/control.sock`. Root's, with no group: reaching it is the capability of reconfiguring the host | the resident process |
 | networkd, dnsmasq, pppd files and the pppd hooks | the distribution's own directories, under regied's name and ownership marker | regied |
 

@@ -146,6 +146,7 @@ make build-arm64        # arm64 の SBC 向けにクロスビルドする
 | systemd ユニット | `/etc/systemd/system/regied.service`。[`dist/systemd/`](dist/systemd/) からコピーする | 運用者 |
 | 受け入れた宣言 | `/var/lib/regied/accepted/declaration.yaml` | regied。提出が受け入れられた時点 |
 | 最後の周回の報告 | `/var/lib/regied/turn/report.yaml` | regied。内容が変わるとき |
+| 前の周回が持ち越した手順 | `/var/lib/regied/turn/owed.yaml`。ファイルを書いたのに走らせられなかった reload など。持ち越しが無ければ無い | regied。内容が変わるとき |
 | 制御ソケット | `/run/regied/control.sock`。root のもので、グループは無い。ここに届くことはホストを設定し直す能力そのものである | 常駐プロセス |
 | networkd / dnsmasq / pppd の設定と pppd のフック | ディストリビューションのディレクトリに、regied の名前と所有マーカー付きで | regied |
 
