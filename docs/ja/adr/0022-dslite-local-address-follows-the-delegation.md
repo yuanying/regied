@@ -66,6 +66,12 @@ IPv6 アドレスを持たないインターフェース、2 つ以上持つイ�
 networkd の reload は netdev についての自分の記録を置き換えるが、それだけではカーネルの
 リンクが変わったとは言えない。
 
+*最初の実装単位が systemd 257.13（Debian 13）で確かめた。`ip6tnl` の netdev の `Local=` を
+変えて networkd を reload すると、上がっているリンクが同じインターフェース番号のまま新しい
+ローカルアドレスを持つ。networkd は別のリンクを作るのではなく、その場で変える。
+`networkctl reconfigure` も要らない。したがって下の作り直しは作らず、
+[ADR 0016](0016-converging-on-the-accepted-declaration.md) の段階の表も変わらない。*
+
 **当てないなら、regied はトンネルのリンクを取り除き、新しいファイルから networkd に作り
 直させる。**それはリンクを落とすことであり、無人のターンは上がっているものを落としては
 ならない（[ADR 0016](0016-converging-on-the-accepted-declaration.md)）。規則は破るのではなく

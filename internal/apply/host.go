@@ -3,6 +3,7 @@ package apply
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -31,6 +32,11 @@ type Host struct {
 	Sysctl   Sysctl
 	Units    Units
 
+	// Delegations is networkd's answer to which prefix each prefix-delegation client
+	// holds. Left nil, nothing is read and no delegation is known, which is what
+	// `regied render` wants (ADR 0021).
+	Delegations DelegationReader
+
 	// DNS is the provider a DNSRecordSet's records are written at. It is an interface
 	// for the same reason the rest of this structure is: a turn in a test writes to
 	// nothing, and `make test` opens no socket (ADR 0019).
@@ -49,18 +55,19 @@ type Host struct {
 // OSHost is the host this process is running on.
 func OSHost() Host {
 	return Host{
-		Files:    OSFileSystem{},
-		Runner:   OSRunner{},
-		Resolver: OSResolver{},
-		Links:    OSLinks{},
-		Sysctl:   OSSysctl{},
-		Units:    OSUnits{},
-		DNS:      ddns.NewCloudflare(nil),
-		Clock:    OSClock{},
-		Locker:   OSLocker{},
-		Control:  OSControl{},
-		Timer:    OSTimer{},
-		Notifier: OSNotifier{},
+		Files:       OSFileSystem{},
+		Runner:      OSRunner{},
+		Resolver:    OSResolver{},
+		Links:       OSLinks{},
+		Delegations: OSDelegations{},
+		Sysctl:      OSSysctl{},
+		Units:       OSUnits{},
+		DNS:         ddns.NewCloudflare(nil),
+		Clock:       OSClock{},
+		Locker:      OSLocker{},
+		Control:     OSControl{},
+		Timer:       OSTimer{},
+		Notifier:    OSNotifier{},
 	}
 }
 
@@ -240,7 +247,70 @@ type Links interface {
 	Addresses(ifname string) ([]netip.Addr, error)
 }
 
+// DelegationReader reads the prefixes a link's DHCPv6 client holds. The answer comes from
+// the party holding the lease, as it describes the link, not from an address networkd
+// derived from a file regied wrote (ADR 0009, ADR 0021). A link whose client holds
+// nothing answers none, which is not an error.
+type DelegationReader interface {
+	DelegatedPrefixes(ctx context.Context, ifname string) ([]netip.Prefix, error)
+}
+
 // --- the implementations that talk to this host ----------------------------------
+
+// OSDelegations asks this host's networkd, through the description `networkctl status
+// --json` prints for a link. It is the same object networkd's D-Bus Describe call
+// returns; the command is used so that regied needs no D-Bus client.
+type OSDelegations struct{}
+
+func (OSDelegations) DelegatedPrefixes(ctx context.Context, ifname string) ([]netip.Prefix, error) {
+	out, err := OSRunner{}.Run(ctx, Command{Name: "networkctl", Args: []string{"status", "--json=short", "--", ifname}})
+	if err != nil {
+		return nil, err
+	}
+	return parseDelegatedPrefixes(out)
+}
+
+// linkDescription is the part of networkd's description of a link that says what its
+// DHCPv6 client was delegated. systemd 257 writes each prefix as its sixteen bytes.
+type linkDescription struct {
+	DHCPv6Client *struct {
+		Prefixes []struct {
+			RawPrefix    []int `json:"Prefix"`
+			PrefixLength int   `json:"PrefixLength"`
+		} `json:"Prefixes"`
+	} `json:"DHCPv6Client"`
+}
+
+// parseDelegatedPrefixes reads the delegated prefixes out of a link's description. A
+// description with no DHCPv6 client, or with a client holding nothing, has none.
+func parseDelegatedPrefixes(data []byte) ([]netip.Prefix, error) {
+	var description linkDescription
+	if err := json.Unmarshal(data, &description); err != nil {
+		return nil, fmt.Errorf("cannot read networkd's description of the link: %w", err)
+	}
+	if description.DHCPv6Client == nil {
+		return nil, nil
+	}
+	var out []netip.Prefix
+	for _, delegated := range description.DHCPv6Client.Prefixes {
+		if len(delegated.RawPrefix) != 16 {
+			return nil, fmt.Errorf("networkd describes a delegated prefix of %d bytes, want 16", len(delegated.RawPrefix))
+		}
+		var raw [16]byte
+		for i, b := range delegated.RawPrefix {
+			if b < 0 || b > 255 {
+				return nil, fmt.Errorf("networkd describes a delegated prefix with a byte of %d", b)
+			}
+			raw[i] = byte(b)
+		}
+		prefix, err := netip.AddrFrom16(raw).Prefix(delegated.PrefixLength)
+		if err != nil || delegated.PrefixLength < 0 {
+			return nil, fmt.Errorf("networkd describes a delegated prefix of length %d", delegated.PrefixLength)
+		}
+		out = append(out, prefix)
+	}
+	return out, nil
+}
 
 // OSFileSystem is the filesystem this process is running on.
 type OSFileSystem struct{}

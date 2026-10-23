@@ -15,11 +15,14 @@ var update = flag.Bool("update", false, "rewrite the golden files from what the 
 
 const goldenDir = "testdata/example"
 
-// The DUID and the resolved AFTR address the apply engine would have read and looked up
-// before rendering the example. Both are documentation values.
+// The DUID, the resolved AFTR address and the delegated prefix the apply engine would
+// have read and looked up before rendering the example. All are documentation values.
 const exampleDUID = "00:03:00:01:00:00:5e:00:53:01"
 
-var exampleAFTR = netip.MustParseAddr("2001:db8:ffff::64")
+var (
+	exampleAFTR       = netip.MustParseAddr("2001:db8:ffff::64")
+	exampleDelegation = netip.MustParsePrefix("2001:db8::/56")
+)
 
 // config/example.yaml is the worked example docs/spec/ refers to, and this is what it
 // renders into. The whole output is held here rather than described, because the apply
@@ -32,8 +35,9 @@ func TestExampleGolden(t *testing.T) {
 	}
 
 	out := render(t, cfg, Runtime{
-		AFTRAddresses: map[string]netip.Addr{"dslite": exampleAFTR},
-		DUIDs:         map[string]string{"/etc/regied/secrets/dhcpv6-duid": exampleDUID},
+		AFTRAddresses:     map[string]netip.Addr{"dslite": exampleAFTR},
+		DUIDs:             map[string]string{"/etc/regied/secrets/dhcpv6-duid": exampleDUID},
+		DelegatedPrefixes: config.Delegations{"wan": {exampleDelegation}},
 	})
 
 	if *update {

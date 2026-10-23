@@ -1,6 +1,8 @@
 package networkd
 
 import (
+	"fmt"
+
 	"github.com/yuanying/regied/internal/apis/v1alpha1"
 	"github.com/yuanying/regied/internal/config"
 )
@@ -16,7 +18,10 @@ const (
 // A tunnel whose AFTR name has not been resolved gets neither. An ip6tnl takes its
 // remote when the link is created, so there is no tunnel to write without the address,
 // and the link's file — its routes, its policy tables — would describe a link that does
-// not exist. The whole tunnel waits for the name instead (ADR 0016).
+// not exist. The whole tunnel waits for the name instead (ADR 0016). A local address cut
+// from a delegation that is not there yet is waited for in the same way: the address is
+// part of what the link is, and the tunnel an earlier turn wrote is left as it was
+// (ADR 0022).
 func (r *renderer) renderDSLiteTunnel(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec]) {
 	if host, unresolved := r.unresolvedAFTR(tunnel); unresolved {
 		r.omit(v1alpha1.KindDSLiteTunnel, tunnel.Name,
@@ -24,7 +29,13 @@ func (r *renderer) renderDSLiteTunnel(tunnel config.Named[*v1alpha1.DSLiteTunnel
 			fileName(tunnel.Name, ".netdev"), fileName(tunnel.Name, ".network"))
 		return
 	}
-	r.renderTunnelNetDev(tunnel)
+	local, waiting := r.tunnelLocal(tunnel)
+	if waiting != "" {
+		r.omit(v1alpha1.KindDSLiteTunnel, tunnel.Name, waiting,
+			fileName(tunnel.Name, ".netdev"), fileName(tunnel.Name, ".network"))
+		return
+	}
+	r.renderTunnelNetDev(tunnel, local)
 
 	spec := tunnel.Spec
 	u := newUnit(v1alpha1.KindDSLiteTunnel, tunnel.Name)
@@ -48,7 +59,7 @@ func (r *renderer) renderDSLiteTunnel(tunnel config.Named[*v1alpha1.DSLiteTunnel
 	r.add(fileName(tunnel.Name, ".network"), u)
 }
 
-func (r *renderer) renderTunnelNetDev(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec]) {
+func (r *renderer) renderTunnelNetDev(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec], local string) {
 	spec := tunnel.Spec
 	u := newUnit(v1alpha1.KindDSLiteTunnel, tunnel.Name)
 
@@ -59,7 +70,7 @@ func (r *renderer) renderTunnelNetDev(tunnel config.Named[*v1alpha1.DSLiteTunnel
 
 	t := u.section("Tunnel")
 	t.set("Mode", "ipip6")
-	if local, ok := r.tunnelLocal(tunnel); ok {
+	if local != "" {
 		t.set("Local", local)
 	}
 	if remote, ok := r.tunnelRemote(tunnel); ok {
@@ -74,25 +85,50 @@ func (r *renderer) renderTunnelNetDev(tunnel config.Named[*v1alpha1.DSLiteTunnel
 	r.add(fileName(tunnel.Name, ".netdev"), u)
 }
 
-// tunnelLocal is the address the tunnel sends from.
+// tunnelLocal is the address the tunnel sends from, or what it waits for.
 //
-// A literal address is written out. A localAddressFrom becomes networkd's slaac, which
-// is the address of the link the tunnel is stacked on — the underlay. systemd 257 has no
-// way to take it from a delegated prefix, so a localAddressFrom naming any other
-// interface cannot be rendered as it was written (ADR 0011).
-func (r *renderer) tunnelLocal(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec]) (string, bool) {
+// A literal address is written out. A localAddressFrom naming the underlay becomes
+// networkd's slaac, which is the address of the link the tunnel is stacked on. One naming
+// any other interface is that interface's one IPv6 address: its literal, or the address
+// its fromDelegatedPrefix resolves to in the delegation networkd holds now. systemd 257
+// has no way to take that address itself — dhcp_pd arrived in 258 — so regied writes it
+// as a literal, and a prefix change rewrites the file and reloads networkd, which changes
+// the local address of the tunnel already up (ADR 0011, ADR 0022).
+func (r *renderer) tunnelLocal(tunnel config.Named[*v1alpha1.DSLiteTunnelSpec]) (local, waiting string) {
 	spec := tunnel.Spec
 	if spec.LocalAddress != nil {
-		return spec.LocalAddress.String(), true
+		return spec.LocalAddress.String(), ""
 	}
 	if spec.LocalAddressFrom == nil {
-		return "", false
+		return "", ""
 	}
-	if spec.LocalAddressFrom.InterfaceRef != spec.UnderlayRef {
-		r.warnf("DSLiteTunnel/%s: localAddressFrom names Interface/%s, but systemd 257 can only take a tunnel's local address from the interface it is stacked on, so the tunnel sends from the global address of the underlay Interface/%s (ADR 0011)",
-			tunnel.Name, spec.LocalAddressFrom.InterfaceRef, spec.UnderlayRef)
+	if spec.LocalAddressFrom.InterfaceRef == spec.UnderlayRef {
+		return "slaac", ""
 	}
-	return "slaac", true
+	named, ok := r.interfaces[spec.LocalAddressFrom.InterfaceRef]
+	if !ok {
+		r.errorf("DSLiteTunnel/%s: the Interface %q it takes its local address from is not declared", tunnel.Name, spec.LocalAddressFrom.InterfaceRef)
+		return "", ""
+	}
+	for _, address := range named.Spec.Addresses {
+		switch {
+		case address.IsLiteral() && address.Literal.Addr().Is6():
+			r.resolved = append(r.resolved, fmt.Sprintf("DSLiteTunnel/%s: local address %s, declared on Interface/%s",
+				tunnel.Name, address.Literal.Addr(), named.Name))
+			return address.Literal.Addr().String(), ""
+		case address.FromDelegatedPrefix != nil:
+			resolved, err := r.rt.DelegatedPrefixes.Address(*address.FromDelegatedPrefix)
+			if err != nil {
+				return "", err.Error() + ", which the local address of Interface/" + named.Name + " is cut from"
+			}
+			r.resolved = append(r.resolved, fmt.Sprintf("DSLiteTunnel/%s: local address %s, the address of Interface/%s in %s delegated on Interface/%s",
+				tunnel.Name, resolved.Address, named.Name, resolved.Delegation, address.FromDelegatedPrefix.InterfaceRef))
+			return resolved.Address.String(), ""
+		}
+	}
+	// Validation refuses an interface that states no IPv6 address for the tunnel.
+	r.errorf("DSLiteTunnel/%s: Interface/%s declares no IPv6 address to send from", tunnel.Name, named.Name)
+	return "", ""
 }
 
 // tunnelRemote is the AFTR. A name is resolved by the apply engine and arrives already

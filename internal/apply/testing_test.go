@@ -251,6 +251,21 @@ func (l fakeLinks) Addresses(ifname string) ([]netip.Addr, error) {
 	return addrs, nil
 }
 
+// fakeDelegations answers the prefix each link's DHCPv6 client holds from a table. A link
+// with no entry holds none.
+type fakeDelegations map[string][]netip.Prefix
+
+func (d fakeDelegations) DelegatedPrefixes(_ context.Context, ifname string) ([]netip.Prefix, error) {
+	return d[ifname], nil
+}
+
+// failingDelegations is a networkd that does not answer.
+type failingDelegations struct{}
+
+func (failingDelegations) DelegatedPrefixes(context.Context, string) ([]netip.Prefix, error) {
+	return nil, errFake
+}
+
 // fakeClock is a clock a test moves by hand.
 type fakeClock struct{ now time.Time }
 
@@ -275,13 +290,14 @@ func testHost() (Host, *fakeFiles, *fakeRunner) {
 	files := newFakeFiles()
 	runner := newFakeRunner()
 	return Host{
-		Files:    files,
-		Runner:   runner,
-		Resolver: fakeResolver{},
-		Links:    fakeLinks{},
-		Sysctl:   newFakeSysctl(),
-		Clock:    &fakeClock{now: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)},
-		Locker:   &fakeLocker{},
+		Files:       files,
+		Runner:      runner,
+		Resolver:    fakeResolver{},
+		Links:       fakeLinks{},
+		Delegations: fakeDelegations{},
+		Sysctl:      newFakeSysctl(),
+		Clock:       &fakeClock{now: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)},
+		Locker:      &fakeLocker{},
 	}, files, runner
 }
 

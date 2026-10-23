@@ -65,6 +65,14 @@ The networkd directives regied generates, and therefore the floor under "systemd
 does not change: it already says *this interface's IPv6 address*, and which of networkd's
 special values that becomes belongs to the backend.
 
+*Amended by [ADR 0022](0022-dslite-local-address-follows-the-delegation.md), which is
+built: naming the underlay still renders as above, and naming another interface renders as
+that interface's one IPv6 address, which regied resolves from the delegation networkd
+holds and writes into `Local=` as a literal. The platform is unchanged; the backend's
+answer for a non-underlay interface is a value regied computes instead of one networkd
+names. A reload of networkd 257 applies a changed `Local=` to the `ip6tnl` link already up,
+in place, so a prefix change needs no recreation of the tunnel.*
+
 ## Consequences
 
 - The testbed container and the deployment target become the same distribution. ADR 0010

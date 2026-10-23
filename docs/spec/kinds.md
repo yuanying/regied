@@ -302,16 +302,37 @@ Exactly one of `localAddressFrom` and `localAddress` is required. `localAddressF
 the one to use where the prefix comes from delegation: the tunnel then follows a prefix
 change instead of going dark until somebody edits the file.
 
-**On the platform regied targets, `localAddressFrom` can only be the underlay.** A
-tunnel's local address is `Local=` in networkd's `[Tunnel]` section, and systemd 257
-takes there an address of the link the tunnel is stacked on — `slaac` or `dhcp6`. The
-value that would take one out of a delegated prefix, `dhcp_pd`, arrived in systemd 258
-and is not on Debian 13 ([ADR 0011](../adr/0011-target-platform.md)). So the field is
-rendered as the underlay's own global address, and naming any other interface is
-reported as a warning: the tunnel comes up, and it sends from an address other than the
-one the file asked for. What the field means does not change — the address is taken from
-an interface rather than written down — and a platform carrying systemd 258 is what
-makes naming another interface do what it says.
+`localAddressFrom.interfaceRef` names either the underlay or any other `Interface` that
+declares exactly one IPv6 address of its own ([ADR 0022](../adr/0022-dslite-local-address-follows-the-delegation.md)):
+
+| The named interface | What the tunnel sends from |
+|---|---|
+| The underlay itself | networkd's own global address of that link (`Local=slaac`) |
+| Another interface whose IPv6 address is `fromDelegatedPrefix` | That address, resolved from the prefix the delegation client holds now |
+| Another interface whose IPv6 address is a literal | That literal |
+
+Naming an interface with no IPv6 address, with more than one, with one taken
+`fromRouterAdvertisement`, or with a `fromDelegatedPrefix` that has no `token`, is a
+validation error. The first two leave the address unstated; the third is a host behind a
+router, which has no use for a tunnel of its own; the last is an address networkd makes up
+from the link's hardware address, which regied cannot know.
+
+On the platform regied targets, `Local=` in networkd's `[Tunnel]` section cannot take an
+address out of a delegated prefix: the value that would, `dhcp_pd`, arrived in systemd 258
+and is not on Debian 13 ([ADR 0011](../adr/0011-target-platform.md)). So regied computes
+the address itself and writes it into `Local=` as a literal. Every turn reads the prefix
+from networkd's description of the link that runs the delegation client
+([ADR 0021](../adr/0021-values-derived-from-the-delegated-prefix.md)); when the provider
+delegates another prefix, the turn that follows rewrites the `.netdev` and reloads
+networkd, and networkd 257 changes the local address of the tunnel that is already up. No
+submission is needed, and no link is taken down.
+
+While no delegation is held — after boot, while the client is still soliciting, after a
+lease has expired — or while the client holds more than one, or the `subnetID` does not fit
+in the prefix delivered, the tunnel's files are left exactly as an earlier turn wrote them,
+and the turn ends *waiting*, naming the interface whose delegation it waits for. `regied
+render` and `--dry-run` show the prefix that was read and the local address resolved from
+it; `regied render` takes the prefix as `-delegated-prefix <Interface>=<prefix>`.
 
 Exactly one of `aftrHost` and `aftrAddress` is required, in the same way as the pair
 above, and `aftrHost` is the one to reach for. Providers publish a stable, well-known name

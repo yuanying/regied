@@ -265,12 +265,45 @@ func (v *validator) checkDSLiteTunnel(resource *v1alpha1.Resource, spec *v1alpha
 	if v.exactlyOne(resource, "localAddressFrom", "localAddress", spec.LocalAddressFrom != nil, spec.LocalAddress != nil) &&
 		spec.LocalAddressFrom != nil {
 		if v.required(resource, "spec.localAddressFrom.interfaceRef", spec.LocalAddressFrom.InterfaceRef != "") {
-			v.resolveInterface(resource, "spec.localAddressFrom.interfaceRef", spec.LocalAddressFrom.InterfaceRef)
+			named := v.resolveInterface(resource, "spec.localAddressFrom.interfaceRef", spec.LocalAddressFrom.InterfaceRef)
+			// The underlay keeps meaning networkd's own address of the link the tunnel
+			// is stacked on. Any other interface lends the address its declaration
+			// states, so the declaration has to state exactly one (ADR 0022).
+			if named != nil && spec.LocalAddressFrom.InterfaceRef != spec.UnderlayRef {
+				v.checkTunnelLocalAddress(resource, spec.LocalAddressFrom.InterfaceRef, named.Spec.(*v1alpha1.InterfaceSpec))
+			}
 		}
 	}
 	v.exactlyOne(resource, "aftrHost", "aftrAddress", spec.AFTRHost != "", spec.AFTRAddress != nil)
 
 	v.checkRoutes(resource, "spec.routes", spec.Routes)
+}
+
+// checkTunnelLocalAddress refuses an interface whose declaration does not state the one
+// IPv6 address a tunnel would send from. No address, or two, leaves the choice unstated.
+// An address from the router advertisement is a host that is not the router, which has no
+// use for a tunnel of its own. A delegated address without a token is one networkd makes
+// up from the link's hardware address, which regied cannot know and so cannot write into
+// the tunnel.
+func (v *validator) checkTunnelLocalAddress(resource *v1alpha1.Resource, name string, named *v1alpha1.InterfaceSpec) {
+	const field = "spec.localAddressFrom.interfaceRef"
+	var ipv6 []v1alpha1.InterfaceAddress
+	for _, address := range named.Addresses {
+		if address.IsLiteral() && !address.Literal.Addr().Is6() {
+			continue
+		}
+		ipv6 = append(ipv6, address)
+	}
+	switch {
+	case len(ipv6) == 0:
+		v.errorf(resource, field, "the Interface %q declares no IPv6 address for the tunnel to send from", name)
+	case len(ipv6) > 1:
+		v.errorf(resource, field, "the Interface %q declares %d IPv6 addresses, and which one the tunnel sends from is not stated", name, len(ipv6))
+	case ipv6[0].FromRouterAdvertisement != nil:
+		v.errorf(resource, field, "the Interface %q takes its IPv6 address from the router advertisement, which is a host behind a router, not one that runs a tunnel", name)
+	case ipv6[0].FromDelegatedPrefix != nil && ipv6[0].FromDelegatedPrefix.Token == "":
+		v.errorf(resource, field, "the Interface %q derives its IPv6 address without a token, so the address is networkd's to choose and cannot be written into the tunnel; give it a token", name)
+	}
 }
 
 func (v *validator) checkEgressRoutePolicy(resource *v1alpha1.Resource, spec *v1alpha1.EgressRoutePolicySpec) {

@@ -412,6 +412,11 @@ type Plan struct {
 	// is not up, a check that could not be made.
 	Notes []string
 
+	// Delegations is the prefix every prefix-delegation client was read to hold, and
+	// every value resolved from one, with where it came from. Neither is a secret, and
+	// the prefix in effect is the first thing a diagnosis needs (ADR 0021).
+	Delegations []string
+
 	// Waiting is what this turn left out for want of a value the host could not answer
 	// yet, naming the value. A turn that finds nothing to do and something in here has
 	// not converged: it has done what it can, and a later turn does the rest. A turn
@@ -564,7 +569,8 @@ func (e *Engine) Render(cfg *config.Config, runtime *Runtime) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Waiting: rendered.waiting, Rendered: true}
+	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Waiting: rendered.waiting, Rendered: true,
+		Delegations: delegationsOf(cfg, runtime, rendered)}
 	for _, item := range rendered.artifacts {
 		change := FileChange{
 			Path:     item.Path,
@@ -602,7 +608,8 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 		return nil, err
 	}
 
-	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Waiting: rendered.waiting}
+	plan := &Plan{Warnings: rendered.warnings, Notes: runtime.Notes, Waiting: rendered.waiting,
+		Delegations: delegationsOf(cfg, runtime, rendered)}
 	for _, warning := range cfg.Warnings() {
 		plan.validation = append(plan.validation, warning.String())
 	}
@@ -659,6 +666,25 @@ func (e *Engine) planWith(ctx context.Context, cfg *config.Config, runtime *Runt
 
 	plan.Steps = e.steps(ctx, plan, rendered)
 	return plan, nil
+}
+
+// delegationsOf is what a dry-run shows about the delegated prefix: the prefix each
+// client was read to hold, in the order the document declares the clients, then every
+// value resolved from one.
+func delegationsOf(cfg *config.Config, runtime *Runtime, rendered *rendering) []string {
+	var lines []string
+	for _, iface := range config.ResourcesOf[*v1alpha1.InterfaceSpec](cfg) {
+		prefixes := runtime.Networkd.DelegatedPrefixes[iface.Name]
+		if len(prefixes) == 0 {
+			continue
+		}
+		held := make([]string, len(prefixes))
+		for i, prefix := range prefixes {
+			held[i] = prefix.String()
+		}
+		lines = append(lines, fmt.Sprintf("Interface/%s: delegated %s", iface.Name, strings.Join(held, ", ")))
+	}
+	return append(lines, rendered.derived...)
 }
 
 // compare reads what the host holds for one artifact.

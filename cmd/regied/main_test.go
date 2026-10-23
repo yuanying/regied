@@ -73,6 +73,60 @@ func TestRenderRefusesAValueItCannotRead(t *testing.T) {
 	}
 }
 
+// The delegated prefix is a runtime value like the AFTR's address, and a rendering is
+// given it on the command line. With it, the tunnel sends from the address lan cuts from
+// it, and the rendering says where the address came from (ADR 0021, ADR 0022).
+func TestRenderTakesTheDelegatedPrefix(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"render",
+		"-config", "../../config/example.yaml",
+		"-aftr", "dslite=2001:db8:53::1",
+		"-duid", "/etc/regied/secrets/dhcpv6-duid=00:03:00:01:00:00:5e:00:53:01",
+		"-delegated-prefix", "wan=2001:db8:1000::/56",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("rendering the example exits %d:\n%s", code, stderr.String())
+	}
+	for _, want := range []string{
+		"Local=2001:db8:1000:1::1",
+		"Interface/wan: delegated 2001:db8:1000::/56",
+		"DSLiteTunnel/dslite: local address 2001:db8:1000:1::1",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("the rendering does not show %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+// Without it, the tunnel is left out and the rendering says what it waits for, as it
+// would for an AFTR name that was not given.
+func TestRenderWithoutTheDelegatedPrefixLeavesTheTunnelOut(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"render",
+		"-config", "../../config/example.yaml",
+		"-aftr", "dslite=2001:db8:53::1",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("rendering the example exits %d:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "DSLiteTunnel/dslite: waiting for a delegated prefix on Interface/wan") {
+		t.Errorf("the rendering does not say the tunnel waits for the delegation:\n%s", stdout.String())
+	}
+}
+
+func TestRenderRefusesADelegatedPrefixItCannotRead(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"render", "-config", "../../config/example.yaml", "-delegated-prefix", "wan=2001:db8::1"}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("a bad -delegated-prefix exits %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "-delegated-prefix wan=2001:db8::1") {
+		t.Errorf("the error does not name the flag that was wrong:\n%s", stderr.String())
+	}
+}
+
 func TestPairsWantsNameEqualsValue(t *testing.T) {
 	values := pairs{}
 	if err := values.Set("no-equals-sign"); err == nil {
