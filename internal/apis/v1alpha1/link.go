@@ -217,6 +217,17 @@ func (s *InterfaceSpec) AdvertisedDelegationOf() *AdvertisedDelegation {
 	return s.IPv6.AdvertisedDelegation
 }
 
+// AdvertisedAddressOf is the interface's address taken from the router advertisement, or
+// nil. Validation allows at most one.
+func (s *InterfaceSpec) AdvertisedAddressOf() *RouterAdvertisementAddr {
+	for _, address := range s.Addresses {
+		if address.FromRouterAdvertisement != nil {
+			return address.FromRouterAdvertisement
+		}
+	}
+	return nil
+}
+
 // RouterAdvertisement makes a downstream link advertise the prefix it holds. The prefix
 // is not written here, so it cannot drift from the address that is actually configured.
 type RouterAdvertisement struct {

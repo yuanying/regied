@@ -106,3 +106,29 @@ spec:
         from: lan
         to: self
         defaultAction: accept
+
+    # The names this host keeps: its own and its container's. Both addresses
+    # are decided by this file, so this host keeps them rather than the
+    # router (ADR 0024). The router in example.yaml keeps other names in the
+    # same zone; one name is written by one host, and keeping them apart is
+    # for the repository that holds both files.
+    - kind: DNSRecordSet
+      metadata: {name: example-com}
+      spec:
+        provider: cloudflare
+        zone: example.com
+        apiTokenFile: /etc/regied/secrets/cloudflare-example-com
+        records:
+          # This host's own LAN address, the one it takes from the router's
+          # advertisement. The token is the LAN interface's and is not written
+          # again; the LAN's subnet ID is the router's and appears nowhere here.
+          - names: [host.example.com]
+            type: AAAA
+            address:
+              fromRouterAdvertisement: {interfaceRef: lan}
+          # The container, cut from the delegation the way the web set above
+          # writes it. A prefix change rewrites both records with no edit.
+          - names: [web.example.com]
+            type: AAAA
+            address:
+              fromDelegatedPrefix: {interfaceRef: lan, subnetID: 2, token: "::151"}

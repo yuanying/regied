@@ -29,6 +29,11 @@ type Runtime struct {
 	// (ADR 0015) — it is what the firewall phase puts into those sets.
 	UplinkAddresses map[string][]netip.Addr
 
+	// Advertised is the address each Interface took from the router advertisement with
+	// its token, for the interfaces a DNS record takes its address from. It is not
+	// rendered; it is what those records hold (ADR 0024).
+	Advertised config.Advertised
+
 	// Credentials is the values behind each PPPoESession's userIDFile and passwordFile,
 	// by the session's name.
 	Credentials map[string]pppd.Credentials
@@ -69,6 +74,7 @@ func CollectRuntime(ctx context.Context, cfg *config.Config, host Host) (*Runtim
 				DelegatedPrefixes: make(config.Delegations),
 			},
 			UplinkAddresses: make(map[string][]netip.Addr),
+			Advertised:      make(config.Advertised),
 			Credentials:     make(map[string]pppd.Credentials),
 		},
 	}
@@ -216,9 +222,10 @@ func (c *collector) readDelegations(ctx context.Context) {
 	c.readAdvertisedDelegations(ctx)
 }
 
-// readAdvertisedDelegations reads the delegation a host behind a router knows from the
-// advertisement on its LAN: the address networkd took from it with the declared token,
-// its /64 cut back to the declared length (ADR 0023).
+// readAdvertisedDelegations reads, on a host behind a router, what its LAN took from the
+// advertisement: the address networkd configured with the declared token. Its /64 cut
+// back to the declared length is the delegation (ADR 0023), and the address itself is
+// what a DNS record naming the interface holds (ADR 0024).
 //
 // As on a router, none of this fails the turn. Nothing advertised yet, or nothing that
 // can be told apart, is a reason for what is cut from it to wait.
@@ -226,15 +233,36 @@ func (c *collector) readAdvertisedDelegations(ctx context.Context) {
 	if c.host.Advertisements == nil {
 		return
 	}
+	published := advertisedRecordInterfaces(c.cfg)
 	for _, iface := range config.ResourcesOf[*v1alpha1.InterfaceSpec](c.cfg) {
 		advertised := iface.Spec.AdvertisedDelegationOf()
+		delegated := advertised != nil && advertised.PrefixLength != nil
 		token := advertisedToken(iface.Spec)
-		if advertised == nil || advertised.PrefixLength == nil || token == "" {
+		if token == "" || !delegated && !published[iface.Name] {
 			continue
 		}
 		addresses, err := c.host.Advertisements.AdvertisedAddresses(ctx, iface.Spec.Ifname)
 		if err != nil {
 			c.notef("Interface/%s: the addresses taken from the router advertisement cannot be read from networkd: %v", iface.Name, err)
+			continue
+		}
+		if published[iface.Name] {
+			held, passedOver := config.AddressFromAdvertisement(addresses, token)
+			if len(held) > 0 {
+				c.runtime.Advertised[iface.Name] = held
+			}
+			// With a delegation declared, the note below says the same thing about the
+			// prefixes, and once is enough.
+			if len(passedOver) > 0 && !delegated {
+				others := make([]string, len(passedOver))
+				for i, address := range passedOver {
+					others[i] = address.String()
+				}
+				c.notef("Interface/%s took %d addresses from router advertisements; took %s, which is preferred longest, over %s",
+					iface.Name, len(passedOver)+1, held[0], strings.Join(others, ", "))
+			}
+		}
+		if !delegated {
 			continue
 		}
 		held, passedOver := config.DelegationFromAdvertisement(addresses, token, *advertised.PrefixLength)
@@ -253,13 +281,25 @@ func (c *collector) readAdvertisedDelegations(ctx context.Context) {
 	}
 }
 
-// advertisedToken is the token of the interface's address taken from the router
-// advertisement, or empty. Validation allows at most one.
-func advertisedToken(spec *v1alpha1.InterfaceSpec) string {
-	for _, address := range spec.Addresses {
-		if address.FromRouterAdvertisement != nil {
-			return address.FromRouterAdvertisement.Token
+// advertisedRecordInterfaces is the interfaces a DNS record takes the advertised address
+// of. Only those are worth asking networkd about for the address itself.
+func advertisedRecordInterfaces(cfg *config.Config) map[string]bool {
+	names := make(map[string]bool)
+	for _, set := range config.ResourcesOf[*v1alpha1.DNSRecordSetSpec](cfg) {
+		for _, record := range set.Spec.Records {
+			if record.Address != nil && record.Address.FromRouterAdvertisement != nil {
+				names[record.Address.FromRouterAdvertisement.InterfaceRef] = true
+			}
 		}
+	}
+	return names
+}
+
+// advertisedToken is the token of the interface's address taken from the router
+// advertisement, or empty.
+func advertisedToken(spec *v1alpha1.InterfaceSpec) string {
+	if address := spec.AdvertisedAddressOf(); address != nil {
+		return address.Token
 	}
 	return ""
 }

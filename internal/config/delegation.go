@@ -140,13 +140,43 @@ type AdvertisedAddress struct {
 // passedOver for the turn to report. Delegations preferred equally long cannot be told
 // apart, and are all held, which makes everything cut from them wait and say why.
 func DelegationFromAdvertisement(addresses []AdvertisedAddress, token string, length int) (held, passedOver []netip.Prefix) {
+	preferred := make(map[netip.Prefix]uint64)
+	for _, advertised := range withToken(addresses, token) {
+		delegation, err := advertised.Address.Prefix(length)
+		if err != nil {
+			continue
+		}
+		if until, seen := preferred[delegation]; !seen || advertised.PreferredUntil > until {
+			preferred[delegation] = advertised.PreferredUntil
+		}
+	}
+	return preferredLongest(preferred, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
+}
+
+// AddressFromAdvertisement is the address a link took from the advertisement with the
+// declared token, which is what an AAAA record naming the link holds (ADR 0024). It is
+// chosen as DelegationFromAdvertisement chooses the delegation: the one preferred longest
+// is held, the others are passed over, and addresses preferred equally long are all held.
+func AddressFromAdvertisement(addresses []AdvertisedAddress, token string) (held, passedOver []netip.Addr) {
+	preferred := make(map[netip.Addr]uint64)
+	for _, advertised := range withToken(addresses, token) {
+		if until, seen := preferred[advertised.Address]; !seen || advertised.PreferredUntil > until {
+			preferred[advertised.Address] = advertised.PreferredUntil
+		}
+	}
+	return preferredLongest(preferred, netip.Addr.Compare)
+}
+
+// withToken is the global addresses carrying the token. A unique local address
+// advertised beside the global prefix is not the delegation, and a temporary address
+// does not carry the token.
+func withToken(addresses []AdvertisedAddress, token string) []AdvertisedAddress {
 	identifier, err := netip.ParseAddr(token)
 	if err != nil || !identifier.Is6() {
-		return nil, nil
+		return nil
 	}
 	host := identifier.As16()
-
-	preferred := make(map[netip.Prefix]uint64)
+	var out []AdvertisedAddress
 	for _, advertised := range addresses {
 		address := advertised.Address
 		if !address.Is6() || address.Is4In6() || !address.IsGlobalUnicast() || address.IsPrivate() {
@@ -155,28 +185,54 @@ func DelegationFromAdvertisement(addresses []AdvertisedAddress, token string, le
 		if bytes := address.As16(); [8]byte(bytes[8:]) != [8]byte(host[8:]) {
 			continue
 		}
-		delegation, err := address.Prefix(length)
-		if err != nil {
-			continue
-		}
-		if until, seen := preferred[delegation]; !seen || advertised.PreferredUntil > until {
-			preferred[delegation] = advertised.PreferredUntil
-		}
+		out = append(out, advertised)
 	}
+	return out
+}
 
+// preferredLongest orders candidates by how long each is preferred. The one preferred
+// longest is held and the rest passed over; when the first two are preferred equally long
+// none can be told from the others, and all are held, in address order.
+func preferredLongest[K comparable](preferred map[K]uint64, compare func(a, b K) int) (held, passedOver []K) {
 	candidates := slices.Collect(maps.Keys(preferred))
-	slices.SortFunc(candidates, func(a, b netip.Prefix) int {
+	slices.SortFunc(candidates, func(a, b K) int {
 		if order := cmp.Compare(preferred[b], preferred[a]); order != 0 {
 			return order
 		}
-		return a.Addr().Compare(b.Addr())
+		return compare(a, b)
 	})
 	switch {
 	case len(candidates) <= 1:
 		return candidates, nil
 	case preferred[candidates[0]] == preferred[candidates[1]]:
-		slices.SortFunc(candidates, func(a, b netip.Prefix) int { return a.Addr().Compare(b.Addr()) })
+		slices.SortFunc(candidates, compare)
 		return candidates, nil
 	}
 	return candidates[:1], candidates[1:]
+}
+
+// Advertised is the address each interface took from the router advertisement with its
+// token, by the name of the Interface. Like Delegations it is a runtime value, read every
+// turn, and more than one address is kept as it was read so that resolving against it
+// can say so (ADR 0024).
+type Advertised map[string][]netip.Addr
+
+// Address is the one address an interface took from the advertisement. None is a reason
+// to wait; more than one is too, because which of them the record should hold cannot be
+// told.
+func (a Advertised) Address(name string) (netip.Addr, error) {
+	addresses := a[name]
+	switch len(addresses) {
+	case 0:
+		return netip.Addr{}, &DelegationError{Waiting: "an address on Interface/" + name + " taken from the router advertisement"}
+	case 1:
+		return addresses[0], nil
+	}
+	held := make([]string, len(addresses))
+	for i, address := range addresses {
+		held[i] = address.String()
+	}
+	return netip.Addr{}, &DelegationError{Waiting: fmt.Sprintf(
+		"Interface/%s to hold one address taken from the router advertisement; it holds %d preferred equally long (%s)",
+		name, len(addresses), strings.Join(held, ", "))}
 }

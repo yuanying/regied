@@ -886,20 +886,36 @@ refused on every turn.
 
 ### `address`
 
-What an `AAAA` record holds: an address inside the prefix this host was delegated
-([ADR 0024](../adr/0024-dns-records-inside-the-delegation.md)). It is a mapping with
-exactly one form in it.
+What an `AAAA` record holds: an address inside the prefix this host was delegated, or
+derived for itself from the advertisement it receives, or the address this host takes from
+that advertisement ([ADR 0024](../adr/0024-dns-records-inside-the-delegation.md)). It is a
+mapping with exactly one of `fromDelegatedPrefix` and `fromRouterAdvertisement` in it.
 
 | Field | Required | Value |
 |---|---|---|
-| `fromDelegatedPrefix.interfaceRef` | yes | The interface running the prefix-delegation client |
+| `fromDelegatedPrefix.interfaceRef` | yes | The interface running the prefix-delegation client, or, on a host behind a router, the one declaring [`ipv6.advertisedDelegation`](#ipv6advertiseddelegation) |
 | `fromDelegatedPrefix.subnetID` | yes | Which /64 of the delegated prefix |
 | `fromDelegatedPrefix.token` | yes | The host part, e.g. `::200` |
+| `fromRouterAdvertisement.interfaceRef` | yes | The interface whose address taken from the router advertisement the record holds |
 
 `fromDelegatedPrefix` is the one an interface's address, a route and an address set take
 ([ADR 0021](../adr/0021-values-derived-from-the-delegated-prefix.md)), with the `token`
 required because a record holds an address rather than a subnet. Its `interfaceRef` has to
-name an interface with a `dhcpv6.prefixDelegation` client.
+name an interface with a `dhcpv6.prefixDelegation` client or one declaring
+`ipv6.advertisedDelegation`. On a host behind a router, the second is how the names of the
+containers behind its bridge are kept: the subnet ID and the token are the ones the
+bridge and the address sets already use.
+
+`fromRouterAdvertisement` is how a host behind a router publishes its own address on the
+LAN. The record holds the address the named interface takes from the advertisement it
+receives, with the token that interface's own
+[`fromRouterAdvertisement`](#addresses) address declares; the token is not written again.
+The named interface has to hold such an address, and one that does not is a validation
+error. The LAN's subnet ID is the router's choice and appears nowhere in this host's
+declaration, which is why this is not written as `fromDelegatedPrefix`. While the
+interface holds addresses from two advertised prefixes, as it does for a while after a
+change, the one preferred longest is taken — the new one — as it is for
+`ipv6.advertisedDelegation`.
 
 **There is no literal form.** An `AAAA` record with an address written out is one regied
 would have nothing to keep up to date, and the provider's own console is where it belongs.
@@ -909,7 +925,9 @@ world has to reach over IPv6 is inside the delegation, not on the uplink
 
 **Which host keeps a name is the host whose declaration decides its address.** A router
 keeps the records for itself and for what on its segments does not run regied — a cluster's
-load-balancer address, a host configured by something else. **One name is written by at
+load-balancer address, a host configured by something else. A host behind the router that
+runs regied keeps the records for itself and for the containers behind its bridge, since
+its declaration is where their subnet ID and host parts are written. **One name is written by at
 most one host**: two hosts writing the same name would each put back what the other wrote.
 Within one declaration that is checked; across hosts it cannot be, and keeping the names
 apart is for the repository that holds both declarations.
@@ -924,6 +942,7 @@ an `AAAA` record is a choice to be unreachable for that long after the prefix ch
 |---|---|
 | The uplink holds no address | Every record following it is left exactly as it is, and the turn says what it waits for |
 | No delegation is held, or the one held has no room for the subnet ID | Every `AAAA` record cut from it is left exactly as it is, and the turn says what it waits for, naming the interface |
+| On a host behind a router, nothing has been taken from the advertisement yet | Every `AAAA` record cut from the advertised delegation or holding the advertised address is left exactly as it is, and the turn says what it waits for, naming the interface |
 | The address is not what this process last wrote | The record is written |
 | The record is not at the provider | It is created |
 | The record is at the provider | Its address and declared properties are updated, and its other fields — a comment somebody wrote on it — are left alone |
@@ -946,8 +965,8 @@ the provider nothing.** It does not read the token either: what a dry run has to
 decided by the memory and the kernel, both of which are here
 ([ADR 0006](../adr/0006-dry-run-and-rendering.md)). In a fresh process that means every
 record is shown as one it would write, which is what the turn would do. An `AAAA` record's
-address is shown beside the delegation it was cut from, among the values derived from the
-delegated prefix.
+address is shown beside the delegation it was cut from, or beside the interface whose
+advertisement it was taken from, among the values derived from the delegated prefix.
 
 **Stopping regied stops the updates.** A host whose daemon is stopped keeps whatever its
 records last held, which is what the stop lever means.

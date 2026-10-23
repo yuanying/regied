@@ -51,7 +51,7 @@ func (c DNSChange) describe() string {
 // A rendering has read no host, so it has no uplink address to show. It says what each
 // record follows and leaves the address empty, rather than inventing one. An AAAA address
 // is shown when the rendering was given the delegation it is cut from.
-func (e *Engine) records(cfg *config.Config, addresses map[string][]netip.Addr, delegations config.Delegations, rendered bool) (changes []DNSChange, resolved, waiting []string) {
+func (e *Engine) records(cfg *config.Config, addresses map[string][]netip.Addr, delegations config.Delegations, advertised config.Advertised, rendered bool) (changes []DNSChange, resolved, waiting []string) {
 	for _, set := range config.ResourcesOf[*v1alpha1.DNSRecordSetSpec](cfg) {
 		for i, record := range set.Spec.Records {
 			resource := "DNSRecordSet/" + set.Name
@@ -64,18 +64,26 @@ func (e *Engine) records(cfg *config.Config, addresses map[string][]netip.Addr, 
 				}
 			}
 
-			follows, address, err := recordAddress(cfg, record, addresses, delegations)
-			if record.Address != nil && err == nil {
+			follows, address, err := recordAddress(cfg, record, addresses, delegations, advertised)
+			switch {
+			case record.Address == nil || err != nil:
+			case record.Address.FromRouterAdvertisement != nil:
+				resolved = append(resolved, fmt.Sprintf("%s: spec.records[%d] %s, taken from the router advertisement on Interface/%s",
+					resource, i, address.Address, record.Address.InterfaceRef()))
+			default:
 				resolved = append(resolved, fmt.Sprintf("%s: spec.records[%d] %s, in %s delegated on Interface/%s",
-					resource, i, address.Address, address.Delegation, record.Address.FromDelegatedPrefix.InterfaceRef))
+					resource, i, address.Address, address.Delegation, record.Address.InterfaceRef()))
 			}
 			if rendered {
 				reason := "the address is the uplink's, and nothing was read from this host"
 				content := ""
 				if record.Address != nil {
-					if err != nil {
+					switch {
+					case err != nil && record.Address.FromRouterAdvertisement != nil:
+						reason = "the address is taken from the router advertisement, and the rendering waits for " + waitingFor(err)
+					case err != nil:
 						reason = "the address is cut from the delegation, and the rendering waits for " + waitingFor(err)
-					} else {
+					default:
 						reason = "cut from the delegation that was given; a rendering writes nothing"
 						content = address.Address.String()
 					}
@@ -152,8 +160,14 @@ func desiredRecord(set *v1alpha1.DNSRecordSetSpec, record v1alpha1.DNSRecord, na
 //
 // An A record holds the IPv4 address its uplink is holding; the runtime has already
 // dropped everything that is not globally reachable. An AAAA record holds the address cut
-// from the delegation its interface holds (ADR 0024).
-func recordAddress(cfg *config.Config, record v1alpha1.DNSRecord, addresses map[string][]netip.Addr, delegations config.Delegations) (string, config.Resolved, error) {
+// from the delegation its interface holds, or the address its interface took from the
+// router advertisement (ADR 0024).
+func recordAddress(cfg *config.Config, record v1alpha1.DNSRecord, addresses map[string][]netip.Addr, delegations config.Delegations, advertised config.Advertised) (string, config.Resolved, error) {
+	if record.Address != nil && record.Address.FromRouterAdvertisement != nil {
+		name := record.Address.FromRouterAdvertisement.InterfaceRef
+		address, err := advertised.Address(name)
+		return "the router advertisement on Interface/" + name, config.Resolved{Address: address}, err
+	}
 	if record.Address != nil {
 		derived := *record.Address.FromDelegatedPrefix
 		address, err := delegations.Address(derived)
