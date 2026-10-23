@@ -99,6 +99,20 @@ router's client software, given its DUID and IAID, drew the same delegation on t
 Solicit; networkd with the same DUID and its own IAID drew silence, and with the IAID
 declared it drew the delegation.
 
+**The delegation is not given back on a planned restart.** networkd's `[DHCPv6]
+SendRelease=` defaults to true: the client sends a Release whenever it stops, so every
+restart of networkd and every reboot, scheduled ones included, hands the delegation back.
+The provider is then free to delegate a different prefix on the next Solicit, and every
+address derived from it moves with it. That contradicts what `duidFile` and `iaid` are
+carried over for, which is to keep the delegation the host already holds. So
+`prefixDelegation.sendRelease` defaults to `false`, reversing networkd's default, and the
+upstream `.network` always spells out `SendRelease=` so the choice is visible in the file
+whichever way it falls. It is a field rather than a constant because a line that is
+being handed over or retired has a reason to free its delegation at once instead of
+waiting for it to expire. Not releasing is not a promise of the same prefix: a provider
+can still change it on its side. The directive is in systemd 257
+([ADR 0011](0011-target-platform.md)).
+
 **And it asks whether or not the router advertisement invites it.** networkd starts the
 DHCPv6 client, by default, only when an advertisement carries the managed or
 other-configuration flag, and `WithoutRA=solicit` covers only the line where no
