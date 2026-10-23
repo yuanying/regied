@@ -109,6 +109,7 @@ applied at boot, which would enable forwarding before the firewall exists.
 | Routing policy rule and its table | `EgressRoutePolicy` | systemd-networkd |
 | PPPoE session | `PPPoESession` | pppd |
 | The address a session dials with, into the firewall's uplink set | `PPPoESession` | pppd's ip-up and ip-down hooks |
+| Soliciting the delegation again when a session comes back from another concentrator | `PPPoESession`, with the `Interface` it runs over | pppd's ip-up hook |
 | Address handout, DNS | `DHCPServer`, `DNSForwarder` | dnsmasq |
 | The host's own resolver, when `listenOn` names `loopback` | `DNSForwarder` | systemd-networkd, read by systemd-resolved |
 | Firewall, NAT, policy-routing match | `FirewallZone`, `FirewallPolicy`, `IPAddressSet`, `SourceNAT`, `PortForward`, `EgressRoutePolicy` | nftables |
@@ -122,7 +123,13 @@ its own nftables table. A host that declares a `PPPoESession` also gets two scri
 ruleset holds no uplink address, and these are what put the address a session dialled
 with into the set the hairpin rules match on
 ([ADR 0015](../adr/0015-uplink-addresses-in-sets.md)). They are reclaimed when the last
-session goes. Every one of these directories is shared with the distribution, so what
+session goes. When a session runs over the interface whose DHCPv6 client asks for the
+delegated prefix, the ip-up hook also asks networkd to reconfigure that interface, and so
+to solicit again, when the session comes up from an access concentrator other than the one
+it last came up from. It keeps that concentrator's MAC address in
+`/run/regied/ppp/<session>.concentrator`, which is the hook's memory and not
+configuration: `/run` is emptied at boot, and the first session after it is only recorded
+([ADR 0025](../adr/0025-resolicit-after-the-pppoe-session-returns.md)). Every one of these directories is shared with the distribution, so what
 regied puts there carries its name and its ownership marker; it never flushes the ruleset
 and never rewrites a file it did not create
 ([ADR 0009](../adr/0009-ownership-boundary.md)).
