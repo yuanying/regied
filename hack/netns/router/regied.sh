@@ -42,6 +42,30 @@ remove_firewall() {
   nft delete table inet regied 2>/dev/null || true
 }
 
+# The testbed's own guard, outside regied's table. The management link carries this host's
+# default route, and anything the router forwards that falls through to the main table --
+# as traffic for PPPoE does for a moment after a redial, while the session's table is
+# empty -- would leave by it into the network the VM sits on. Nothing the testbed sends
+# belongs there, so nothing forwarded may go out that way.
+GUARD_TABLE="regied_netns_guard"
+
+install_guard() {
+  nft -f - <<NFT
+table inet ${GUARD_TABLE}
+delete table inet ${GUARD_TABLE}
+table inet ${GUARD_TABLE} {
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		oifname "${ROUTER_MGMT_IF}" drop
+	}
+}
+NFT
+}
+
+remove_guard() {
+  nft delete table inet "${GUARD_TABLE}" 2>/dev/null || true
+}
+
 process_gone() {
   ! kill -0 "$1" 2>/dev/null
 }
@@ -76,6 +100,7 @@ up() {
   mkdir -p "${RUNTIME_DIR}"
   management_state >"${mgmt_before}"
   management_reachable || die "the management gateway is not reachable before apply"
+  install_guard
   go build -o "${binary}" ./cmd/regied
   render_declaration
   verify_preview
@@ -138,6 +163,7 @@ down() {
   networkctl reload 2>/dev/null || true
   ip link del dslite0 2>/dev/null || true
   remove_firewall
+  remove_guard
   rm -f "${binary}"
   if [[ -n "${before}" ]] && [[ "$(management_state)" != "${before}" ]]; then
     die "teardown changed the management address or default route"

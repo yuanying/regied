@@ -17,4 +17,23 @@ address="$4"
 
 networkctl reconfigure "$interface" >/dev/null 2>&1 || true
 nft add element inet regied "uplink4_${interface}" "{ ${address} }" >/dev/null 2>&1
+
+# When the session shares its interface with the DHCPv6 client asking for the
+# delegated prefix, and came up from an access concentrator other than the one it
+# last came up from, the line may have moved to another of the provider's routers.
+# networkd does not notice: its lease is for a prefix the new router may not route.
+# Ask it to solicit again. The first session since boot is only recorded, because
+# the client has just solicited, and a concentrator the plugin did not name changes
+# nothing: a reconfigure takes the delegated addresses away for a moment.
+if [ -n "$REGIED_PD_INTERFACE" ] && [ -n "$REGIED_CONCENTRATOR_RECORD" ] && [ -n "$MACREMOTE" ]; then
+	previous="$(cat "$REGIED_CONCENTRATOR_RECORD" 2>/dev/null || true)"
+	if [ "$MACREMOTE" != "$previous" ]; then
+		mkdir -p "$(dirname "$REGIED_CONCENTRATOR_RECORD")" 2>/dev/null
+		printf '%s\n' "$MACREMOTE" >"$REGIED_CONCENTRATOR_RECORD.new" 2>/dev/null &&
+			mv -f "$REGIED_CONCENTRATOR_RECORD.new" "$REGIED_CONCENTRATOR_RECORD" 2>/dev/null
+		if [ -n "$previous" ]; then
+			networkctl reconfigure "$REGIED_PD_INTERFACE" >/dev/null 2>&1 || true
+		fi
+	fi
+fi
 exit 0

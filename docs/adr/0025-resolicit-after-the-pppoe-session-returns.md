@@ -122,6 +122,16 @@ the same interface survives the reconfigure; that a redial to the same concentra
 the derived addresses alone; and that one to a different concentrator, whose DHCPv6 server
 did not keep the binding, brings a new prefix that the next turn follows.
 
+Confirmed on the testbed with Debian 13 (ppp 2.5.2, systemd 257) as check 11, which runs
+against regied and against the reference router alike. The plugin does set `MACREMOTE`.
+The session on the same interface keeps its link through the reconfigure. A redial to the
+same concentrator reaches the DHCPv6 server with nothing at all. A move to a router that
+kept the binding hands the same prefix back, and one to a router that did not brings the
+prefix it delegates within seconds, while the lease the router held still had an hour to
+run. The check also found that a turn running in the moment the delegation is gone
+dropped a reload it then never ran, which left the downstream route out until the next
+change; that was a fault of the turn, fixed on its own.
+
 ## Alternatives considered
 
 **Reconfiguring on every ip-up.** The first draft of this record. Rejected: it turns every

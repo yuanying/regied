@@ -106,6 +106,7 @@ strict なリバースパスフィルタはまさにそれを落とす。有効�
 | ルーティングポリシールールとそのテーブル | `EgressRoutePolicy` | systemd-networkd |
 | PPPoE の回線 | `PPPoESession` | pppd |
 | 発呼したアドレスを、ファイアウォールの回線セットに入れること | `PPPoESession` | pppd の ip-up / ip-down フック |
+| 別の AC からセッションが戻ったときに、委譲を求め直すこと | `PPPoESession` と、それが乗る `Interface` | pppd の ip-up フック |
 | アドレス配布、DNS | `DHCPServer`、`DNSForwarder` | dnsmasq |
 | ホスト自身のリゾルバ（`listenOn` に `loopback` があるとき） | `DNSForwarder` | systemd-networkd。systemd-resolved が読む |
 | ファイアウォール、NAT、ポリシールーティングの判定 | `FirewallZone`、`FirewallPolicy`、`IPAddressSet`、`SourceNAT`、`PortForward`、`EgressRoutePolicy` | nftables |
@@ -119,7 +120,13 @@ nftables は自分のテーブルだけを作り替える。`PPPoESession` を�
 `/etc/ppp/ip-down.d/regied-uplink-set` である。ルールセットは回線のアドレスを持たないので、
 発呼したアドレスを hairpin のルールがマッチするセットに入れるのがこの 2 つである
 （[ADR 0015](../adr/0015-uplink-addresses-in-sets.md)）。セッションが 1 つも無くなれば
-回収する。これらのディレクトリはどれもディストリビューションと共有なので、regied が置くものは
+回収する。委譲プレフィックスを求める DHCPv6 クライアントが走るインターフェースの上で張る
+セッションでは、ip-up フックがもう 1 つ仕事をする。前回と違う AC からセッションが上がった
+ときに、そのインターフェースの reconfigure を networkd に頼み、Solicit を送り直させる。
+その AC の MAC アドレスは `/run/regied/ppp/<セッション名>.concentrator` に残す。これは
+フックの記憶であって設定ではない。`/run` は起動時に空になり、起動後の最初のセッションは
+記録するだけである
+（[ADR 0025](../adr/0025-resolicit-after-the-pppoe-session-returns.md)）。これらのディレクトリはどれもディストリビューションと共有なので、regied が置くものは
 自分の名前と所有の印を持つ。ルールセット全体を flush することは無く、
 自分が作っていないファイルを書き換えることも無い
 （[ADR 0009](../adr/0009-ownership-boundary.md)）。

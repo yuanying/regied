@@ -99,6 +99,13 @@ export PD_REBIND_TIMER="8"
 export PD_PREFERRED_LIFETIME="15"
 export PD_VALID_LIFETIME="20"
 
+# The lifetimes of a real line, for the checks that need the router to keep what it holds
+# unless it asks again. Nothing is renewed within the length of a check.
+export PD_LONG_RENEW_TIMER="3600"
+export PD_LONG_REBIND_TIMER="5400"
+export PD_LONG_PREFERRED_LIFETIME="7000"
+export PD_LONG_VALID_LIFETIME="7200"
+
 # Where things sit inside the delegation: what a declaration writes as
 # fromDelegatedPrefix. The router's LAN address is also DS-Lite's local address, so the
 # AFTR accepts the tunnel from that address only.
@@ -132,6 +139,8 @@ export PID_FILE="${RUNTIME_DIR}/services.pid"
 export KEA_DIR="${RUNTIME_DIR}/kea"
 # The prefix the server delegates now, for the commands that move it.
 export DELEGATION_FILE="${RUNTIME_DIR}/delegation"
+# The lifetimes it hands out, short or long.
+export LIFETIMES_FILE="${RUNTIME_DIR}/lifetimes"
 
 # ---- Shared helpers -------------------------------------------------------
 

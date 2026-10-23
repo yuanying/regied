@@ -29,6 +29,11 @@ const DefaultRoot = "/etc/regied"
 // nothing else in those directories is read or written (ADR 0009).
 const DefaultPPPDir = "/etc/ppp"
 
+// DefaultRunDir is regied's own directory under /run. The ip-up hook keeps the access
+// concentrator each session last came up with below it: /run is emptied at boot, which is
+// exactly when the comparison has to start again (ADR 0025).
+const DefaultRunDir = "/run/regied"
+
 // HookPrefix is on the name of every file regied puts in a hook directory. It is how
 // reclaiming tells regied's hooks from the distribution's.
 const HookPrefix = "regied-"
@@ -94,6 +99,14 @@ type Session struct {
 	Ifname string
 	// NIC is the Ethernet interface PPPoE runs over.
 	NIC string
+	// SharesDelegation says the DHCPv6 client asking for the delegated prefix runs on NIC
+	// too. Only then does the session coming back from another concentrator say that the
+	// delegation may have to be asked for again (ADR 0025).
+	SharesDelegation bool
+	// ConcentratorRecord is where the ip-up hook keeps the MAC address of the access
+	// concentrator the session last came up with. It is set only when SharesDelegation
+	// is.
+	ConcentratorRecord string
 
 	Peer        File
 	Credentials CredentialsFile
@@ -172,6 +185,7 @@ type Option func(*options)
 type options struct {
 	root   string
 	pppDir string
+	runDir string
 }
 
 // WithRoot puts the generated files under a directory other than DefaultRoot.
@@ -184,8 +198,13 @@ func WithPPPDir(dir string) Option {
 	return func(o *options) { o.pppDir = dir }
 }
 
+// WithRunDir keeps the hook's records under a directory other than DefaultRunDir.
+func WithRunDir(dir string) Option {
+	return func(o *options) { o.runDir = dir }
+}
+
 func resolveOptions(opts []Option) options {
-	resolved := options{root: DefaultRoot, pppDir: DefaultPPPDir}
+	resolved := options{root: DefaultRoot, pppDir: DefaultPPPDir, runDir: DefaultRunDir}
 	for _, opt := range opts {
 		opt(&resolved)
 	}
@@ -305,16 +324,49 @@ func hookScript(which direction) string {
 	fmt.Fprintf(&b, "nft %s element %s %s %q %q >/dev/null 2>&1\n",
 		verb, nftables.TableFamily, nftables.TableName,
 		nftables.UplinkSetName("${interface}", v1alpha1.FamilyIPv4), "{ ${address} }")
+	if which == up {
+		b.WriteString(resolicit)
+	}
 	b.WriteString("exit 0\n")
 	return b.String()
 }
 
+// resolicit is the part of the ip-up hook that asks for the delegation again when the
+// session came back from another access concentrator (ADR 0025).
+//
+// The peer file of a session that shares its interface with the DHCPv6 client names that
+// interface and the record, through pppd's set option, so the script stays one for every
+// session. MACREMOTE is what the PPPoE plugin learned in discovery. The record is written
+// whole, through a rename, so a hook interrupted halfway leaves the old one or the new
+// one and never a part.
+const resolicit = `
+# When the session shares its interface with the DHCPv6 client asking for the
+# delegated prefix, and came up from an access concentrator other than the one it
+# last came up from, the line may have moved to another of the provider's routers.
+# networkd does not notice: its lease is for a prefix the new router may not route.
+# Ask it to solicit again. The first session since boot is only recorded, because
+# the client has just solicited, and a concentrator the plugin did not name changes
+# nothing: a reconfigure takes the delegated addresses away for a moment.
+if [ -n "$REGIED_PD_INTERFACE" ] && [ -n "$REGIED_CONCENTRATOR_RECORD" ] && [ -n "$MACREMOTE" ]; then
+	previous="$(cat "$REGIED_CONCENTRATOR_RECORD" 2>/dev/null || true)"
+	if [ "$MACREMOTE" != "$previous" ]; then
+		mkdir -p "$(dirname "$REGIED_CONCENTRATOR_RECORD")" 2>/dev/null
+		printf '%s\n' "$MACREMOTE" >"$REGIED_CONCENTRATOR_RECORD.new" 2>/dev/null &&
+			mv -f "$REGIED_CONCENTRATOR_RECORD.new" "$REGIED_CONCENTRATOR_RECORD" 2>/dev/null
+		if [ -n "$previous" ]; then
+			networkctl reconfigure "$REGIED_PD_INTERFACE" >/dev/null 2>&1 || true
+		fi
+	fi
+fi
+`
+
 func renderSession(cfg *config.Config, opts options, session config.Named[*v1alpha1.PPPoESessionSpec]) Session {
 	spec := session.Spec
 	rendered := Session{
-		Name:   session.Name,
-		Ifname: session.Name,
-		NIC:    ifnameOf(cfg, spec.InterfaceRef),
+		Name:             session.Name,
+		Ifname:           session.Name,
+		NIC:              ifnameOf(cfg, spec.InterfaceRef),
+		SharesDelegation: asksForDelegation(cfg, spec.InterfaceRef),
 		Peer: File{
 			Path:    opts.root + "/ppp/peers/" + session.Name + ".conf",
 			Mode:    0o644,
@@ -328,6 +380,9 @@ func renderSession(cfg *config.Config, opts options, session config.Named[*v1alp
 			UserIDFile:   spec.UserIDFile,
 			PasswordFile: spec.PasswordFile,
 		},
+	}
+	if rendered.SharesDelegation {
+		rendered.ConcentratorRecord = opts.runDir + "/ppp/" + session.Name + ".concentrator"
 	}
 	rendered.Peer.Content = peerFile(rendered, spec)
 	return rendered
@@ -392,7 +447,28 @@ func peerFile(session Session, spec *v1alpha1.PPPoESessionSpec) string {
 		fmt.Fprintf(&b, "lcp-echo-failure %d\n", lcpEchoFailure)
 	}
 
+	if session.SharesDelegation {
+		b.WriteString("\n")
+		b.WriteString("# The DHCPv6 client asking for the delegated prefix runs on the same interface.\n")
+		b.WriteString("# The ip-up hook asks it to solicit again when the session comes back from\n")
+		b.WriteString("# another access concentrator, and keeps the one it came up from here.\n")
+		fmt.Fprintf(&b, "set REGIED_PD_INTERFACE=%s\n", session.NIC)
+		fmt.Fprintf(&b, "set REGIED_CONCENTRATOR_RECORD=%s\n", session.ConcentratorRecord)
+	}
+
 	return b.String()
+}
+
+// asksForDelegation says whether the interface a session runs over also runs the DHCPv6
+// client asking for a delegated prefix. The declaration already says so; no field is
+// added for it (ADR 0025).
+func asksForDelegation(cfg *config.Config, ref string) bool {
+	resource := cfg.Lookup(v1alpha1.KindInterface, ref)
+	if resource == nil {
+		return false
+	}
+	spec, ok := resource.Spec.(*v1alpha1.InterfaceSpec)
+	return ok && spec.DHCPv6 != nil && spec.DHCPv6.PrefixDelegation != nil
 }
 
 // ifnameOf is the kernel name of the interface a session runs over. Validation has

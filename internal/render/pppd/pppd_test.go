@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -126,6 +127,164 @@ func TestHooks(t *testing.T) {
 	}
 	if strings.Contains(down.Content, "networkctl reconfigure") {
 		t.Errorf("the ip-down hook tries to reconfigure a link that is going away:\n%s", down.Content)
+	}
+}
+
+// A session that runs over the interface the delegation is asked for on tells its hook
+// which interface that is and where to keep the concentrator it came up with. The hook
+// solicits the delegation again only when that concentrator changes (ADR 0025).
+func TestSessionSharingTheDelegationInterfaceNamesItForTheHook(t *testing.T) {
+	session := onlySession(t, pppd.Render(loadExample(t)))
+	assertHasLines(t, session.Peer.Content,
+		"set REGIED_PD_INTERFACE=eth0",
+		"set REGIED_CONCENTRATOR_RECORD=/run/regied/ppp/pppoe0.concentrator")
+
+	session = onlySession(t, pppd.Render(loadExample(t), pppd.WithRunDir("/tmp/run")))
+	assertHasLines(t, session.Peer.Content, "set REGIED_CONCENTRATOR_RECORD=/tmp/run/ppp/pppoe0.concentrator")
+}
+
+// Where the session and the delegation client do not share an interface, a session
+// dropping says nothing about where the delegation comes from, and the hook is told
+// nothing.
+func TestSessionNotSharingTheDelegationInterfaceSetsNothing(t *testing.T) {
+	for name, resources := range map[string]string{
+		"no delegation at all": minimalSession(""),
+		"the delegation on another interface": minimalSession("") + `
+    - kind: Interface
+      metadata: {name: other}
+      spec:
+        ifname: eth1
+        dhcpv6:
+          prefixDelegation: {prefixLength: 56}
+`,
+		"a DHCPv6 client that asks for no prefix": `
+    - kind: Interface
+      metadata: {name: wan}
+      spec:
+        ifname: eth0
+        dhcpv6: {useDNS: true}
+    - kind: PPPoESession
+      metadata: {name: pppoe0}
+      spec:
+        interfaceRef: wan
+        userIDFile: /secrets/id
+        passwordFile: /secrets/pw
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := onlySession(t, pppd.Render(load(t, resources)))
+			if strings.Contains(session.Peer.Content, "REGIED_") {
+				t.Errorf("the peer file tells the hook about a delegation it does not share:\n%s", session.Peer.Content)
+			}
+		})
+	}
+}
+
+// What the ip-up hook does about the delegation, run for real against stand-ins for
+// networkctl and nft. The decision is the hook's own, made with the daemon stopped, so
+// it is checked by running it rather than by reading it (ADR 0025).
+func TestIPUpHookSolicitsAgainOnlyWhenTheConcentratorChanges(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh to run the hook with")
+	}
+	hook := pppd.Render(loadExample(t)).Hooks[0]
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ip-up")
+	if err := os.WriteFile(script, []byte(hook.Content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "bin")
+	calls := filepath.Join(dir, "calls")
+	fail := filepath.Join(dir, "fail")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The stand-ins log their arguments, and fail when told to.
+	for _, name := range []string{"networkctl", "nft"} {
+		stub := "#!/bin/sh\necho \"" + name + " $*\" >>" + calls + "\n[ ! -e " + fail + " ] || exit 1\n"
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(stub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record := filepath.Join(dir, "run", "ppp", "pppoe0.concentrator")
+
+	const (
+		first  = "00:00:5E:00:53:01"
+		second = "00:00:5E:00:53:02"
+		third  = "00:00:5E:00:53:03"
+	)
+
+	// ipUp runs the hook as pppd would and returns the networkctl calls it made.
+	ipUp := func(t *testing.T, env ...string) []string {
+		t.Helper()
+		_ = os.Remove(calls)
+		cmd := exec.Command(sh, script, "pppoe0", "/dev/ppp", "0", "198.51.100.2", "198.51.100.1", "")
+		cmd.Env = append([]string{"PATH=" + bin + ":/usr/bin:/bin"}, env...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("the hook failed, which would hold up the session: %v\n%s", err, out)
+		}
+		content, _ := os.ReadFile(calls)
+		var networkctl []string
+		for line := range strings.SplitSeq(strings.TrimSpace(string(content)), "\n") {
+			if strings.HasPrefix(line, "networkctl ") {
+				networkctl = append(networkctl, line)
+			}
+		}
+		return networkctl
+	}
+	shared := func(mac string) []string {
+		return []string{"REGIED_PD_INTERFACE=eth0", "REGIED_CONCENTRATOR_RECORD=" + record, "MACREMOTE=" + mac}
+	}
+	recorded := func(t *testing.T) string {
+		t.Helper()
+		content, err := os.ReadFile(record)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(content))
+	}
+	const ownLink = "networkctl reconfigure pppoe0"
+	const upstream = "networkctl reconfigure eth0"
+
+	steps := []struct {
+		name         string
+		env          []string
+		fail         bool
+		wantCalls    []string
+		wantRecorded string
+	}{
+		{"a session that shares nothing records nothing",
+			[]string{"MACREMOTE=" + first}, false, []string{ownLink}, ""},
+		{"the first session since boot is only recorded",
+			shared(first), false, []string{ownLink}, first},
+		{"a redial to the same concentrator leaves the delegation alone",
+			shared(first), false, []string{ownLink}, first},
+		{"a session from another concentrator solicits again",
+			shared(second), false, []string{ownLink, upstream}, second},
+		{"a concentrator the plugin did not name changes nothing",
+			shared(""), false, []string{ownLink}, second},
+		{"a reconfigure that fails does not hold up the session",
+			shared(third), true, []string{ownLink, upstream}, third},
+	}
+	for _, step := range steps {
+		if !t.Run(step.name, func(t *testing.T) {
+			_ = os.Remove(fail)
+			if step.fail {
+				if err := os.WriteFile(fail, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := ipUp(t, step.env...); !slices.Equal(got, step.wantCalls) {
+				t.Errorf("networkctl was called as %q, want %q", got, step.wantCalls)
+			}
+			if got := recorded(t); got != step.wantRecorded {
+				t.Errorf("the record holds %q, want %q", got, step.wantRecorded)
+			}
+		}) {
+			return
+		}
 	}
 }
 
