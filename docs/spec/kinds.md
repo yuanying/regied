@@ -174,6 +174,7 @@ provider does hand one out, it lands on that upstream interface.
 | `prefixDelegation.iaid` | no | The IAID to send with the prefix request. Some providers bind the delegation to the DUID and the IAID as a pair and never answer a request carrying a different IAID; carry the value over from the configuration of the router being replaced. Left out, networkd sends a value derived from the interface |
 | `prefixDelegation.prefixLength` | yes | Prefix length to request, e.g. `56` |
 | `prefixDelegation.rapidCommit` | no | Default `true` |
+| `prefixDelegation.sendRelease` | no | Default `false`. Whether to give the delegation back to the provider when the client stops, as on a restart of networkd or a reboot |
 | `useDNS` | no | Default `false`. Whether to take resolvers from the provider |
 
 The DUID file holds the DUID as colon-separated hex, type prefix included, exactly as it
@@ -199,6 +200,14 @@ prefix to a request with the wrong IAID: it stays silent, and the client keeps a
 router being replaced usually sent `0`, and `0` is a declared value, distinct from leaving
 the field out. Omitting it hands the choice to networkd, which derives the IAID from the
 interface, so it never matches the replaced router's by accident.
+
+`sendRelease` defaults to `false`, the opposite of networkd's own default. A client that
+gives the delegation back each time it stops does so on every planned restart, and the
+provider is then free to delegate a different prefix on the next request. Holding on to
+it does not promise the same prefix — a provider can still change it — but it stops the
+host from inviting the change itself. An undeclared field and a declared `false` render
+the same `SendRelease=no`. Declare `true` for a line that is being handed over or shut
+down for good and should free its delegation now rather than when it expires.
 
 The DUID is not a credential, and unlike one it is shown in `--dry-run` output, in a diff
 and in the state API — the single exception in

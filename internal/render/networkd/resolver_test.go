@@ -91,6 +91,7 @@ WithoutRA=solicit
 UseAddress=yes
 UseDNS=no
 RapidCommit=yes
+SendRelease=no
 PrefixDelegationHint=::/56
 
 [IPv6AcceptRA]

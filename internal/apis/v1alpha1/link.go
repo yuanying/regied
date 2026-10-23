@@ -176,14 +176,21 @@ func (c DHCPv6Client) UseDNSEnabled() bool { return boolOr(c.UseDNS, false) }
 // being replaced, and it has to be told apart from "not declared", which leaves the
 // value to networkd. networkd derives that value from the interface, so a replacing host
 // never matches the replaced one by accident.
+//
+// SendRelease defaults to false, the opposite of networkd's default. Releasing on every
+// stop gives the delegation back on each planned restart, which invites the provider to
+// delegate a different prefix; keeping the delegation is what DUIDFile and IAID are for.
 type PrefixDelegation struct {
 	DUIDFile     string  `yaml:"duidFile"`
 	PrefixLength *int    `yaml:"prefixLength"`
 	RapidCommit  *bool   `yaml:"rapidCommit"`
 	IAID         *uint32 `yaml:"iaid"`
+	SendRelease  *bool   `yaml:"sendRelease"`
 }
 
 func (d PrefixDelegation) RapidCommitEnabled() bool { return boolOr(d.RapidCommit, true) }
+
+func (d PrefixDelegation) SendReleaseEnabled() bool { return boolOr(d.SendRelease, false) }
 
 // InterfaceIPv6 groups the IPv6 settings of a link.
 type InterfaceIPv6 struct {
