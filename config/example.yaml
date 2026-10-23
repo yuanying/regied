@@ -50,6 +50,7 @@ spec:
           prefixDelegation:
             prefixLength: 56
             rapidCommit: true
+            sendRelease: false
             duidFile: /etc/regied/secrets/dhcpv6-duid
             iaid: 0
 

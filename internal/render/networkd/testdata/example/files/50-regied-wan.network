@@ -15,6 +15,7 @@ WithoutRA=solicit
 UseAddress=yes
 UseDNS=no
 RapidCommit=yes
+SendRelease=no
 PrefixDelegationHint=::/56
 DUIDType=link-layer
 DUIDRawData=00:01:00:00:5e:00:53:01

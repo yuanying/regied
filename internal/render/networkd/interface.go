@@ -178,6 +178,9 @@ func (r *renderer) renderDHCPv6Client(u *unit, iface config.Named[*v1alpha1.Inte
 
 	if delegation := client.PrefixDelegation; delegation != nil {
 		dhcpv6.setBool("RapidCommit", delegation.RapidCommitEnabled())
+		// networkd releases the delegation whenever the client stops, so a planned restart
+		// would give the prefix back. Written either way so the choice shows (ADR 0012).
+		dhcpv6.setBool("SendRelease", delegation.SendReleaseEnabled())
 		if delegation.PrefixLength != nil {
 			dhcpv6.set("PrefixDelegationHint", "::/"+strconv.Itoa(*delegation.PrefixLength))
 		}
