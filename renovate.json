@@ -1,36 +1,13 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "A version is proposed only once it has been public for two days, so that a release pulled or fixed in its first days never reaches a branch. internalChecksFilter is already strict by default; it is stated so that the wait is read here as holding back the branch and the pull request themselves, not only a status check on them",
-  "extends": ["config:recommended", ":semanticCommitTypeAll(chore)"],
-  "timezone": "Asia/Tokyo",
-  "dependencyDashboard": true,
-  "minimumReleaseAge": "2 days",
-  "internalChecksFilter": "strict",
-  "platformAutomerge": false,
+  "description": "The patch, digest and pinning updates Renovate merges wait for the pull request's checks (ci.yml). Minor and major updates change what is promised and are only opened. The repository allows no auto-merge of its own, which is why Renovate does the merging",
+  "extends": ["github>yuanying/renovate-config", "github>yuanying/renovate-config:automerge-patch"],
   "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
-    {
-      "description": "Patches, digest updates and the first pins are merged by Renovate itself once the pull request's checks pass (ci.yml). Minor and major updates change what is promised and are only opened. The repository allows no auto-merge of its own, so Renovate merges rather than the platform, and only after the checks it can see have succeeded",
-      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
-      "automerge": true
-    },
     {
       "description": "The netns testbed's base image is pulled by a tag that is pushed again whenever its Debian layer or Go patch is rebuilt, so a checkout does not say which image a run used. Pinning the digest makes the Dockerfile name one image and leaves Renovate to move it",
       "matchManagers": ["dockerfile"],
       "pinDigests": true
-    },
-    {
-      "description": "The official ubuntu image is proposed without the two-day wait. Docker Hub gives a tag's last push as its release time, and the official ubuntu tags are pushed again every day or two, so a tag would rarely look two days old and its updates would hardly ever be proposed. No image here is built on ubuntu today; the rule is kept so that one added later does not fall into the same trap. Docker Hub names are matched as written, so each way of writing the image is listed. The pull request's checks still have to pass",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": [
-        "ubuntu",
-        "library/ubuntu",
-        "docker.io/ubuntu",
-        "docker.io/library/ubuntu",
-        "index.docker.io/ubuntu",
-        "index.docker.io/library/ubuntu"
-      ],
-      "minimumReleaseAge": null
     },
     {
       "description": "The go directive in go.mod is the Go the checks run (setup-go reads it) and the golang image is the Go the netns tests run in. They are the same minor on purpose: a test passing on one Go says little about another. Grouping them puts both on one branch, so they cannot drift apart one pull request at a time",
@@ -42,11 +19,6 @@
       "matchPackageNames": ["go", "golang"],
       "matchUpdateTypes": ["major", "minor"],
       "dependencyDashboardApproval": true
-    },
-    {
-      "description": "Workflows are already read by the github-actions manager. Grouping them keeps a handful of actions from arriving as a handful of pull requests, since they are updated together and reviewed the same way",
-      "matchManagers": ["github-actions"],
-      "groupName": "github-actions"
     }
   ]
 }
