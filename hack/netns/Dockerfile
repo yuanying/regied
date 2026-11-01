@@ -5,7 +5,7 @@
 # live only inside this image. It is started as a sibling container with --privileged
 # and the network namespaces are built inside it (ADR 0010). Kernel modules are loaded
 # on the host, so /lib/modules is passed in read-only at run time.
-FROM golang:1.27-trixie
+FROM golang:1.27-trixie@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
