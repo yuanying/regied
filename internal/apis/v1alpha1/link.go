@@ -1,7 +1,7 @@
 package v1alpha1
 
 import (
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 )
 
 // InterfaceSpec is a link regied owns both ends of: a physical NIC, or a bridge over

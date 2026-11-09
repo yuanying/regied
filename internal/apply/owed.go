@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 )
 
 // A step that makes a written file take effect — reloading networkd, telling udev and

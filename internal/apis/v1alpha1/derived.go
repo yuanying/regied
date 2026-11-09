@@ -1,7 +1,7 @@
 package v1alpha1
 
 import (
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 )
 
 // DerivableAddr is an address written out, or cut from the delegated prefix: a route's

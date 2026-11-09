@@ -1,7 +1,7 @@
 package v1alpha1
 
 import (
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 )
 
 // APIVersion and DocumentKind are what every regied configuration document carries.
