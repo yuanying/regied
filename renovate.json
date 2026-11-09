@@ -1,8 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "The patch, digest and pinning updates Renovate merges wait for the pull request's checks (ci.yml). Minor and major updates change what is promised and are only opened. The repository allows no auto-merge of its own, which is why Renovate does the merging",
+  "description": "The patch, digest and pinning updates Renovate merges wait for the pull request's checks (ci.yml). Minor and major updates change what is promised and are only opened. The repository allows no auto-merge of its own, which is why Renovate does the merging. gomodTidy runs go mod tidy after every Go update, and gomodUpdateImportPaths lets a major Go module update rewrite the import paths; without it Renovate skips go mod tidy on major updates and leaves go.mod untidy",
   "extends": ["github>yuanying/renovate-config", "github>yuanying/renovate-config:automerge-patch"],
-  "postUpdateOptions": ["gomodTidy"],
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
   "packageRules": [
     {
       "description": "The netns testbed's base image is pulled by a tag that is pushed again whenever its Debian layer or Go patch is rebuilt, so a checkout does not say which image a run used. Pinning the digest makes the Dockerfile name one image and leaves Renovate to move it",
