@@ -3,7 +3,7 @@ package v1alpha1
 import (
 	"time"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 )
 
 // DNSProvider is where a set's records live. There is one implementation and no

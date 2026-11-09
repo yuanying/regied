@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 )
 
 // typeErrorf reports a malformed value as a *yaml.TypeError. The decoder collects those
